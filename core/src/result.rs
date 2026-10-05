@@ -85,6 +85,9 @@ pub enum OperationKind {
     /// (both P100/582.41-pinned); slots 1/4/5 are retained-but-quiet
     /// firmware-opaque dwords.
     SetNvapiVoltRailSlot,
+    /// Zero melonVolt payload slots back to stock (default: mapped slots
+    /// 0..3; `slot` narrows to one, 0..5 honored as-is per user choice).
+    ResetNvapiVoltRailLimit,
     /// Query the controllable clock-domain block (private ClockClient
     /// GetControl, RM 0x2080901b) — mask + per-domain type/range/offset.
     /// The Blackwell XBar family (reverse/melonvolt/xbar.txt).
@@ -354,6 +357,7 @@ impl OperationKind {
                 | SetNvapiOverclockedPstates
                 | SetNvapiPstates20PrivateDelta
                 | SetNvapiVoltRailSlot
+                | ResetNvapiVoltRailLimit
         )
     }
 }

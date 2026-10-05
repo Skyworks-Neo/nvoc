@@ -29,11 +29,11 @@ use nvoc_core::{
     ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
     ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl,
     ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
-    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
-    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
-    SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
-    SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
+    ResetPublicVftableOffset, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
+    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
+    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
+    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
     SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
     SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap,
     SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
@@ -199,6 +199,7 @@ pub enum Command {
     GetPowerCeiling,
     GetVoltRailInfo,
     SetVoltRailLimit,
+    ResetVoltRailLimit,
     GetCoreVoltageControl,
     SetCoreVoltageControl,
     GetPmgrArbiter,
@@ -974,7 +975,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("reset-pstate-global-freq-offset", Group::Clock, "Reset NVAPI P-State clock offsets (all touched pstate/domain pairs by default; --domain filters to one clock domain)")
                 },
             ),
-            (Command::ResetPStateLock, CommandSpec::new("reset-pstate-lock", Group::Clock, "Clear all native NVAPI P-State locks")),
+                        (Command::ResetPStateLock, CommandSpec::new("reset-pstate-lock", Group::Clock, "Clear all native NVAPI P-State locks")),
             (Command::ResetPublicGpcRailVoltBoost, CommandSpec::new("reset-public-gpc-rail-volt-boost", Group::Voltage, "Reset NVAPI voltage boost percent")),
             (Command::ResetPublicTgpPercent, CommandSpec::new("reset-public-tgp-percent", Group::Power, "Reset NVAPI power limits")),
             (Command::ResetPublicVftableGpcLock, CommandSpec::new("reset-public-vftable-gpc-lock", Group::Vfp, "Reset NVAPI VFP lock")),
@@ -987,6 +988,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             ),
             (Command::ResetTempLimit, CommandSpec::new("reset-temp-limit", Group::Thermal, "Reset NVAPI sensor limits")),
             (Command::ResetTempSim, CommandSpec::new("reset-temp-sim", Group::Thermal, "Disable temperature simulation and restore the real sensor reading")),
+(
+                Command::ResetVoltRailLimit,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["expect-type", "slot"])),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                        "arg_rail_bit",
+                        "RAIL_BIT",
+                        "Volt-rail bit index from get-volt-rail-info (e.g. 0 for the single rail on a 4060 laptop, 1 for 5090 MSVDD)",
+                    )])),
+                    ..CommandSpec::new("reset-volt-rail-limit", Group::Voltage, "Zero melonVolt payload slots back to stock (offsets are deltas from the driver baseline — 0 = factory). Default resets the mapped slots 0..3 (uV offset, VBIOS wall offset, VRM max wall offset, VMIN/min-hold offset; slot 2/3 semantics P100/582.41-pinned); --slot N (0..5) resets only that slot — 4/5 honored as-is per user choice (no known use; -300 crashed 4060L/610, -100..-200 observed safe). Post-reset VRM wall / Min Hold echoed for verification")
+                },
+            ),
             (Command::RestartDisplayDriver, CommandSpec::new("restart-display-driver", Group::Info, "Restart the display driver (0xB4B26B65); legacy apply-OC trigger")),
             (
                 Command::SetAutoboostStatus,
@@ -1539,7 +1553,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV --slot N (0..5, default 0) selects the melonVolt payload dword: 0 = the uV offset (offset/target modes above); 2 = VRM max wall offset; 3 = VMIN/min-hold offset (both mV-in/uV-out like offset mode, P100/582.41-pinned, status Min Hold/VRM wall follow 1:1); 1/4/5 = retained-but-quiet firmware-opaque dwords (raw i32 in, no unit semantics). --slot >0 conflicts with --target")
                 },
             ),
-            (
+                        (
                 Command::SetWhisperMode2Status,
                 CommandSpec {
                     arity: (1, 1),
@@ -1899,9 +1913,13 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
         }
     }
 
-    if command == Command::SetVoltRailLimit
-        && option_one(invocation, "slot")
-            .is_some_and(|raw| raw.parse::<usize>().map(|v| v > 5).unwrap_or(true))
+    // Protocol bound: the melonVolt payload is 0..5. Slots 4/5 are legal
+    // but dangerous (honored as-is per user choice; see the --slot help).
+    if matches!(
+        command,
+        Command::SetVoltRailLimit | Command::ResetVoltRailLimit
+    ) && option_one(invocation, "slot")
+        .is_some_and(|raw| raw.parse::<usize>().map(|v| v > 5).unwrap_or(true))
     {
         return Err(CliError::new(
             "--slot out of range (melonVolt payload is 0..5)",
@@ -4502,9 +4520,17 @@ fn execute_target(
                         "control": r.control.iter().map(|e| json!({
                             "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
                         })).collect::<Vec<_>>(),
-                        "status": r.status.iter().map(|e| json!({
-                            "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
-                        })).collect::<Vec<_>>(),
+                        "status": r.status.iter().map(|e| {
+                            let mut entry = json!({
+                                "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
+                            });
+                            // V2 nine-slot extras (payload dwords 6..8) — the
+                            // V1 status back-copies them; semantics open.
+                            if let Some(extra) = e.extra_values {
+                                entry["extra_values_uV"] = json!(extra);
+                            }
+                            entry
+                        }).collect::<Vec<_>>(),
                     })
                 }
                 None => json!({"supported": false}),
@@ -4655,6 +4681,50 @@ fn execute_target(
                     None => json!({"supported": false}),
                 })
             }
+        }
+        Command::ResetVoltRailLimit => {
+            let rail_bit = parse_usize(&invocation.positionals[0], "rail-bit")? as u32;
+            let expect_type = option_one(invocation, "expect-type")
+                .map(|v| v.parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --expect-type: {e}")))?;
+            let slot = match option_one(invocation, "slot") {
+                Some(raw) => {
+                    let slot = raw
+                        .parse::<usize>()
+                        .map_err(|_| CliError::new(format!("invalid --slot {raw:?} (0..5)")))?;
+                    if slot > 5 {
+                        return Err(CliError::new(format!(
+                            "--slot {slot} out of range (melonVolt payload is 0..5)"
+                        )));
+                    }
+                    Some(slot)
+                }
+                None => None,
+            };
+            let out = run(
+                target,
+                ResetNvapiVoltRailLimit {
+                    rail_bit,
+                    slot,
+                    expected_type: expect_type,
+                },
+            )?
+            .output;
+            Ok(match out {
+                Some(a) => json!({
+                    "applied": true,
+                    "rail_bit": a.rail_bit,
+                    "resets": a.resets.iter().map(|r| json!({
+                        "slot": r.slot,
+                        "previous": r.previous,
+                    })).collect::<Vec<_>>(),
+                    "vrm_max_wall_mv": a.vrm_max_wall_uV as f64 / 1000.0,
+                    "min_hold_mv": a.min_hold_uV as f64 / 1000.0,
+                    "note": "payload slots zeroed = factory offsets; walls re-clamp from the driver baseline",
+                }),
+                None => json!({"supported": false}),
+            })
         }
         Command::GetPrivateFreqDomainInfo => {
             let ctrl = run(target, QueryNvapiClkDomains)?.output;
@@ -9448,6 +9518,7 @@ mod tests {
             | Command::GetPowerCeiling
             | Command::GetVoltRailInfo
             | Command::SetVoltRailLimit
+            | Command::ResetVoltRailLimit
             | Command::GetCoreVoltageControl
             | Command::SetCoreVoltageControl
             | Command::GetPmgrArbiter
@@ -9887,6 +9958,20 @@ mod tests {
         assert_eq!(invocation.command, Some(Command::SetVoltRailLimit));
         assert_eq!(option_one(&invocation, "slot"), Some("3"));
         assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "6"]).is_err());
+        // slots 4/5: refused at parse (no known use; -300 crashed 4060L/610,
+        // -100..-200 observed safe — kept lab-only)
+        // slots 4/5 honored as-is (user choice; crash matrix in help)
+        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "4"]).is_ok());
+        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "5"]).is_ok());
+
+        // reset command: rail-bit positional + optional --slot (0..5)
+        let invocation = parse_args(["reset-volt-rail-limit", "0"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::ResetVoltRailLimit));
+        assert_eq!(invocation.positionals, vec!["0"]);
+        let invocation = parse_args(["reset-volt-rail-limit", "1", "--slot", "3"]).unwrap();
+        assert_eq!(option_one(&invocation, "slot"), Some("3"));
+        assert!(parse_args(["reset-volt-rail-limit", "1", "--slot", "6"]).is_err());
+        assert!(parse_args(["reset-volt-rail-limit"]).is_err());
     }
 
     #[test]
