@@ -114,6 +114,14 @@ PAIPTAC 款被安全策略阻止装载、Intel 2019 款正常**(2026-10-06 用�
 的组合;风险口径是 BYOVD(自带漏洞驱动)——传输层天然可写、无探测解引用,
 本车道代码只读并只触碰 RAM 范围(低内存/页表帧)。
 
+KDU(hfiref0x,`reverse/KDU-master`)考察结论(2026-10-06):**不采用**。其
+pmxdrv provider 与本通道逐项相同(intel.cpp 同码 0x222AB8/ABC、同 low-stub
+根发现、同 VtoP 走查——三方同源互证),`-map` 机制解决的是我们不需要的
+"装载未签名驱动",且 KDU.exe 是 AV/EDR 摩擦最大的 BYOVD 工具、其 provider
+同样吃黑名单(不解决 4060L 拦 PAIPTAC 那类问题)。已借用:providers.md 目录
+与 provider 回退预案(备选第二传输=WinRing0/RTCore,走 `PhysicalMemory`
+trait,不引入 KDU)。详见 `ANALYSIS.md` §5。
+
 ## 安全模型
 
 - 走查限内核指针(`>= 0xFFFF8000_00000000`),单次虚拟读 ≤64 KiB,
