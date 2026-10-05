@@ -16,6 +16,7 @@ use cli_stressor_cuda_rs::{
 use super::atomic::build_atomic_kernel;
 use super::device::query_device_info_for_index;
 use super::gemm::GemmPathConfig;
+use super::runtime_probe::CudaRuntimeLibs;
 use super::verify_kernels::VerifyEngine;
 
 #[cfg(feature = "vulkan")]
@@ -42,6 +43,10 @@ pub struct CudaBackend {
     pub(super) intalu_fn: Option<CudaFunction>,
     /// Ride-on-load verification engine (None when NVRTC build failed).
     pub(super) verify: Option<VerifyEngine>,
+    /// NVRTC runtime library present (probed non-panicking at construction).
+    /// When false the NVRTC-compiled paths (atomic, INT ALU, verify engine,
+    /// gpu fill) are skipped instead of panicking on the missing library.
+    pub(super) nvrtc_available: bool,
     /// Opt-in device-side stress-buffer generation (`--gpu-generate`).
     pub(super) gpu_generate: bool,
     pub(super) gpu_fill: Option<super::gpu_fill::GpuFillKernels>,
@@ -89,6 +94,10 @@ impl CudaBackend {
     }
 
     pub fn new_with_device(gpu_index: u32) -> Result<Self, BackendError> {
+        // Pre-flight: cudarc's library accessors panic when a runtime library
+        // is missing, so probe first and report a clean error instead.
+        let runtime = CudaRuntimeLibs::probe();
+        runtime.require_stress_libs().map_err(BackendError::Other)?;
         unsafe {
             let res = cuda_sys::cuInit(0);
             if res as u32 != 0 {
@@ -113,27 +122,46 @@ impl CudaBackend {
             CudaBlas::new(stream2.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
         let blas3 =
             CudaBlas::new(stream3.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
-        let (atomic_module, atomic_fn) = match build_atomic_kernel(&ctx) {
-            Ok((module, func)) => (Some(module), Some(func)),
-            Err(err) => {
-                println!(
-                    "Warning: Atomic kernel build failed (possibly CUDA vs GPU mismatch): {}",
-                    err
-                );
-                (None, None)
+        // Every kernel below goes through NVRTC at build time; when the NVRTC
+        // library itself is absent, skip them wholesale instead of letting the
+        // first `compile_ptx` panic on the missing shared library.
+        let nvrtc_available = runtime.nvrtc;
+        if !nvrtc_available {
+            println!(
+                "Warning: NVRTC runtime library not found (nvrtc64_120_0.dll); \
+                 NVRTC-compiled kernels are disabled (atomic path, INT ALU, verify engine, \
+                 GPU buffer generation)"
+            );
+        }
+        let (atomic_module, atomic_fn) = if nvrtc_available {
+            match build_atomic_kernel(&ctx) {
+                Ok((module, func)) => (Some(module), Some(func)),
+                Err(err) => {
+                    println!(
+                        "Warning: Atomic kernel build failed (possibly CUDA vs GPU mismatch): {}",
+                        err
+                    );
+                    (None, None)
+                }
             }
+        } else {
+            (None, None)
         };
         // INT ALU kernel is arch-targeted (needs DeviceInfo), so query SM first.
         let info = query_device_info_for_index(gpu_index)?;
-        let (intalu_module, intalu_fn) = match super::int_alu::build_intalu_kernel(&ctx, &info) {
-            Ok((module, func)) => (Some(module), Some(func)),
-            Err(err) => {
-                println!(
-                    "Warning: INT ALU kernel build failed (INT stress path disabled): {}",
-                    err
-                );
-                (None, None)
+        let (intalu_module, intalu_fn) = if nvrtc_available {
+            match super::int_alu::build_intalu_kernel(&ctx, &info) {
+                Ok((module, func)) => (Some(module), Some(func)),
+                Err(err) => {
+                    println!(
+                        "Warning: INT ALU kernel build failed (INT stress path disabled): {}",
+                        err
+                    );
+                    (None, None)
+                }
             }
+        } else {
+            (None, None)
         };
         // Ride-on-load verification engine (up to 3 lanes share the reports).
         // Address-walk slab is OPT-IN via --verify-slab (enable_verify_slab
@@ -144,15 +172,19 @@ impl CudaBackend {
         // kernels, not WDDM pressure — fixed, slab runs clean in the triple
         // mix.)
         let verify_slab_pct: u32 = 0;
-        let verify = match VerifyEngine::build(&ctx, &info, 3, verify_slab_pct) {
-            Ok(engine) => Some(engine),
-            Err(err) => {
-                println!(
-                    "Warning: verify engine build failed (ride-on-load detectors disabled): {}",
-                    err
-                );
-                None
+        let verify = if nvrtc_available {
+            match VerifyEngine::build(&ctx, &info, 3, verify_slab_pct) {
+                Ok(engine) => Some(engine),
+                Err(err) => {
+                    println!(
+                        "Warning: verify engine build failed (ride-on-load detectors disabled): {}",
+                        err
+                    );
+                    None
+                }
             }
+        } else {
+            None
         };
         Ok(Self {
             device_index: gpu_index,
@@ -166,6 +198,7 @@ impl CudaBackend {
             _intalu_module: intalu_module,
             intalu_fn,
             verify,
+            nvrtc_available,
             gpu_generate: false,
             gpu_fill: None,
             info,

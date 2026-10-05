@@ -88,6 +88,11 @@ impl CudaBackend {
     /// Opt in to device-side stress-buffer generation. Builds the NVRTC fill
     /// kernels eagerly so per-burst paths stay allocation-free.
     pub fn enable_gpu_generate(&mut self) -> Result<(), BackendError> {
+        if !self.nvrtc_available {
+            return Err(BackendError::Other(
+                "NVRTC runtime library is not available".into(),
+            ));
+        }
         if self.gpu_fill.is_some() {
             self.gpu_generate = true;
             return Ok(());

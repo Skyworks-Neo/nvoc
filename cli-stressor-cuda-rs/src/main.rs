@@ -34,8 +34,8 @@ use cli_stressor_cuda_rs::cuda_backend;
 
 #[cfg(feature = "cuda")]
 use cuda_backend::{
-    enumerate_cuda_devices, resolve_device_index_by_pci_bus, resolve_device_index_by_sorted_index,
-    resolve_device_index_by_uuid,
+    CudaRuntimeLibs, enumerate_cuda_devices, resolve_device_index_by_pci_bus,
+    resolve_device_index_by_sorted_index, resolve_device_index_by_uuid,
 };
 
 // Stressor Vulkan engine (optional). Only compiled when the crate is built with
@@ -310,6 +310,13 @@ struct Args {
     /// write-density cadence on dedicated buffers.
     #[arg(long, default_value_t = false)]
     verify_slab: bool,
+
+    /// Directory holding the CUDA runtime libraries (cuBLAS / NVRTC / cudart,
+    /// and the NVRTC builtins); may also be a CUDA toolkit root (its bin/ or
+    /// lib/ subdirectory is probed). Loaded before any CUDA call so the DLLs
+    /// do not have to sit next to this executable.
+    #[arg(long, value_name = "DIR")]
+    cuda_path: Option<String>,
 
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
@@ -1025,8 +1032,33 @@ fn format_uuid_hex(uuid: &[u8; 16]) -> String {
         .join("")
 }
 
+/// Preload the CUDA runtime libraries from `--cuda-path` so every later CUDA
+/// call (and cudarc's own dynamic loads) resolves against them.
+#[cfg(feature = "cuda")]
+fn apply_cuda_path(dir: &std::path::Path) {
+    match CudaRuntimeLibs::preload_from_dir(dir) {
+        Ok((root, loaded)) => {
+            println!(
+                "{}",
+                stylize(
+                    &format!(
+                        "[CUDA] Preloaded {} runtime libraries from {}",
+                        loaded.len(),
+                        root.display()
+                    ),
+                    false
+                )
+            );
+        }
+        Err(err) => eprintln!("{}", stylize(&format!("Warning: {}", err), true)),
+    }
+}
+
 #[cfg(feature = "cuda")]
 fn print_cuda_gpu_list() -> Result<(), String> {
+    // Enumeration goes through cudarc's driver accessor, which panics when the
+    // driver library is missing; probe first for a clean message.
+    CudaRuntimeLibs::probe().require_driver()?;
     let mut devices =
         enumerate_cuda_devices().map_err(|e| format!("failed to enumerate devices: {e}"))?;
     devices.sort_by(|a, b| match (a.pci_bus, b.pci_bus) {
@@ -1348,6 +1380,13 @@ pub fn run_from_args() {
         verify_cfg.self_test = false;
     }
 
+    // Must run before any CUDA call: the preloaded libraries are what the
+    // capability probes and cudarc's own (panicking) loaders then find.
+    #[cfg(feature = "cuda")]
+    if let Some(dir) = args.cuda_path.as_deref() {
+        apply_cuda_path(std::path::Path::new(dir));
+    }
+
     if args.list_gpus {
         match print_cuda_gpu_list() {
             Ok(()) => std::process::exit(0),
@@ -1384,6 +1423,14 @@ pub fn run_from_args() {
             std::process::exit(2);
         }
     };
+
+    // Pre-flight runtime check: device resolution touches the driver library
+    // and the backend needs cuBLAS, both of which panic inside cudarc when the
+    // DLLs are absent; report a clean error before any of that runs.
+    if let Err(err) = CudaRuntimeLibs::probe().require_stress_libs() {
+        eprintln!("{}", stylize(&format!("CUDA unavailable: {}", err), true));
+        std::process::exit(1);
+    }
 
     let gpu_device_index = match resolve_gpu_device_index(&args) {
         Ok(idx) => idx,

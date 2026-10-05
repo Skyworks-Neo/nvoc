@@ -12,6 +12,7 @@
 //! - [`gpu_fill`]: opt-in device-side stress-buffer generation (NVRTC).
 //! - [`kernels`]: shared NVRTC module-loading helpers.
 //! - [`device`]: device enumeration and selection (UUID / PCI / sorted index).
+//! - [`runtime_probe`]: non-panicking probes for the CUDA runtime DLLs.
 
 mod atomic;
 mod backend;
@@ -22,6 +23,7 @@ mod int_alu;
 mod kernels;
 mod lanes;
 mod mem_ops;
+mod runtime_probe;
 mod verify_kernels;
 
 // `CudaMatrix` / `CudaOutput` are the `Backend::Matrix` / `Backend::Output`
@@ -37,3 +39,4 @@ pub use device::{
     enumerate_cuda_devices, resolve_device_index_by_pci_bus, resolve_device_index_by_sorted_index,
     resolve_device_index_by_uuid,
 };
+pub use runtime_probe::CudaRuntimeLibs;

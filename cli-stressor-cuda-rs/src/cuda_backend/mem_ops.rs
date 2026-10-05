@@ -200,12 +200,13 @@ impl CudaBackend {
         // Address-walk windows: when the slab is active, each lane works on
         // its own sliding view (different physical pages every op) instead
         // of a dedicated buffer parked on the same pages forever.
-        let mut slab_windows: Vec<Option<(usize, usize)>> = Vec::with_capacity(lane_count);
-        let mut bufs: Vec<Option<cudarc::driver::CudaSlice<u32>>> = Vec::with_capacity(lane_count);
+        // Slab windows only exist with the verify engine; without one every
+        // lane falls back to a dedicated buffer below.
+        let mut slab_windows: Vec<Option<(usize, usize)>> = vec![None; lane_count];
+        let mut bufs: Vec<Option<cudarc::driver::CudaSlice<u32>>> = vec![None; lane_count];
         if let Some(engine) = &self.verify {
-            for _ in 0..lane_count {
-                slab_windows.push(engine.take_slab_window(words));
-                bufs.push(None);
+            for window in slab_windows.iter_mut() {
+                *window = engine.take_slab_window(words);
             }
         }
         for lane in 0..lane_count {

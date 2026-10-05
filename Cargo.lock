@@ -275,6 +275,7 @@ dependencies = [
  "clap",
  "cudarc",
  "half",
+ "libloading 0.9.0",
  "matrixmultiply",
  "naga",
  "nvoc-cli-common",
