@@ -420,3 +420,15 @@ power_command 的 FFI 与 hi 封装（`power_command`/`set_power_command`）在�
 - 侧观察：写后 `get-pwr-cur-info` 的 Control 几何检测显示 N/A（写前为 yes），通道表 identity/行集也有漂移——控制块状态被租约写扰动后的读法归因待查（不阻塞）。
 - 恢复配方：`set-power-command 250`（回 250000 mW）或 `set-pwr-cur-limit 2 250w`（走窗钳核心，=窗口上界即基线）；两者均已被读回链覆盖。**持久性未验证**（重启/驱动重载后是否回落 250 W 待测）。
 - 待办：4060(4060L) 提权复验（用户进行中）；负载下实测功耗能否真超 250 W（Cap 显示≠实际拉得动，受 VRM/供电接头约束）；超调写（>板功率数倍）的保护性包络是否要在 nvapi-rs 加（当前无任何钳制）。
+
+#### §18.8.2 负载证伪：租约写=回显层，非执行层（2026-10-06 用户实测）+ 保护性包络落地
+
+用户压力测试推翻 §18.8.1 的执行层解读：
+
+- `set-power-command 300` 后读回 300000 mW、NVML/nvidia-smi Cap 显示 300W——但负载下功率钳依然撞**合法滑条窗口上限**（P100 = 250 W）。即 `power_command`（0x17695269）租约单元只是**回显层**（GET/NVML/显示面跟随），**不是执行层**；§18.8.1/56d5aea 的"执行中上限抬到 300 W"解读作废。
+- 结论收敛回 nvpwrctl §6：执行层抬顶（超出滑条窗）只有两条真路——①内核写 RM 策略 UPPER（root+0x3D24，nvpwrctl 配方；本仓 kmd/pmxdrv 通道已就绪，可作下一车道）；②vBIOS 功率表（MPT 传统）。租约写的正确定位：回显一致性写（让遥测/显示面与意图一致），价值与风险都远小于原判读。
+- **保护性包络落地**（§18.8.1 待办③ + nvpwrctl §7.6 能力门规范最小实现）：
+  - nvapi-rs：`set_power_command_checked`（基线 GET → policyId-0 板功率锚点 → 包络 `[1 kW, 2×默认]`，无锚=拒（能力门）→ 写+读回验证，返回 `PowerCommandWrite{baseline,applied,board_default_mw}`）；raw `set_power_command` 保留给显式旁路。包络纯函数 `power_command_envelope_max_mw` + 常量导出，单测锚定 250W→300W（1.2×，过）与 300 kW 笔误（拒）。
+  - core：`SetNvapiPowerCommand{channel,command,value,force}` → `PowerCommandWriteOutcome`（baseline/applied/board_default/envelope_bypassed）。
+  - cli：`set-power-command --force`；拒绝路径用锚点复检给出**精确包络消息**（含"回显层 only / 执行层走 set-pwr-cur-limit / --force 旁路"提示）；成功输出带 `baseline_before(_W)/board_default_mW/envelope/enforcement_note`，human 渲染给恢复命令提示；`get-power-command` request 格加同款警示。
+- 剩余待办：4060 提权复验照旧；**执行层抬顶车道**（kmd/pmxdrv 写 UPPER 或 vBIOS）另立任务书；租约写的持久性（重启回落）仍未测。

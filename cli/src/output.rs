@@ -317,16 +317,22 @@ pub(super) fn format_power_command(output: &Value) -> Vec<String> {
     ) {
         lines.push(format!("    {mw} mW ({watt:.1} W)"));
     }
+    if command == "request" {
+        lines.push(
+            "    note: echo layer — load-time enforcement stays at the legal slider window (set-pwr-cur-limit)".to_string(),
+        );
+    }
     lines
 }
 
 /// Human output for `set-power-command` — the post-write readback nvapi-rs
-/// verified is what the formatter prints.
+/// verified is what the formatter prints, with the envelope facts and the
+/// echo-layer warning (the lease does NOT move load-time enforcement).
 pub(super) fn format_set_power_command(output: &Value) -> Vec<String> {
     let channel = output.get("channel").and_then(Value::as_u64).unwrap_or(0);
     let command = output.get("command").and_then(Value::as_str).unwrap_or("?");
     let value = output.get("value").and_then(Value::as_u64).unwrap_or(0);
-    match (
+    let mut lines = match (
         output.get("value_mW").and_then(Value::as_u64),
         output.get("value_W").and_then(Value::as_f64),
     ) {
@@ -336,7 +342,29 @@ pub(super) fn format_set_power_command(output: &Value) -> Vec<String> {
         _ => vec![format!(
             "  Power command set: channel {channel} {command} = {value}"
         )],
+    };
+    if let Some(baseline) = output.get("baseline_before_W").and_then(Value::as_f64) {
+        lines.push(format!(
+            "    baseline: {baseline:.1} W — restore with set-power-command {baseline:.0}"
+        ));
+    } else if let Some(baseline) = output.get("baseline_before").and_then(Value::as_u64) {
+        if baseline == u32::MAX as u64 {
+            lines
+                .push("    baseline: unset sentinel (0xFFFFFFFF) — nothing to restore".to_string());
+        } else {
+            lines.push(format!("    baseline: {baseline} raw"));
+        }
     }
+    if let Some(default_mw) = output.get("board_default_mW").and_then(Value::as_u64) {
+        lines.push(format!("    board default: {default_mw} mW"));
+    }
+    if let Some(envelope) = output.get("envelope").and_then(Value::as_str) {
+        lines.push(format!("    envelope: {envelope}"));
+    }
+    lines.push(
+        "    ECHO LAYER ONLY: GET/NVML/nvidia-smi read this value; load-time enforcement stays at the legal slider window (set-pwr-cur-limit)".to_string(),
+    );
+    lines
 }
 
 pub(super) fn format_power_mode(output: &Value) -> Vec<String> {
@@ -3548,6 +3576,56 @@ fn indent_spaces(indent: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn set_power_command_renders_envelope_and_echo_warning() {
+        let value = serde_json::json!({
+            "channel": 0,
+            "command": "request",
+            "value": 300000,
+            "value_mW": 300000,
+            "value_W": 300.0,
+            "baseline_before": 250000,
+            "baseline_before_W": 250.0,
+            "board_default_mW": 250000,
+            "envelope": "board_default_x2",
+        });
+        let lines = super::format_set_power_command(&value);
+        assert!(lines[0].contains("300000 mW (300.0 W)"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("baseline: 250.0 W")
+                && l.contains("restore with set-power-command 250")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("board default: 250000 mW")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("envelope: board_default_x2")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("ECHO LAYER ONLY")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn get_power_command_request_carries_echo_note() {
+        let value = serde_json::json!({
+            "channel": 0, "command": "request", "value": 250000,
+            "value_mW": 250000, "value_W": 250.0,
+        });
+        let lines = super::format_power_command(&value);
+        assert!(lines.iter().any(|l| l.contains("echo layer")), "{lines:?}");
+        // observed cells stay clean
+        let value = serde_json::json!({ "channel": 0, "command": "observed", "value": 7 });
+        let lines = super::format_power_command(&value);
+        assert!(!lines.iter().any(|l| l.contains("echo layer")), "{lines:?}");
+    }
     use super::*;
     use crate::{Command, TargetResult, all_commands};
     use serde_json::json;

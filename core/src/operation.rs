@@ -2308,20 +2308,47 @@ impl GpuOperation for QueryNvapiPowerCommand {
     }
 }
 
+/// Outcome of a power-command lease write: the applied cell plus the facts
+/// recovery rendering needs (the pre-write cell, the envelope anchor) and
+/// whether the safety envelope was bypassed.
+#[derive(Clone, Copy, Debug)]
+pub struct PowerCommandWriteOutcome {
+    /// The cell before the write; `None` when the GET refused or the write
+    /// ran with the envelope bypassed before any GET.
+    pub baseline_mw: Option<u32>,
+    /// The value the driver accepted and read back.
+    pub applied_mw: u32,
+    /// The policyId-0 board default (mW) the envelope anchored on; `None`
+    /// on the bypassed path (the anchor is still read for display when it
+    /// answers).
+    pub board_default_mw: Option<u32>,
+    pub envelope_bypassed: bool,
+}
+
 /// ExtendedLimits PowerCommand channel write (NDA 0x17695269, packet stamp
-/// v1|1320; xOCD 2.0 `SetPowerCommand`). nvapi-rs rejects the 0/0xFFFFFFFF
-/// unset sentinels, writes, and verifies by re-read. DANGEROUS where
-/// `command` = 0xFE — it drives the kernel-side power-cap request and there
-/// is no implicit restore; the caller owns the baseline.
+/// v1|1320; xOCD 2.0 `SetPowerCommand`).
+///
+/// **Echo-layer semantics** (2026-10-06 P100 load test): the lease cell is
+/// what GET/NVML/`nvidia-smi` display as the cap, but load-time enforcement
+/// still clamps at the legal slider window — the write does NOT move the
+/// enforced wall (docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md
+/// §18.8.2).
+///
+/// Default path goes through nvapi-rs' checked write (board-power envelope:
+/// policyId-0 default × 2, floor 1 W; no anchor = refuse — the nvpwrctl
+/// §7.6 capability gate). `force` bypasses the envelope with the raw write
+/// (baseline capture is best-effort there). No implicit restore on either
+/// path — the driver has no unset write, the caller owns the baseline.
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvapiPowerCommand {
     pub channel: u8,
     pub command: u32,
     pub value: u32,
+    pub force: bool,
 }
 
 impl GpuOperation for SetNvapiPowerCommand {
-    type Output = u32;
+    type Output = PowerCommandWriteOutcome;
 
     fn kind(&self) -> OperationKind {
         OperationKind::SetNvapiPowerCommand
@@ -2329,9 +2356,28 @@ impl GpuOperation for SetNvapiPowerCommand {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let gpu = target.nvapi()?;
-        gpu.set_power_command(self.channel, self.command, self.value)
-            .map_err(Error::from)?;
-        Ok(self.value)
+        if self.force {
+            let baseline = gpu.power_command(self.channel, self.command).ok();
+            let board_default_mw = gpu.board_power_default_mw().ok().flatten();
+            gpu.set_power_command(self.channel, self.command, self.value)
+                .map_err(Error::from)?;
+            Ok(PowerCommandWriteOutcome {
+                baseline_mw: baseline,
+                applied_mw: self.value,
+                board_default_mw,
+                envelope_bypassed: true,
+            })
+        } else {
+            let write = gpu
+                .set_power_command_checked(self.channel, self.command, self.value)
+                .map_err(Error::from)?;
+            Ok(PowerCommandWriteOutcome {
+                baseline_mw: write.baseline,
+                applied_mw: write.applied,
+                board_default_mw: write.board_default_mw,
+                envelope_bypassed: false,
+            })
+        }
     }
 }
 
