@@ -95,8 +95,8 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 |---|---|---|
 | Core=0 / XBAR=1 / SYS=2 / HUB=3 / Memory=4 | Gpc=0 / Xbar=1 / Sys=2 / Hub=3 / M=4 | 一致 |
 | Processor=公开 slot7 | Hotclk=7（文档称 PROCESSOR(7)） | 一致 |
-| **UPROC=私有 20** | **Pwr=20** | 同号不同名 ⚠ 需实机裁决 |
-| **Video/NVD=私有 21；实时频率走公开 slot8** | **Msd=21；slot8=Pclk0** | 双重冲突 ⚠ xOCD 实测行为（Video 从 slot8 读出）建议优先采信，待实机 |
+| **UPROC=私有 20** | **Pwr=20** | **用户裁决（2026-10-05）：我方命名维持**；xOCD 的 UPROC 记为 50 系侧叫法 |
+| **Video/NVD=私有 21；实时频率走公开 slot8** | **Msd=21；slot8=Pclk0** | **用户裁决：Msd = media subsystem domain，命名正确**——GPU-Z 与 nvidia-smi 均将 MSD 显示为 "video clock"；xOCD 的 Video/NVD=21 判定为 50 系兼容层命名（未考虑老卡），我方不改名（sys 域表注释已落） |
 | NVVDD=轨 bit0 / MSVDD=轨 bit1 | power.rs rail_mask bit0/bit1 | 一致（xOCD 硬编码无动态名表） |
 | Board Policy Get（0x70916171） | ClientPowerPoliciesGetStatus | 同 ID 不同名 |
 | MSVDD clock ratio | 我们无对应物 | 新概念（TopRels 边比率） |
@@ -141,6 +141,7 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 ## 12. 跨机验证 E-matrix（只读优先；全部为 GET/探测，禁写）
 
 前置：0x0700 系写接口在无裁决前不得实装写路径；E1/E6 只读即可定案。
+**探针已就位**（nvapi-rs v0.2.x@6f14581）：E1/E3/E4/E5/E6 跑 `cargo test -p nvapi --test xocd_gap_probe_live -- --nocapture --ignored`（GET-only，JSON 落 `reverse/xocd/`）；E2 用 `--test volt_rails_raw_dump`。
 
 | 实验 | 内容 | 命令/探针 | 卡 | 期望回填 |
 |---|---|---|---|---|
@@ -152,14 +153,30 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 | E6 | BoostLock 七域表 | 0xE440B867 GET，count 是否 7 | 4060L/P100 | 表存在性与 mode/value 解码 |
 | E7（远期） | RTX50 Large OCP / isolated-P0 v2 / Astral ITE | — | 50 系实机（用户暂无） | 搁置，静态结论已足 |
 
-## 13. 决断清单（供裁决）
+## 13. 决断清单（供裁决；2026-10-05 用户裁决后状态）
 
-- **P0（静态证据已足，可直接落 sys 层，均为已注册 ID 的补封装）**：OCP 通道解析（读侧先行）②③⑤ 裁决后接写；0xD14B69CF 封装；TopRels 控制 0xCBFF71D0/0xEF3D20EA 封装；V/F SET 0x0733E009 封装；BoostLock/ThermChannel/域路由 v4 注释与布局增量。工作量：每个 ≤1 天（结构已有或有 xOCD 精确偏移）；风险=布局矛盾 ①②，落前先跑对应 E。
+- **P0（✅ 已实施，v0.2.x@6f14581，见 §14 台账）**：OCP 通道解析+限值写（双几何检测）、0xD14B69CF 类型化封装、TopRels 控制封装、SetPstates20（offset RMW + RTX50 隔离模板）、BoostLock/ThermChannel/MSD 注释与解码增量、deltaScale 判据。**注意**：写路径已实装但未实机验收——按安全规约，首次实机使用前先跑对应 E 实验裁决布局矛盾。
 - **P1（A/B 后落）**：①⑥ V/F 偏移与 deltaScale 判据、④ 域 20/21 更名、TopRels 语义注释。
 - **P2（设计借鉴，GUI/TUI/core 层另立任务）**：回滚栈+undo、双速遥测、Profile 存储、opt-in 门控、self-test 档、基准 worker 协议。
 - **不做**：外设电流级联（ITE/PSU/WireView）依赖特定硬件白名单，价值低；smi 通道（我们已有原生 NVAPI 等价物）；PawnIO（当前无绕驱动需求）。
 
-## 14. 来源与置信度
+## 14. 落地台账（2026-10-05，用户裁决后实施）
+
+用户裁决：①「补充查漏 2 和 3」（四个 SET 写路径 + OCP 真身）→ nvapi-rs **直接提交 v0.2.x（不开分支）**；②域 20/21 维持我方命名（Msd = media subsystem domain）；③可借鉴设计后续再做；④命名等矛盾实验放到另一台机器设计。
+
+**nvapi-rs v0.2.x@6f14581**（直接提交，fmt/clippy/单测全绿，sys 45 + safe 26）：
+- `0xD14B69CF` 类型化封装：sys 语义槽位表 `clk_ctrl_entry_v2_semantics`（0x0F→freq=VALUES[2]/volt=VALUES[4]，非 0x0F→[0]/[1]，GPC 类 privateId==0 偏移已文档化）+ safe `set_clk_domain_freq_offset` / `set_clk_domain_voltage_demand`（µV，±500 mV 接口钳位，走既有 RMW 配方）。
+- TopRels 封装：`top_rels_ratio` / `set_top_rels_ratio(_raw)`（唯一关系门控 + 快照/回写/读回/回滚全配方，0.7–1.2 包络，0.9 保留 0xE660 硬件字面量；语义命名分歧③注释保留）。
+- `SetPstates20`：`set_pstate_clock_offset`（戳级联 3→2，[min,max] 钳位，RMW+读回+回滚）+ `set_p0_reference_clock_isolated`（RTX50 隔离模板写）。
+- **OCP**：sys `NV_GPU_CLIENT_POWER_CHANNELS_INFO_V4`（2672B，policyId/subtype/min/default/max，OCP 四元组常量）+ 0x10A4C 控制**双几何检测**（xOCD 紧凑 40B@28 vs 我们 46296 RE 的 136B@1756——同戳两代布局，实现期新发现）+ safe `power_channel_policies` / `power_channel_control` / `ocp_channels` / `set_power_channel_value`（mA 硬钳 1000..5001000）。
+- `boost_lock_snapshot`（七域表解码 + 时钟范围锁/电压锁谓词）+ `vf_delta_scale`（arch∈[0x130,0x140) 且 range ±2MHz ⇒ ×2 判据）+ MSD/media subsystem 与 ThermChannel 索引语义注释。
+- 探针：`tests/xocd_gap_probe_live.rs`（**GET-only**，`--ignored`）：E1（V/F 双几何对照）、E3（OCP 通道+几何检测）、E4（域槽位实况）、E5（TopRels 边判别+比率窗口扫描）、E6（七域表）；E2 复用既有 `tests/volt_rails_raw_dump.rs`。JSON 落 `reverse/xocd/` 供跨机 diff。
+
+**实施期修正（agentA 误判）**：0x0733E009 V/F 曲线 SET **并非未封装**——`set_vfp_table`（src/gpu.rs:1393）早已走 `NvAPI_GPU_ClockClientClkVfPointsSetControl`（nvapioc 几何：条目基 40/delta@+20，R610.74 实测纯 kHz）。真正缺口只有：①xOCD 几何（基 100/delta@+24）与 nvapioc 几何的矛盾待 E1 裁决；②deltaScale 判据（已落 `vf_delta_scale`）。§3/§9 相应条目作废。
+
+**剩余未做**：查漏清单 #8（NVML 增量：GetClockInfo 三域/Utilization/MemoryInfo/TemperatureV/ClockOffsets/Architecture，属主仓 core 层）；可借鉴设计（用户指示后续再做）；CLI/GUI 命令面暴露（另批）；写路径的实机验收（先跑对应 E 实验）。
+
+## 15. 来源与置信度
 
 - 反编译源：`C:/Users/YLW-XLAB/ida-scratch/xocd-decomp`（本机；复现见 §1，xocd-app.exe SHA256 锁定）。未混淆，全部结论有 `文件:行号` 引用，收录于 `reverse/xocd/agentA-control.md` 与 `agentB-telemetry.md`（untracked 台账）。
 - 我方基线：`nvapi-rs/sys/src/nvid.rs`（注册比对 55/55）、`sys/src/gpu/{clock,power}.rs`、`src/gpu.rs`；关键「未封装」结论经主线程独立 grep 复核（0xD14B69CF/0xCBFF71D0/0xEF3D20EA/0x0733E009 在 src/ 0 引用；PowerPolicyId 仅 Default=0；TGP-watt 注释在 nvid.rs:1404-1466）。
