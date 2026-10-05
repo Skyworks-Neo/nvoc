@@ -213,3 +213,17 @@ FlatUI 重写：可拖拽绘图（键盘方向键微调）、预设 Silent/Balan
 - 若将来要直读板载采样芯片（INA3221 类）或改 BAR（GPU-Z 那条路）：优先选「借用已签通用代理」或「测试签名」并非唯一解——现有 NVAPI PowerMonitor per-rail 已覆盖大部分诉求；真需要时，PawnIO 模式（已签执行器 + 用户态小程序）是成本最低的第三条路。
 - 反面教训（写进评估口径）：签名只保证"能加载"，不保证"安全/被允许"——RTCore64 是 EV 正规签却进黑名单；而 2009 年的 nvoclk64 一无 WHQL 二无 EV，靠祖父条款活到今天。做依赖内核驱动的设计时，**黑名单/HVCI 风险要按"驱动身份"而非"签名链"评估**。
 - 低：无（本节所有条目均为 2.0.0 静态证据；E-matrix 式实机探针列于 §6）。
+
+### 8.4 内核驱动选型建议（2026-10-05，PawnIO 源码 + 本机驱动一手核对）
+
+若 nvoc 将来引入内核态修改（xOCD 类功率抬顶；或直读采样芯片/BAR），候选排序：
+
+1. **PawnIO（首选）**。核对 `reverse/PawnIO-master`（用户 winget 安装 2.2.0 对应的驱动源码，`namazso.PawnIO`）：
+   - **原语面全覆盖**：`pawn/include/native.inc` 暴露 `physical_read/write_byte|word|dword|qword`（任意物理内存）、`io_space_map/unmap`、`virtual_read/write_*`、`virtual_cmpxchg_*2`（原生比较交换）、`data_v2p`、`invoke`（任意内核函数指针调用）、PCI config/MSR 全套——xOCD 的 PMX 写路径（物理页映射+对比写入）可 1:1 复刻；xOCD 源码里 "PawnIO's thermal module cannot replace it" 仅指官方 `Nvidia.p` 模块只做 GB20x 热读，**不是 PawnIO 能力不足**。
+   - **扫描安全**：`physical_read` 实现为 `MmGetVirtualForPhysical` + `__try/__except`（`natives_impl_windows.cpp:90-127`），无效物理地址返回状态码不蓝屏；PMX 相反（`MmMapIoSpace`，未验证映射可能终止进程，故其自动根扫描被禁用）——PawnIO 更适合做内存扫描型发现。
+   - **签名/分发（本机实证）**：服务 `PawnIO`（KERNEL_DRIVER/Demand start）、驱动在 DriverStore、winget id `namazso.PawnIO`；驱动签名主体 = CN=Microsoft Windows Hardware Compatibility Publisher（WHQL，2025-07-17 签发，Valid）。
+   - **摩擦点**：模块签名只认内置单公钥 `k_pubkey_namazso_2023`（`vm.cpp:784-808`；包格式 `[len][RSA-4096 sig][bytecode]`；`PAWNIO_UNRESTRICTED` 编译开关才跳过）→ 自写模块须走上游 `PawnIO.Modules` 仓库贡献（模块 LGPL-2.1+）或让用户装 Unrestricted 版；官方模块清单中无通用物理内存模块（我们的需求天然对应一个新上游模块，如通用 PhysicalMemory.p）。用户态经 IOCTL/PawnIOLib 调用不受 GPL 传染（README 例外条款），Pawn 接口加载的模块须 GPL 兼容。
+2. **Intel ME Tools（xOCD 的 pmxdrv 路线，次选）**：已端到端实证、零签名成本（2018 双签）；原语=按页 map/unmap 物理地址（`PmxPhysicalMemory.cs`：IOCTL 2239160/2239164，24 B 包，页@+4/数量@+12/返回用户 VA@+16）。缺点：借来的（Intel 无义务维持）、冻结在 2018、随包分发该二进制的许可存疑、原语窄（无 cmpxchg/无 PCI config 面）、自身同属"宽权限代理"画像（长期黑名单风险按 §8.2-5 口径按驱动身份评估）。
+3. **自研驱动**：EV+attestation（≈$300–700/年+企业实体+CI 签名流程）；测试签名（NvpwrControl 路线）零成本但用户须开 test mode（桌面水印、与内存完整性/部分反作弊冲突）。仅在要自控安全边界或拒依赖第三方时值得。
+
+**落地形态建议**：内核后端做成 feature-gated provider（检测到 PawnIO 且用户显式启用才走；NVAPI 保持默认与回退）；doctor 增 PawnIO 检测 + `winget install namazso.PawnIO` 引导；首个实验建议只读——复刻 xOCD 的「低物理内存页表根发现→四级走查→读 nvlddmkm 头比对磁盘镜像」以验证可行性（只需 `physical_read_*`，与官方模块的 GB20x 门控无关，老卡亦可验）。
