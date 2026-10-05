@@ -374,9 +374,9 @@ P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply
 
 ### 18.6 ExtendedLimits 面的活体测试流程（2026-10-05 用户提问）
 
-用户问 xOCD 2.0 ExtendedLimits 面（§4 的 `power_graph_roles`/`power_command`/`power_control_input`）有没有测试流程。**此前只有离线字节回放单测（`xocd2_extended_limits_tests`、`xocd2_power_graph_decode_tests`），无活体探针。** 本次新增 GET-only 探针 `e9_extended_limits_surface`（`tests/xocd_gap_probe_live.rs`）：`power_graph_roles`（0x2BA030，-9 时按 xOCD 方式合成 347124B 布局）+ `power_command` 0..31 通道 0xF8(observed-only) 读 + 由 graph role 派生的 `power_control_input`。`set_power_command`（唯一 ExtendedLimits SET）不在此探针内调用，保持只读。
+用户问 xOCD 2.0 ExtendedLimits 面（§4 的 `power_graph_roles`/`power_command`/`power_control_input`）有没有测试流程。**此前只有离线字节回放单测（`xocd2_extended_limits_tests`、`xocd2_power_graph_decode_tests`），无活体探针。** 本次把 GET-only `e9_extended_limits_surface` 扩为**全函数覆盖探针**（`tests/xocd_gap_probe_live.rs`）：`power_graph_roles`（0x2BA030，-9 时按 xOCD 方式合成 347124B 布局）+ `power_command` **ch 0..31 × cmd {0xF8,0xFE} 双向扫描** + 由 graph role 派生的 `power_control_input` + **`set_power_command` 双门控自恢复写臂**（identity→扰动→恢复，恢复失败响亮报错；只写 0xF8，哨兵 baseline 跳过）。完整分级验收流程（L0 离线 / L1-L2 只读 / L3 写入 / L4 封装裁决门）独立成文：`docs/reverse-engineering/nvapi/xocd-extendedlimits-test-plan.md`。
 
-- **P100 实机判读**：`power_graph_roles` = `Err(ArgumentRange)`（Pascal 无 Ada/Blackwell 角色拓扑，被正确拒绝）；`power_command` 仅 ch0 接受（value=0xFFFFFFFF=unset 哨兵），ch1..31 `GetControl` 返回 Error——Pascal 上该面基本 inert；`power_control_input` 因无 graph/shared role 跳过。**结论：该探针流程在 pre-Ada 上优雅降级，是后续 Ada/Blackwell 机器上的验证入口。** 快照 `reverse/xocd/e9-extended-limits.json`。
+- **P100 实机判读**：`power_graph_roles` = `Err(ArgumentRange)`（Pascal 无 Ada/Blackwell 角色拓扑，被正确拒绝）；`power_command` **仅 ch0 接受**——0xF8 返回 `0xFFFFFFFF`(unset 哨兵)，**0xFE 返回 250000（= 板功率 250 W 的 mW 值，与 NVML/通道表三面一致）**，ch1..31 两命令均 `GetControl` Error；`power_control_input` 因无 graph/shared role 跳过；写臂因只写 0xF8 且 ch0 baseline 为哨兵而跳过（预期）。**结论：该探针流程在 pre-Ada 上优雅降级，真正的验收需 Ada/Blackwell 机器；是后续封装决策的验证入口。** 快照 `reverse/xocd/e9-extended-limits.json`。
 
 ### 18.7 CLI 出口合并：`set-power-limit` + `set-ocp-limit` → `set-pwr-cur-limit`（2026-10-05 用户指示）
 
