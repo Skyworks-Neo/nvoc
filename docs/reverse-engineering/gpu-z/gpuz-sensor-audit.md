@@ -121,40 +121,43 @@ FileVersion 2.71.0.0                      "(c) 2007-2026 TechPowerUp"
 | PerfCap Reason 五位 | PerfLimits 位 | 一致 |
 | Fan Speed (%) | Fan1/Fan2 percent | 一致 |
 
-## 9. 查漏补缺清单（我方缺口，按可达性分类）
+## 9. 查漏补缺清单（裁决后实施状态）
 
-**NVAPI 可补（ID 已注册，缺封装或 CLI 面）**
-1. `ClockClkDomainsMeasureFreq(0x527FC458)`——域频率测量（呼应 clock.rs:1452 MEASURE 未接线 TODO）。
-2. `GetECCStatusInfo/GetECCErrorInfo`——ECC 错误计数读取面（get-info 增量）。
-3. `GetSerialNumber`、`GetRamMaker`——身份面补全（RamMaker 与我方 vBIOS 侧 RAM 厂商解析可交叉）。
-4. `GetValidGpuTopologies`/`GetPerGpuTopologyStatus`——拓扑读取面（呼应 fabric 车道 99e0e4a）。
-5. `NvAPI_I2CReadEx/I2CWriteEx`——通用 I2C 总线面（高价值+高危；GPU-Z 用它做 INA3221/PMBus 直达，见 §5；写面须提权门控+白名单设备）。
-6. 引擎计数族九件（VPE/ShaderPipe/ShaderSubPipe/SM/SP/TPC/GpuCore/Partition/RasterBackend）——get-info 计算能力补全。
-7. `GetFBWidthAndLocation`、`GetHybridPadInfo`、`GetActiveOutputs`——低频补全。
+> 用户裁决（2026-10-05）：「其他读取面全补」。实施前逐项核对发现 §9 首版**高估了缺口**——`clk_domain_freq_direct`（0x527FC458，hi/gpu.rs:890）、ECC 双 GET（sys/src/gpu/ecc.rs + GpuStatus.ecc）、GetSerialNumber（含 4060L 活体注释）、GetRamMaker、GetFBWidthAndLocation、core/shader_pipe/shader_sub_pipe/partition 计数均为**既有实现，误报撤销**。
+
+**本批已补（nvapi-rs sys/mid/hi + CLI `get-info` 的 `compute_caps` 节）**
+1. `NvAPI_GPU_GetVPECount`、`GetRasterBackendCount`、`GetTotalTPCCount`、`GetTotalSMCount`、`GetTotalSPCount`——五个新计数 FFI + mid 方法 + `PhysicalGpu::compute_caps()` 聚合（NotSupported/NoImplementation → None）。
+2. `NvAPI_GPU_GetActiveOutputs`——FFI + mid + compute_caps。
+3. `NvAPI_GetValidGpuTopologies`——FFI + 静态方法（系统级无句柄参数）；`GetPerGpuTopologyStatus` 已有未再包。
+4. 分区计数 `partition_count` mid 方法补齐（sys FFI 已在，hi 层此前无入口）。
+
+**评估后维持不封装**
+5. `NvAPI_I2CReadEx/I2CWriteEx`——已注册不封装维持（GPU-Z 用它做 INA3221/PMBus 直达；任意设备/寄存器写面 = 高危，评估为 P2 独立任务：提权门控 + 设备白名单 + 只读先行）。
+6. `GetHybridPadInfo`——随本批未做（低频，OEM 二合一混合垫信息，无消费方）。
 
 **结构性不做（维持既有设计决策）**
-8. ExtEscape 0x7037 内核回退——GDI escape 通道不符合我方抽象层路线（4060L 结论）。
-9. 低阶驱动 v8 直读——不做内核驱动（WinRing0 边界结论维持；Microsoft 脆弱驱动黑名单侧原因同旧档）。
+7. ExtEscape 0x7037 内核回退——GDI escape 通道不符合我方抽象层路线（4060L 结论）。
+8. 低阶驱动 v8 直读——不做内核驱动（WinRing0 边界结论维持；Microsoft 脆弱驱动黑名单侧原因同旧档）。
 
 **xOCD 交叉印证（写路径）**
-10. 0x0F4DAE6B SetPstates20 与 0x0733E009 ClkVfPointsSetControl：xOCD 审计四个未封装 SET 中的两个，GPU-Z 独立解析佐证其真实在用——决断后可与 xOCD 卡合并处理。
+9. 0x0F4DAE6B SetPstates20 与 0x0733E009 ClkVfPointsSetControl：GPU-Z 独立解析佐证；xOCD 车道后续判读修正 0x0733E009 本有 set_vfp_table 封装（真实缺口=几何矛盾），以该判读为准。
 
-## 10. 命名冲突 E-matrix（供裁决）
+## 10. 命名冲突 E-matrix（已裁决，2026-10-05）
 
-| # | 矛盾 | GPU-Z 2.71 主张 | 我方现状 | 建议裁决卡 |
+| # | 矛盾 | GPU-Z 2.71 主张 | 我方现状 | **用户裁决与实施** |
 |---|---|---|---|---|
-| ① | 时钟域显示名 | Crossbar Clock | Xbar | P0：CLI 渲染层加显示别名 `Xbar (Crossbar)`，枚举名不动 |
-| ② | 视频域显示名 | Video Clock | Msd（域 20/21） | P0：显示别名 `MSD (Video)`——RTSS/nvidia-smi/GPU-Z 三方一致用 video，我们孤例用 MSD |
-| ③ | L2 域归属 | L2 Clock（独立显示） | Hub（域 4） | P1：E7 实测 Hub 频率 vs GPU-Z L2 后改名；在此之前不动 |
-| ④ | PCIe 吞吐单位 | GB/s | MiB/s（pcie_tx_mibps） | P0：键名/显示二选一——建议显示层换算 GB/s 并保留 JSON 原值 |
-| ⑤ | PWR 轨名 | PWR_SRC Power Draw | PWR PP SRC | P0：显示层统一 PWR_SRC（与 241 通道 GPU-Z 名对齐） |
-| ⑥ | Board 轨名 | Board Power Draw | InputTotalBoard/"Total Board Power Draw" | 维持现状（描述符名为权威，GPU-Z 名已在 gpu_z_rail_name 层）——无冲突 |
-| ⑦ | Chip 轨名 | GPU Chip Power Draw | InputNvvdd/"NVIDIA GPU VDD" | 维持现状（246 同号互证语义一致）；可选别名 |
-| ⑧ | 显存占用键名 | Memory Used (Dedicated)/(Dynamic) | get-info memoryInfo 键 | P1：对齐键名或在 README 记映射 |
-| ⑨ | 利用率键名 | GPU Load / Memory Controller Load / Video Engine Load / Bus Interface Load | dynamic pstates 百分比条目 | P1：CLI 渲染层采用 GPU-Z 同款四名 |
-| ⑩ | 通道类型 0x10/0x11 | ThermChannel 有效温度类型 | 我方 ThermChannelGetStatus 未做类型过滤 | P0（技术性）：ThermChannel 读取补类型过滤，防非温度通道串入 |
-| ⑪ | PowerMonitor 通道索引 | 通道 ID×0x2C 直接索引 | ch0+0x44 + 启发式偏移+置信度 | P1：E5 A/B——若 0x2C 通则成立，disambiguate_power_rails 可删启发式 |
-| ⑫ | 风扇状态结构 | V2 = 0x20AB0 | 我方 FanCoolerGetStatus 封装戳记需复核 | P0（技术性）：核对我方戳记是否 ver2\|0xAB0 |
+| ① | 时钟域显示名 | Crossbar Clock | Xbar | **不改**（维持 Xbar） |
+| ② | 视频域显示名 | Video Clock | Msd（域 20/21） | **已实施**：`Msd/Vid` 双标签（nvenum_display + CLI 两处 domain_name） |
+| ③ | L2 域归属 | L2 Clock（独立显示） | Hub（域 4） | **已实施**：`Hub/L2C` 双标签（用户指定；E7 归因实验不再阻塞改名） |
+| ④ | PCIe 吞吐单位 | GB/s | MiB/s（pcie_tx_mibps） | **不改**（维持 MiB/s） |
+| ⑤ | PWR 轨名 | PWR_SRC Power Draw | PWR PP SRC | **已实施**：ampereoc_rail_name 241 → `PWR_SRC` |
+| ⑥ | Board 轨名 | Board Power Draw | InputTotalBoard | **维持现状** |
+| ⑦ | Chip 轨名 | GPU Chip Power Draw | InputNvvdd | **维持现状** |
+| ⑧ | 显存占用键名 | Memory Used (Dedicated)/(Dynamic) | memoryInfo 键 | **维持现状** |
+| ⑨ | 利用率键名 | GPU Load 等四名 | dynamic pstates 条目 | **维持现状** |
+| ⑩ | 通道类型 0x10/0x11 | ThermChannel 有效温度类型 | 未做类型过滤 | **不采纳** |
+| ⑪ | PowerMonitor 通道索引 | 通道 ID×0x2C 直接索引 | ch0+0x44 + 启发式 | **进一步确认**：E5 探针首证已落（见 §12），跨代再验后删启发式 |
+| ⑫ | 风扇状态结构 | V2 = 0x20AB0 | 我方封装 0x210A8 | **进一步确认**：静态核对完成（同 ID 异 size），活体仲裁挂 E-⑫ |
 
 ## 11. 可借鉴设计
 
@@ -171,20 +174,25 @@ FileVersion 2.71.0.0                      "(c) 2007-2026 TechPowerUp"
 | E2 | 2.71 共享内存导出面 | GPU-Z 运行时枚举 Section 对象（Process Explorer / `handle.exe GPU-Z`） | 本机 | 导出面现名（GPUZShm 后继？）与记录布局 |
 | E3 | I2C 传输后端归属 | windbg 断 NvAPI_I2CReadEx 入口 + GPU-Z 读 Board Power | 本机 | 0x64A080 块读走 NVAPI 还是自带 IOCTL |
 | E4 | ThermChannelGetInfo vs GetStatus A/B | nvoc 探针：0x0BC8163D ver1\|0x44 15 通道 | 1070 | 类型 0x10/0x11 语义 + 20B 记录布局 |
-| E5 | PowerMonitor 通道×0x2C 通则 | nvoc 探针：状态缓冲按 0x2C 步进扫 | 4060L | 0x2C 通则成立→删启发式 |
+| E5 | PowerMonitor 通道×0x2C 通则 | `cargo test -p nvapi --release --test gpuz_powermonitor_0x2c_live -- --ignored --nocapture` | 本机卡**已跑**（2026-10-05）+ 待 4060L | **首证成立**：v1\|0x59C 戳被接受（OK），活通道落 0x2C 网格（+0x2C/+0xB0/+0xDC≈12.2M），启发式偏移（+0x44 等）全零——待 4060L 复验后删 disambiguate_power_rails 启发式 |
 | E6 | 旧 99→122 delta 重建 | 归档 02-conversations GPU-Z 会话日志深挖 | — | 逐条新增 ID 清单 |
-| E7 | Hub == L2？ | nvoc all_clocks 域 4 vs GPU-Z L2 Clock | 1070 | §8 ③ 裁决 |
+| E7 | Hub == L2？ | nvoc all_clocks 域 4 vs GPU-Z L2 Clock | 1070 | 归因确认（改名已按用户裁决先行落地为 Hub/L2C 双标签） |
+| E-⑫ | FanCoolerGetStatus size 仲裁 | 探针：同 ID 分别传 0x210A8 / 0x20AB0 | 活体卡 | 驱动接受哪个（或双收）→ 决定我方戳记是否改 0x20AB0 |
 
-## 13. 决断清单（供裁决）
+## 13. 决断清单（裁决后状态）
 
-- **P0（静态证据足，直接落）**：§10 ①②④⑤＋技术性 ⑩⑫；§9-10 xOCD 双佐证 SET 并卡。
-- **P1（A/B 后落）**：§9-1 MeasureFreq 接线、§9-2/3/4 get-info 补全、§9-5 I2CReadEx 封装评估（含安全设计）、§10 ③⑧⑨⑪。
-- **P2（设计借鉴，另开任务）**：§11-1/2。
-- **不做**：§9-8/9（escape 回退、内核驱动）。
+- **已落**：§10 ②③⑤（命名双标签/轨名）、§9-1~4（compute_caps 补全，nvapi-rs@439ea37 + 主仓 459a26e 卷入的 CLI 节）、§10 ⑪⑫ 的静态/首证部分（探针 gpuz_powermonitor_0x2c_live.rs + cooler.rs 戳记注释）。
+- **用户不改**：§10 ①④⑥⑦⑧⑨。
+- **不采纳**：§10 ⑩。
+- **待确认后落**：§10 ⑪（4060L 复验 0x2C → 删启发式）、⑫（size 仲裁）。
+- **P2（另开任务）**：§9-5 I2CReadEx 封装评估（提权+白名单）、§11-1/2 设计借鉴。
+- **不做**：§9-7/8（escape 回退、内核驱动）。
 
 ## 14. 来源与置信度
 
 - **实证（反汇编直证）**：122 ID 清单及完备性（双 resolver+噪声过滤+字节扫描三角验证）；Sensors 78 块名字与调用集合；每轨功率双路径（0x1059C/0x2C/246/247）；温度三级链（0x10044/0x7037）；风扇 0x20AB0；nvml 零引用；GPUZShm 零明文；GPU-Z-v8 低阶驱动语境。
-- **推断（需 E 卡）**：0x64A080 传输层归属；GPU-Z-v8 完整命名构成；共享内存导出面现状；GetThermalSettings 调用点逐层归因；Hub=L2。
-- **局限**：静态 only（无运行时 trace）；32 位无反编译器，全程 capstone 手动数据流；旧 99 ID 清单未逐条重建（E6）。
+- **实证（活体，裁决批新增）**：E-⑪ 首证（v1|0x59C 接受 + 0x2C 网格活通道 + 启发式偏移全零，本机卡 2026-10-05）；GetSerialNumber 4060L 既有活体注释（二进制字节非字符串）。
+- **推断（需 E 卡）**：0x64A080 传输层归属；GPU-Z-v8 完整命名构成；共享内存导出面现状；GetThermalSettings 调用点逐层归因；0x2C 通则跨代普适性（仅本机一卡）；0x210A8 vs 0x20AB0 驱动接受度。
+- **局限**：静态 only（无运行时 trace）；32 位无反编译器，全程 capstone 手动数据流；旧 99 ID 清单未逐条重建（E6）；§9 首版缺口清单含误报（已在裁决批 §9 修正）。
+- **实施批**：nvapi-rs v0.2.x@439ea37（E-⑪ 探针 + E-⑫ 戳记注释 + clippy 全绿修复）；CLI compute_caps 节与命名双标签由并行 xOCD 车道卷入主仓 459a26e；本报告修订与子模块指针 bump 为 cli-more-reversing 实施批 commit。
 - **关联**：per-rail-power.md（WinRing0 结案）§2/§5 与本报告 §5 互补；xOCD 审计 §3 表 A 类与本报告 §3-A 同源互证。
