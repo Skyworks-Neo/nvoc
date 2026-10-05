@@ -153,3 +153,26 @@ root_va = page_va + o - 0xCF4。
   本机只有 0.91 GiB 碎片视图(legacy 截断),**不能**当完整 RAM 地图 —
   白名单只作 defense-in-depth;
 - 头号嫌疑 = 批量映射 MMIO/保留帧触发 pmxdrv 无 probe 解引用缺陷;宁可少走。
+
+
+## 8. L3 实测成功(2026-10-06 04:2x,用户执行的终态轮)
+
+**成功序列(顺序敏感,复盘定案)**:
+1. (前置)**解除低电压锁定**——mVolt+ VMIN unlock(未解锁时负载吃不满新墙,
+   对应任务书 §4 field note;set-domain-voltage 面);
+2. kmd 写 UPPER:140000→160000(身份门 init=1/key=2/期望 UPPER=140000;
+   物理帧 0xEB581F000 页内 +0xCF4 单 u32;三级读回:同窗口/新映射/页表路径全一致);
+3. `set-pwr-cur-limit tgp 160` —— **窗钳跟随 UPPER**:145/150/160 全部接受
+   (UPPER=140000 时窗顶即 140,UPPER 抬到 160 窗即 160);
+4. **`set-power-command 160 --force`(必须最后做)**——租约只管回显面,
+   先写会被后续写臂/读数流程覆盖判断,终态同步放最后(用户修正);
+5. 负载实测:FP32 GEMM 1000 s,12 TFLOPS,**Board Power 164.1 W**
+   (GPU Chip 146.0 + MVDCC 15.1 + PWR_SRC 18.1;2505 MHz;PerCap=Pwr;
+   热设计余量内:78.4°C / Hot Spot 97.3°C)——**执行层抬顶成功,超越 140 W 滑条窗**。
+
+**语义定案(610.74)**:UPPER=执行饱和顶=滑条窗顶(窗钳源头);租约=纯回显;
+TGP 当前值活在 Board selector(root 的 base=-1 哨兵 + amount=0 出厂态不变)。
+UPPER 写为易失(预期重启回落;持久性待下次重启验证)。
+
+**恢复路径**:UPPER 写回 140000(身份门期望改 160000)+ `set-power-command 100`
++ `set tgp 100`;或直接重启(若易失性成立)。
