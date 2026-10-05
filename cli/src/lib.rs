@@ -594,7 +594,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     options: Box::leak(Box::new(["channel", "command"])),
                     formatter: Some(output::format_power_command),
-                    ..CommandSpec::new("get-power-command", Group::Power, "Read one ExtendedLimits power-command lease cell (NDA 0x33AB0353 GET, packet stamp v1|1320; xOCD 2.0 ReadPowerCommand) — a per-channel command/lease surface distinct from the TGP-watt/PowerChannels control (0x8B3E7343/0xAFFC2279). --command observed (0xF8, observed-only readback) | request (0xFE, the writable request/lease; live unit mW); --channel 0..31 (default 0; only channel 0 carries data on Pascal/Ada). 0xFFFFFFFF = unset sentinel")
+                    ..CommandSpec::new("get-power-command", Group::Power, "Read one ExtendedLimits power-command lease cell (NDA 0x33AB0353 GET, packet stamp v1|1320; xOCD 2.0 ReadPowerCommand) — a per-channel command/lease surface distinct from the TGP-watt/PowerChannels control (0x8B3E7343/0xAFFC2279). --command observed (0xF8, observed-only readback) | request (0xFE, the writable request/lease; live unit mW); --channel 0..31 (default 0; only channel 0 carries data on Pascal/Ada). 0xFFFFFFFF = unset sentinel. ECHO LAYER: the request cell is what GET/NVML/nvidia-smi display as the cap, but load-time enforcement stays at the legal slider window (P100 load-proven 2026-10-06)")
                 },
             ),
             (
@@ -1133,14 +1133,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::SetPowerCommand,
                 CommandSpec {
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["channel", "command"])),
+                    options: Box::leak(Box::new(["channel", "command", "force"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_value",
                     "VALUE",
                     "Raw cell value; a bare number is watts (×1000 = the mW driver unit), a `mw` suffix is the raw integer. 0 and 0xFFFFFFFF are rejected (unset sentinels)",
                 )])),
                     formatter: Some(output::format_set_power_command),
-                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease — drives the kernel-side power-cap request, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0). nvapi-rs rejects the unset sentinels, writes, and verifies by re-read. HIGH RISK on request: no implicit restore — the caller owns the baseline")
+                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value")
                 },
             ),
             (
@@ -2290,6 +2290,10 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("activate")
             .action(ArgAction::SetTrue)
             .help("Switch the cooler policy to TemperatureContinuous (8) in the same transaction, so the written curve actually drives the fan"),
+        "force" => Arg::new("force")
+            .long("force")
+            .action(ArgAction::SetTrue)
+            .help("set-power-command: bypass the safety envelope (board default × 2, floor 1 W). The write still only moves the echo layer (GET/NVML/nvidia-smi readback), not load-time enforcement"),
         "unsafe" => Arg::new("unsafe")
             .long("unsafe")
             .action(ArgAction::SetTrue)
@@ -2416,6 +2420,7 @@ fn collect_named_options(
             | "freq"
             | "volt"
             | "dump-records"
+            | "force"
             | "unsafe" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
@@ -4024,21 +4029,20 @@ fn execute_target(
             Ok(json!({
                 "policies": snap.policies.iter().enumerate().map(|(i, c)| {
                     let current = c.is_current_channel();
-                    let display = if current {
-                        format!(
-                            "{:.2} A min / {:.2} A default / {:.2} A max",
-                            c.min_raw as f64 / 1000.0,
-                            c.default_raw as f64 / 1000.0,
-                            c.max_raw as f64 / 1000.0
-                        )
-                    } else {
-                        format!(
-                            "{:.1} W min / {:.1} W default / {:.1} W max",
-                            c.min_raw as f64 / 1000.0,
-                            c.default_raw as f64 / 1000.0,
-                            c.max_raw as f64 / 1000.0
-                        )
+                    // Display carries the full window in the row's own unit,
+                    // 3 decimals: min / default / live current / max.
+                    let unit = if current { "A" } else { "W" };
+                    let big = |raw: u32| raw as f64 / 1000.0;
+                    let current_seg = match control_values.as_ref().and_then(|v| v.get(i)) {
+                        Some(raw) => format!("{:.3} {unit} current / ", big(*raw)),
+                        None => String::new(),
                     };
+                    let display = format!(
+                        "{:.3} {unit} min / {:.3} {unit} default / {current_seg}{:.3} {unit} max",
+                        big(c.min_raw),
+                        big(c.default_raw),
+                        big(c.max_raw)
+                    );
                     json!({
                         "index": c.index,
                         "policy_id": c.policy_id,
@@ -4285,15 +4289,75 @@ fn execute_target(
                 option_one(invocation, "command").unwrap_or("request"),
             )?;
             let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
-            run(
+            let force = invocation.options.contains_key("force");
+            let outcome = match run(
                 target,
                 SetNvapiPowerCommand {
                     channel,
                     command,
                     value: value_raw,
+                    force,
                 },
-            )?;
-            Ok(power_command_json(channel, command, value_raw, true))
+            ) {
+                Ok(report) => report.output,
+                Err(err) if !force => {
+                    // Distinguish an envelope refusal from a driver refusal:
+                    // re-read the anchor the gate would have used and state
+                    // the bound (the nvapi-rs gate itself stays silent).
+                    let anchor = run(target, QueryNvapiPowerChannels)
+                        .ok()
+                        .and_then(|report| report.output)
+                        .and_then(|snapshot| {
+                            snapshot
+                                .policies
+                                .iter()
+                                .find(|row| row.policy_id == 0)
+                                .map(|row| row.default_raw)
+                        });
+                    if let Some(default_mw) = anchor {
+                        let max = nvoc_core::power_command_envelope_max_mw(default_mw);
+                        if value_raw < nvoc_core::POWER_COMMAND_ENVELOPE_FLOOR_MW || value_raw > max
+                        {
+                            return Err(CliError::new(format!(
+                                "set-power-command: {value_raw} mW outside the safety envelope [{} .. {max}] mW (board default {default_mw} mW × {}). Reminder: this write moves the ECHO layer only (GET/NVML/nvidia-smi), not load-time enforcement — use set-pwr-cur-limit for the enforced window, or --force to bypass the envelope",
+                                nvoc_core::POWER_COMMAND_ENVELOPE_FLOOR_MW,
+                                nvoc_core::POWER_COMMAND_ENVELOPE_MULTIPLE,
+                            )));
+                        }
+                    }
+                    return Err(err.into());
+                }
+                Err(err) => return Err(err.into()),
+            };
+            let mut output = power_command_json(channel, command, outcome.applied_mw, true)
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            if let Some(baseline) = outcome.baseline_mw {
+                output.insert("baseline_before".to_string(), json!(baseline));
+                if command == 0xFE && baseline != u32::MAX {
+                    output.insert(
+                        "baseline_before_W".to_string(),
+                        json!(baseline as f64 / 1000.0),
+                    );
+                }
+            }
+            if let Some(default_mw) = outcome.board_default_mw {
+                output.insert("board_default_mW".to_string(), json!(default_mw));
+            }
+            output.insert(
+                "envelope".to_string(),
+                json!(if outcome.envelope_bypassed {
+                    "bypassed (--force)"
+                } else {
+                    "board_default_x2"
+                }),
+            );
+            output.insert(
+                "enforcement_note".to_string(),
+                json!("echo-layer only: GET/NVML/nvidia-smi read this cell, load-time enforcement stays at the legal slider window (set-pwr-cur-limit)"),
+            );
+            Ok(Value::Object(output))
         }
         Command::GetTopRelsRatio => {
             let Some((offset, raw)) = run(target, QueryNvapiTopRelsRatio)?.output else {
@@ -9535,7 +9599,14 @@ mod tests {
         assert_eq!(invocation.command, Some(Command::SetPowerCommand));
         assert_eq!(invocation.positionals, vec!["100"]);
         assert_eq!(option_one(&invocation, "command"), Some("request"));
+        assert!(!invocation.options.contains_key("force"));
         assert!(parse_args(["set-power-command"]).is_err());
+        // --force is a flag (no value), collected as "true".
+        let invocation = parse_args(["set-power-command", "100000", "--force"]).unwrap();
+        assert_eq!(
+            invocation.options.get("force").map(Vec::as_slice),
+            Some(&["true".to_string()][..])
+        );
     }
 
     #[test]
