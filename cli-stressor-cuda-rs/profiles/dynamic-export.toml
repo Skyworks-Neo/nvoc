@@ -10,7 +10,7 @@ kernel_mixture = { gemm = 1.0 }
 stream_mode = "dual"
 disable_fp8 = true
 vulkan_only = false
-enable_vulkan_stress = false
+vulkan = false
 
 [kernel_params.gemm]
 matrix_sizes = [8192]
@@ -20,3 +20,8 @@ warmup_iters = 0
 burst_iters = 30
 minor_mixture_rate = 0
 weight = 1.00
+
+# Keep the VFP-export load shape byte-for-byte comparable with older runs:
+# no ride-on-load detectors during dynamic curve export.
+[verify]
+enabled = false

@@ -9,13 +9,14 @@ use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream};
 use half::{bf16, f16};
 
 use cli_stressor_cuda_rs::{
-    Backend, BackendError, DeviceInfo, HostMatrix, KernelPathRequest, KernelType, PrecisionKind,
-    PrecisionSpec,
+    Backend, BackendError, DetectorStats, DeviceInfo, HostMatrix, KernelPathRequest, KernelType,
+    PrecisionKind, PrecisionSpec,
 };
 
 use super::atomic::build_atomic_kernel;
 use super::device::query_device_info_for_index;
 use super::gemm::GemmPathConfig;
+use super::verify_kernels::VerifyEngine;
 
 #[cfg(feature = "vulkan")]
 use cli_stressor_cuda_rs::PciBusAddress;
@@ -39,6 +40,8 @@ pub struct CudaBackend {
     pub(super) atomic_fn: Option<CudaFunction>,
     pub(super) _intalu_module: Option<Arc<CudaModule>>,
     pub(super) intalu_fn: Option<CudaFunction>,
+    /// Ride-on-load verification engine (None when NVRTC build failed).
+    pub(super) verify: Option<VerifyEngine>,
     /// Opt-in device-side stress-buffer generation (`--gpu-generate`).
     pub(super) gpu_generate: bool,
     pub(super) gpu_fill: Option<super::gpu_fill::GpuFillKernels>,
@@ -132,6 +135,25 @@ impl CudaBackend {
                 (None, None)
             }
         };
+        // Ride-on-load verification engine (up to 3 lanes share the reports).
+        // Address-walk slab is OPT-IN via --verify-slab (enable_verify_slab
+        // below); the verify loop always runs pattern rotation + the
+        // write-density cadence on dedicated buffers either way.
+        // (Historical note: earlier "slab segfaults" on GP104 were actually
+        // launch-site param-count mismatches against the pattern-rotation
+        // kernels, not WDDM pressure — fixed, slab runs clean in the triple
+        // mix.)
+        let verify_slab_pct: u32 = 0;
+        let verify = match VerifyEngine::build(&ctx, &info, 3, verify_slab_pct) {
+            Ok(engine) => Some(engine),
+            Err(err) => {
+                println!(
+                    "Warning: verify engine build failed (ride-on-load detectors disabled): {}",
+                    err
+                );
+                None
+            }
+        };
         Ok(Self {
             device_index: gpu_index,
             _ctx: ctx,
@@ -143,10 +165,23 @@ impl CudaBackend {
             atomic_fn,
             _intalu_module: intalu_module,
             intalu_fn,
+            verify,
             gpu_generate: false,
             gpu_fill: None,
             info,
         })
+    }
+
+    /// Opt-in the address-walk slab (lazy allocation; --verify-slab). The
+    /// env var NVOC_VERIFY_SLAB_PCT overrides the VRAM share (default 25%).
+    pub fn enable_verify_slab(&self, default_pct: u32) {
+        let pct = std::env::var("NVOC_VERIFY_SLAB_PCT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_pct);
+        if let Some(engine) = &self.verify {
+            engine.enable_slab_walk(&self._ctx, &self.stream, pct);
+        }
     }
 
     #[cfg(feature = "vulkan")]
@@ -154,6 +189,24 @@ impl CudaBackend {
         let uuid = super::device::query_cuda_device_uuid(self.device_index)?;
         let pci_bus = super::device::query_cuda_device_pci_bus_address(self.device_index)?;
         Ok(CudaDeviceIdentity { uuid, pci_bus })
+    }
+
+    /// The ride-on-load verification engine, when built successfully.
+    pub fn verify_engine(&self) -> Option<&VerifyEngine> {
+        self.verify.as_ref()
+    }
+
+    /// The default stream (diagnostics).
+    pub fn stream_handle(&self) -> std::sync::Arc<cudarc::driver::CudaStream> {
+        std::sync::Arc::clone(&self.stream)
+    }
+
+    /// Run the detector injection self-test and return its report. None when
+    /// the engine failed to build (detectors disabled).
+    pub fn run_verify_self_test(&self) -> Option<cli_stressor_cuda_rs::SelfTestReport> {
+        let engine = self.verify.as_ref()?;
+        engine.run_self_test();
+        engine.take_self_test()
     }
 }
 
@@ -434,6 +487,7 @@ impl Backend for CudaBackend {
             transpose_prob,
             seed,
             stream_mode,
+            verify,
         } = request;
 
         match kind {
@@ -445,13 +499,26 @@ impl Backend for CudaBackend {
                 transpose_prob,
                 seed,
                 stream_mode,
+                verify,
             }),
-            KernelType::Memcpy => {
-                self.run_memcpy_path(spec, size, warmup_iters, burst_iters, seed, stream_mode)
-            }
-            KernelType::Memset => {
-                self.run_memset_path(spec, size, warmup_iters, burst_iters, stream_mode)
-            }
+            KernelType::Memcpy => self.run_memcpy_path(
+                spec,
+                size,
+                warmup_iters,
+                burst_iters,
+                seed,
+                stream_mode,
+                verify,
+            ),
+            KernelType::Memset => self.run_memset_path(
+                spec,
+                size,
+                warmup_iters,
+                burst_iters,
+                seed,
+                stream_mode,
+                verify,
+            ),
             KernelType::Transpose => {
                 self.run_sgeam_path(size, warmup_iters, burst_iters, true, seed, stream_mode)
             }
@@ -464,9 +531,15 @@ impl Backend for CudaBackend {
             KernelType::Atomic => {
                 self.run_atomic_path(size, warmup_iters, burst_iters, seed, stream_mode)
             }
-            KernelType::IntAlu => {
-                self.run_intalu_path(spec, size, warmup_iters, burst_iters, seed, stream_mode)
-            }
+            KernelType::IntAlu => self.run_intalu_path(
+                spec,
+                size,
+                warmup_iters,
+                burst_iters,
+                seed,
+                stream_mode,
+                verify,
+            ),
         }
     }
 
@@ -484,6 +557,31 @@ impl Backend for CudaBackend {
 
     fn empty_cache(&self) -> Result<(), BackendError> {
         Ok(())
+    }
+
+    fn verify_failure(&self) -> Option<String> {
+        self.verify.as_ref().and_then(|engine| engine.failure())
+    }
+
+    fn verify_drain(&mut self) -> DetectorStats {
+        match &self.verify {
+            Some(engine) => engine.drain(),
+            None => DetectorStats::default(),
+        }
+    }
+
+    fn verify_tick(&self, interval_s: f64) {
+        if let Some(engine) = &self.verify {
+            engine.tick(&self.stream, interval_s);
+        }
+    }
+
+    fn validate_int8_exact(
+        &mut self,
+        size: usize,
+        seed: u64,
+    ) -> Result<(bool, Option<String>), BackendError> {
+        self.validate_int8_exact_impl(size, seed)
     }
 }
 
