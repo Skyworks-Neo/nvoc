@@ -3472,6 +3472,10 @@ fn format_label(key: &str) -> String {
             "nvapi" => "NVAPI".to_string(),
             "nvml" => "NVML".to_string(),
             "tdp" => "TDP".to_string(),
+            "tgp" => "TGP".to_string(),
+            "ocp" => "OCP".to_string(),
+            "nvvdd" => "NVVDD".to_string(),
+            "msvdd" => "MSVDD".to_string(),
             "vfp" => "VFP".to_string(),
             // SI unit words match case-insensitively — keys arrive both as
             // "mv" and "mV" (JSON field names carry the unit suffix), and a
@@ -3480,6 +3484,8 @@ fn format_label(key: &str) -> String {
             "mv" | "mV" | "MV" => "mV".to_string(),
             "mhz" | "MHz" | "MHZ" => "MHz".to_string(),
             "khz" | "kHz" | "KHZ" => "kHz".to_string(),
+            "ma" | "mA" | "MA" => "mA".to_string(),
+            "mw" | "mW" | "MW" => "mW".to_string(),
             "c" => "C".to_string(),
             other => {
                 let mut chars = other.chars();
@@ -3529,6 +3535,55 @@ mod tests {
         assert!(rendered.contains("Watt: Max 350 W, Current 250 W, Min 100 W"));
         assert!(!rendered.contains('{'));
         assert!(!rendered.contains("\"current_watt\""));
+    }
+
+    /// SI casing on current/power units: keys carry the unit as a suffix
+    /// (`raw_mA`, `driver_window_mW`), and the generic label formatter must
+    /// read them back as mA/mW — an unlisted token fell through to plain
+    /// "uppercase the first letter" and rendered "Raw MA" (user report,
+    /// 40-series set-ocp-limit run).
+    #[test]
+    fn si_unit_case_is_preserved_for_ma_and_mw() {
+        nvoc_cli_common::color::init(true);
+        let execution = Execution {
+            function: "set-ocp-limit",
+            command: Command::SetPowerChannelLimit,
+            backend: "nvapi".to_string(),
+            warnings: Vec::new(),
+            results: vec![TargetResult {
+                gpu_id: Some(7),
+                backend: "nvapi",
+                ok: true,
+                output: Some(json!({
+                    "applied": true,
+                    "rail": "nvvdd",
+                    "index": 0,
+                    "identity": "(13,19)",
+                    "amperes": 135.0,
+                    "raw_mA": 135000,
+                    "driver_window_mA": [1, 135000],
+                    "requested_mA": 140000,
+                    "clamped_to_driver_window": true,
+                })),
+                error: None,
+            }],
+        };
+
+        let rendered = format_human(&execution);
+
+        assert!(rendered.contains("Raw mA: 135000"), "{rendered}");
+        assert!(rendered.contains("Driver Window mA"), "{rendered}");
+        assert!(rendered.contains("Requested mA: 140000"), "{rendered}");
+        assert!(!rendered.contains("MA"), "{rendered}");
+
+        // Board-power row: the same formatter path with the mW suffix.
+        let rendered_mw = format_label("raw_mW") + &format_label("driver_window_mW");
+        assert_eq!(rendered_mw, "Raw mWDriver Window mW");
+
+        // Acronyms keep their canonical spelling in labels too.
+        assert_eq!(format_label("is_ocp_current"), "Is OCP Current");
+        assert_eq!(format_label("nvvdd_ocp"), "NVVDD OCP");
+        assert_eq!(format_label("tgp_range"), "TGP Range");
     }
 
     #[test]
