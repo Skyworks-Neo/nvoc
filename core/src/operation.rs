@@ -2155,6 +2155,117 @@ impl GpuOperation for SetNvapiVoltRailSlot {
         }))
     }
 }
+
+/// Reset volt-rail payload slots back to 0 (stock: payload offsets are
+/// deltas from the driver baseline, so 0 = factory). Default resets the
+/// mapped writable slots 0..3 (µV offset, VBIOS wall offset, VRM max wall
+/// offset, VMIN/min-hold offset); `slot` narrows it to one slot — 4/5 are
+/// honored as-is per user choice (no known use; -300 crashed 4060L/610,
+/// -100..-200 observed safe).
+#[derive(Clone, Copy, Debug)]
+pub struct ResetNvapiVoltRailLimit {
+    pub rail_bit: u32,
+    /// `None` = reset the mapped slots 0..3; `Some(n)` = only slot n (0..5).
+    pub slot: Option<usize>,
+    pub expected_type: Option<u32>,
+}
+
+/// Per-slot reset result.
+#[derive(Clone, Copy, Debug)]
+pub struct VoltRailSlotReset {
+    pub slot: usize,
+    pub previous: i32,
+}
+
+impl GpuOperation for ResetNvapiVoltRailLimit {
+    type Output = Option<NvapiVoltRailResetApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiVoltRailLimit
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let rails = gpu.volt_rails().map_err(Error::from)?;
+        let Some(rails) = rails else {
+            return Ok(None);
+        };
+        let entry = rails
+            .control
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "rail bit {} not present (mask 0x{:08X})",
+                    self.rail_bit, rails.rail_mask
+                ))
+            })?;
+        if let Some(expected) = self.expected_type
+            && entry.entry_type != expected
+        {
+            return Err(Error::Custom(format!(
+                "rail {} entry type {} != expected {expected} — refusing to write",
+                self.rail_bit, entry.entry_type
+            )));
+        }
+        let slots: Vec<usize> = match self.slot {
+            Some(slot) => {
+                if slot > 5 {
+                    return Err(Error::Custom(format!(
+                        "volt-rail slot {} out of range (melonVolt payload is 0..6)",
+                        slot
+                    )));
+                }
+                vec![slot]
+            }
+            None => vec![0, 1, 2, 3],
+        };
+        let mut resets = Vec::new();
+        for slot in slots {
+            let previous = entry.values[slot];
+            if previous == 0 {
+                resets.push(VoltRailSlotReset { slot, previous });
+                continue;
+            }
+            let applied = gpu
+                .set_volt_rail_slot(self.rail_bit, slot, 0)
+                .map_err(Error::from)?
+                .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+            resets.push(VoltRailSlotReset {
+                slot,
+                previous: applied,
+            });
+        }
+        // Post-reset walls for the record (0 = driver hasn't refreshed).
+        let status = gpu.volt_rails().map_err(Error::from)?.and_then(|r| {
+            r.status
+                .iter()
+                .find(|e| e.rail_bit == self.rail_bit)
+                .map(|e| (e.values[3], e.values[5]))
+        });
+        #[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+        let (vrm_max_wall_uV, min_hold_uV) = status.unwrap_or((0, 0));
+        Ok(Some(NvapiVoltRailResetApplied {
+            rail_bit: self.rail_bit,
+            resets,
+            vrm_max_wall_uV,
+            min_hold_uV,
+        }))
+    }
+}
+
+/// See [`ResetNvapiVoltRailLimit`].
+#[derive(Clone, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct NvapiVoltRailResetApplied {
+    pub rail_bit: u32,
+    /// (slot, previous value) per reset slot — 0 writes are recorded too.
+    pub resets: Vec<VoltRailSlotReset>,
+    /// status values[3] after the reset (µV)
+    pub vrm_max_wall_uV: i32,
+    /// status values[5] after the reset (µV)
+    pub min_hold_uV: i32,
+}
 #[derive(Clone, Copy, Debug)]
 #[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
 pub struct SetNvapiVoltRailOffset {
