@@ -182,3 +182,41 @@ Apply 通用模型（NvidiaController.ApplyCoreAsync :1387-1989）：**staging �
 - 我方基线：`nvapi-rs/sys/src/nvid.rs`（注册比对 55/55）、`sys/src/gpu/{clock,power}.rs`、`src/gpu.rs`；关键「未封装」结论经主线程独立 grep 复核（0xD14B69CF/0xCBFF71D0/0xEF3D20EA/0x0733E009 在 src/ 0 引用；PowerPolicyId 仅 Default=0；TGP-watt 注释在 nvid.rs:1404-1466）。
 - 置信度：通道定性、55 ID 对照、三开关=UI 门、OCP 通道映射=**实证**（反编译直读）；V/F 偏移矛盾、status 索引、域 20/21 命名、RTX50 Large 布局单位=**推断**（E-matrix 待裁）。
 - 局限：xOCD 面向 RTX 30/40/50，P100 适用面见 agentB §10（电压/温度/公开频率/偏移/曲线可用；Blackwell 专属路径不适用）；未运行 xOCD、未做任何动态验证。
+
+## 16. 首测判读（2026-10-05，RTX 2070 + RTX 3060 + Tesla P100 + RTX 4060 Laptop）
+
+四台机器跑 `tests/xocd_gap_probe_live.rs`（GET-only 轮；e6/e1 的 JSON 写失败系测试 CWD=workspace 根，c3ead23 已修）。
+
+### 16.1 E3 PowerChannels —— 大半定案
+- info v4（264816）**四代全通**（Pascal/Turing/Ampere+Ada）。
+- **policyId 0 = 板功率（raw mW）四代通用**，默认值与卡规格分毫不差：2070 (0,9)=175000/219000（175W 规格）、3060 (0,0)=170000/212000（170W）、P100 (0,0)=250000=250W（Tesla 锁定，min 125W）、4060L (0,0)=5000/100000/140000（100W 基础 +140W DB）。
+- **OCP 电流（mA）身份按代际轮换**：50 系 (19,13)/(19,12)（xOCD 配对）；**Ampere 与 Ada 共用 (13,19)**（3060 def 135000/max 138068 ≈ +2.3% 余量；4060L def=max=135000 笔记本无余量）；**Turing (6,19)**（2070 def 215860/max 240000）；**Pascal 无电流 OCP 通道**（(6,1)/(3,7) 均为哨兵；剩余 (3,x)/(4,x) 电流通道 66/240/35/13A 身份待定）。5001000/1001000 = 「无上限」哨兵。
+- **紧凑控制 0x10A4C 在非 50 系全部 -9 被拒** → 50 系以下 OCP 写需走 10016B（0x12720）布局；e3 已追加 0x12720 只读扫描（按 info 默认值定位 dword 偏移），待下一轮跑数。
+
+### 16.2 E6 BoostLock —— 双向实证定案
+- 2070 **电压锁**（用户施加）：id=6/mode=3/value=800000 µV ✓；2070 **频率范围锁**（-lgc）：**id=0 与 id=1 同时 mode=2**，value=1995000/1935000 kHz（上/下界）✓；P100/4060L 无锁态：七项全 mode=0 ✓。
+- xOCD DecodeBoostLock 语义（id∈{0,1}+mode2=范围锁、id6+mode3=电压锁）与 `is_clock_range_lock`/`is_voltage_lock` 谓词**实证成立，不改**。
+
+### 16.3 E5 TopRels —— 50 系专属确证
+- info 双机 OK；gpc_xbar：2070=[]、3060/4060L=[0]（唯一边，门控可过）、P100=[]。
+- control (0x1075c)：Pascal/Turing **-103**，Ampere/Ada **-1**（与 nvpwrcontrol 首测 4060L "GetControl Ada=-1" 一致）→ 只有 50 系可写；矛盾③（比率语义命名）只能等 50 系机器。
+
+### 16.4 E4 记录类型 —— 驱动版本漂移发现
+- 代际普查：Pascal {0x4,0x5}、Turing {0x8,0x9}、Disp 0x02 跨代、Ampere 3060 与 **Ada 4060L 当前驱动均报 0x10** —— 同一张 4060L 在旧驱动报 0x0A（0x10 = internal 0x0F 的 +1 协议重映射）→ **类型字节是驱动版本依赖的**，0x0F/0x10 应视为同一现代家族解读；xOCD 的 tag==15 分派键与我们的 `record_type_blackwell` 一致，无需改代码（注释已更新）。
+- 2070 两次运行各见一处 slot0=-1000 kHz（首报 bit8/type2、次报 bit0/type8；输出交错位归属待复测），含义未定。
+- 空闲态 freq/volt 值全 0 → 语义槽位图未被带值验证。
+
+### 16.5 E1 V/F 几何 —— 静态线索不定案，e1b 待跑
+- magic 0x22420 四代接受 ✓；+20 处 2070=31、3060=15、4060L=15、**P100=0**（非跨代稳定的点数）。
+- P100 表非全零：部分 mask + 两处非零 dword（+68=1、+104=0x100000）——**都不落在两种候选几何的 delta 槽**（nvapioc 60+36i / xOCD 124+36(i-1)）→ 静态判别不成立。
+- **裁决手段已交付**：`e1b_vf_points_write_read`（`#[ignore]` + `NVOC_ALLOW_VF_WRITE_PROBE=1` 双门控）：RMW 单 dword +15000 kHz → 双几何对照 → 恢复 → 逐字节校验。在任一卡上跑一轮即可定案矛盾①。
+
+### 16.6 E-matrix 状态总览
+| 实验 | 状态 |
+|---|---|
+| E2 轨 status 槽索引 | 未跑（`volt_rails_raw_dump`，4060L 待跑） |
+| E3 OCP 语义/几何 | **定案 90%**（单位/身份/哨兵四代实锤；剩 0x12720 扫描定位写偏移） |
+| E4 域 20/21 命名 | 用户裁决结案（MSD=media subsystem）；类型普查归档 |
+| E5 TopRels 边语义 | 确证仅 50 系可裁，搁置 |
+| E6 BoostLock | **定案**（双向实证） |
+| E1 V/F 几何+deltaScale | 待 e1b 写-读轮（探针就绪） |
