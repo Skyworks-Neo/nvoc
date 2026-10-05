@@ -408,3 +408,15 @@ power_command 的 FFI 与 hi 封装（`power_command`/`set_power_command`）在�
 - **`get-power-channels` → `get-pwr-cur-info`**（用户指示，旧名直接删除无别名）：与 `set-pwr-cur-limit` 构成同一功率/电流面的读/写对。**行单位分类法（用户判读法）**：min=1→电流通道（mA 渲染 A）、min≥1000→功率通道（mW 渲染 W，含全零退化行）；"unbounded (sentinel)" 分支取消，所有行带单位渲染（4060L 的 (15,3) 38 W、(4,5) 12.4 W 每轨功率行就此可读）。分类谓词 `PowerChannelPolicy::is_current_channel` 落 nvapi-rs 数据模型，`set-pwr-cur-limit` 写后渲染键同步用同一分类。
 - **测试**：`power_command_commands_parse`（选项/选择器解析、ch 32 拒绝、0xAA 拒绝、旧名 `get-power-channels` 报错）+ 后端断言；cli 74 测试绿，core/nvapi/clippy/fmt 全绿。
 - **边界**：活体仅 ch0/0xFE 有数据（两代实测=板功率 mW，与 NVML/通道表三面一致）；0xF8 全哨兵、ch1..31 空的作用仍待 Blackwell 实机（§18.6 L4 判据）。
+
+#### §18.8.1 首个活体突破：power_command 租约写=无窗钳的功率墙写（2026-10-05 深夜，P100/582.41）
+
+新封装落地后用户首战（P100，TCC）：
+
+- `get-power-command`（默认 ch0/request）= 250000 mW = 板功率，与 NVML/通道表三面一致。
+- **`set-power-command 300`（=300000 mW）被驱动接受且读回 300000**；**nvidia-smi 的 Pwr:Usage/Cap 随即显示 `6W / 300W`**——执行中的功率上限真的从 250 W 抬到了 300 W，**超越 PowerChannels 表的 [125000,250000] 驱动窗**（`get-pwr-cur-info` idx2 现为 Current 300000 > Max 250000，通道表的 current 视图跟着租约写走——两族在控制状态上收敛，但写契约不同：0xAFFC2279 路径会窗钳，0x17695269 租约路径**不钳**）。
+- **无任何健康检查**：第一次误写 `set-power-command 300000`（裸数=瓦特→300000000 mW=300 kW）也被驱动**无钳位接受**（CLI 渲染如实显示 300000000 mW，用户随即用 300 覆写纠正）——租约写只有"读回一致"验证，没有量纲/物理窗口，是最裸的功率写原语。
+- 本机此前非提权 SET 报 -137，本次 SET 成功 → 该会话为提权环境。
+- 侧观察：写后 `get-pwr-cur-info` 的 Control 几何检测显示 N/A（写前为 yes），通道表 identity/行集也有漂移——控制块状态被租约写扰动后的读法归因待查（不阻塞）。
+- 恢复配方：`set-power-command 250`（回 250000 mW）或 `set-pwr-cur-limit 2 250w`（走窗钳核心，=窗口上界即基线）；两者均已被读回链覆盖。**持久性未验证**（重启/驱动重载后是否回落 250 W 待测）。
+- 待办：4060(4060L) 提权复验（用户进行中）；负载下实测功耗能否真超 250 W（Cap 显示≠实际拉得动，受 VRM/供电接头约束）；超调写（>板功率数倍）的保护性包络是否要在 nvapi-rs 加（当前无任何钳制）。
