@@ -117,10 +117,31 @@ root_va = page_va + o - 0xCF4。
    形态)与 [P+0x2510](Major 形态)的 root 门(init=1 && key<0x40 &&
    UPPER∈{100000,135000,140000,150000})全阴性;P+0x48000 可读的
    "大分配"候选 = 0(GPU 表不在 state 前 4 页指针的直接目标里)。
-4. 下一步(按性价比排序):a) idalib 深追 RM dispatch 的 ctx 构造链
-   ([[ctx+0x158]+0xE0] 的 0x158 对象从哪个全局锚生);b) 拿 616.92 x64
-   二进制比对 state 结构布局(桌面上 616.00 是 ARM64,不可用);
-   c) root 门放宽前的其它结构假设。差分协议本身已就绪,只差入口指针。
+4. **(2026-10-06 深夜,闭合)L2.2 定案** —— 用户提供 616.92 x64 原镜像
+   (`reverse/nvlddmkm_616.92.sys`,指纹与审计一致),getter 结构比对法:
+   616.92 getter @0x107AC0(Nvpwr 签名逐字节命中)拆出访问模式后,在 610
+   用「slot 加载 → ≤2 指令内寄存器传播 → 大 disp 解引用」链式检测(58 条链,
+   616.92 侧检出 0x48A48/0x48C48 = 方法学自证)定位 610 getter @0x140103720:
+
+   | 链节 | 610.74 | 616.92 |
+   |---|---|---|
+   | state→表 | +0x**200** | +0x208 |
+   | count | 表+0x**48440** | +0x48C48 |
+   | Major[i] | 表+0x**48240**+i×0x10 | +0x48A48 |
+   | GPU-ID[i] | 表+0x**48248** | +0x48A50 |
+
+   活体链走查(GPU 表 0xFFFFD20584579000,count=1,entry0.Major=
+   0xFFFFD205BF1E0000)→ **PowerRoot = 0xFFFFD205BBE1C000**(页对齐,
+   帧 root=0xEB581C000 / base=0xEB581D000 / upper=0xEB581F000,本 boot):
+   `init=1 elig=0 amountActive=0 base=-1(哨兵!) amount=0 key=2
+   LOWER=100000 UPPER=140000 aux=55000/60000`。
+
+   **出厂语义修正(与 616.92 不同)**:610 出厂 base=-1 哨兵(生成器
+   C==-1 分支:直通 Board 当前值),**UPPER=140000=滑条顶**(非 100000),
+   LOWER=100000=出厂墙。三态差分(90/95/100 W)root 字段**零变化** ——
+   `set-pwr-cur-limit` 只写 Board selector(0xFD 源),root 仅 DB 整备路径
+   (SetAmount/SetElig)才动。抬顶目标 = UPPER(140000→>滑条窗),
+   Board 窗钳可能需要同步(616.92 Phase B 经验:MAX+UPPER 双抬)。
 
 ## 7. 安全 envelope(BSOD 教训,硬性)
 
