@@ -86,7 +86,8 @@
 | 原名 | 决策 | 底层线 |
 |---|---|---|
 | `get-tgp-watt` + `get-tgp-watt-range` | **合并为 `get-power-limit`** ✅ DONE(R1 去单位;auto: NVML power limits 优先,NVAPI ClientPowerPoliciesGetInfo `0x34206D86` TGP 范围兜底;`get-tgp-watt-range` CLI 已移除,core op QueryNvapiTgpWattRange 保留) | NVAPI+NVML |
-| `set-power-watt` / `set-tgp-watt` | **合并为 `set-power-limit`** ✅ DONE(R1 去单位,R2 对称 `reset-power-limit`;auto,NVAPI 也有写入原语 `0xAFFC2279`/`0xBFF09E59`,走 auto;core op SetNvapiTgpWatt/SetNvmlPowerLimit 名不变) | NVAPI+NVML |
+| `set-power-watt` / `set-tgp-watt` | **合并为 `set-power-limit`** ✅ DONE(R1 去单位,R2 对称 `reset-power-limit`;auto,NVAPI 也有写入原语 `0xAFFC2279`/`0xBFF09E59`,走 auto;core op SetNvapiTgpWatt/SetNvmlPowerLimit 名不变) → 后并入 `set-pwr-cur-limit`(见下) | NVAPI+NVML |
+| `set-power-limit` + `set-ocp-limit` | **合并为 `set-pwr-cur-limit TARGET VALUE`** ✅ DONE(2026-10-05;`set-power-limit`/`set-ocp-limit` 名删除。同表实证:两者打同一 GET 0x8B3E7343/SET 0xAFFC2279 控制缓冲,只是不同视图——xocd audit §18.1/§18.3。TARGET=tgp\|board→走 TGP/板功率行(NVAPI 紧凑核心+`--policy-index`,或 `--nvml` 走 nvidia-smi -pl)、nvvdd\|msvdd\|INDEX→任意 PowerChannels 行;`--nvml` 仅对 tgp/board 生效;core op SetNvapiTgpWatt/SetNvmlPowerLimit/SetNvapiPowerChannelValue 名不变,`reset-power-limit` 保留) | NVAPI+NVML |
 | `set-power-percent` | → `set-public-tgp-percent`(仅 NVAPI) | ClientPowerPoliciesSetStatus `0xAD95F5ED` |
 | `reset-power-percent` | → `reset-public-tgp-percent`(仅 NVAPI) | ClientPowerPoliciesGetInfo+SetStatus |
 | `set-dynamic-boost` | → `set-ppab-status` ✅ DONE(PPAB = Persistent Performance Auto Boost;与 autoboost-status 体系对齐,全小写规避 clap 大写问题;pynvoc `set_ppab_status` 同步) | SetNvapiDynamicBoost `0x1504FC3D` |

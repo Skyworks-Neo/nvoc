@@ -3541,13 +3541,13 @@ mod tests {
     /// (`raw_mA`, `driver_window_mW`), and the generic label formatter must
     /// read them back as mA/mW — an unlisted token fell through to plain
     /// "uppercase the first letter" and rendered "Raw MA" (user report,
-    /// 40-series set-ocp-limit run).
+    /// 40-series set-pwr-cur-limit run).
     #[test]
     fn si_unit_case_is_preserved_for_ma_and_mw() {
         nvoc_cli_common::color::init(true);
         let execution = Execution {
-            function: "set-ocp-limit",
-            command: Command::SetPowerChannelLimit,
+            function: "set-pwr-cur-limit",
+            command: Command::SetPwrCurLimit,
             backend: "nvapi".to_string(),
             warnings: Vec::new(),
             results: vec![TargetResult {
@@ -3556,7 +3556,7 @@ mod tests {
                 ok: true,
                 output: Some(json!({
                     "applied": true,
-                    "rail": "nvvdd",
+                    "target": "nvvdd",
                     "index": 0,
                     "identity": "(13,19)",
                     "amperes": 135.0,
@@ -4500,7 +4500,7 @@ mod tests {
             }),
             Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
             Command::SetPpabStatus => json!({"applied": true, "dynamic_boost": true}),
-            Command::SetPowerLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
+            Command::SetPwrCurLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetPowerLimit => json!({"applied": true, "default_watt": 100.0}),
             Command::GetDNotifier => json!({
                 "active": "D2",

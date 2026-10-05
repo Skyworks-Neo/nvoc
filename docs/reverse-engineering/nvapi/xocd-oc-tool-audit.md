@@ -377,3 +377,13 @@ P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply
 用户问 xOCD 2.0 ExtendedLimits 面（§4 的 `power_graph_roles`/`power_command`/`power_control_input`）有没有测试流程。**此前只有离线字节回放单测（`xocd2_extended_limits_tests`、`xocd2_power_graph_decode_tests`），无活体探针。** 本次新增 GET-only 探针 `e9_extended_limits_surface`（`tests/xocd_gap_probe_live.rs`）：`power_graph_roles`（0x2BA030，-9 时按 xOCD 方式合成 347124B 布局）+ `power_command` 0..31 通道 0xF8(observed-only) 读 + 由 graph role 派生的 `power_control_input`。`set_power_command`（唯一 ExtendedLimits SET）不在此探针内调用，保持只读。
 
 - **P100 实机判读**：`power_graph_roles` = `Err(ArgumentRange)`（Pascal 无 Ada/Blackwell 角色拓扑，被正确拒绝）；`power_command` 仅 ch0 接受（value=0xFFFFFFFF=unset 哨兵），ch1..31 `GetControl` 返回 Error——Pascal 上该面基本 inert；`power_control_input` 因无 graph/shared role 跳过。**结论：该探针流程在 pre-Ada 上优雅降级，是后续 Ada/Blackwell 机器上的验证入口。** 快照 `reverse/xocd/e9-extended-limits.json`。
+
+### 18.7 CLI 出口合并：`set-power-limit` + `set-ocp-limit` → `set-pwr-cur-limit`（2026-10-05 用户指示）
+
+§18.1/§18.3 已证两条写命令是同一个底层控制对象（同一 GET/SET 函数对、同一张表、写入契约同为 `1<<index` 掩码 scoped、几何共享），§18.4 已把两条写路径归一到同一个 `set_channel_raw_core`。用户据此指示"确认是同表就可以把 set-tgp-limit 淘汰掉，和 set-ocp-limit 合并封装到 set-pwr-cur-limit 命令"。落地：
+
+- **单一命令**：`set-pwr-cur-limit <TARGET> <VALUE> [--policy-index N]`（power 族，双后端 BOTH_BACKENDS，arity 2）。TARGET 语义：`tgp`/`board` = 板功率/TGP 政策行（`--policy-index` 与 `--nvml` 仅在此生效；auto 优先 NVAPI 紧凑核心，`--nvml` 走 nvidia-smi `-pl` 路径即 `SetNvmlPowerLimit`），`nvvdd`/`msvdd` = OCP 电流通道（仅 NVAPI），或 `get-power-channels` 打印的任意数值 index（值单位随后行解析：电流行 A/`ma`，板功率行 W/`mw`；`ma`/`mw` 后缀 = 原始驱动整数）。渲染键由旧 `rail` 改为 `target`。
+- **核心 op 不动**：`SetNvapiTgpWatt`/`SetNvmlPowerLimit`/`SetNvapiPowerChannelValue` 三个 core op 全部保留（仅 CLI 命令变体合并）；TGP 分支委托 `set_tgp_watt`（已落 §18.4 共享核心），OCP/任意 index 分支委托 `set_power_channel_value`。
+- **旧名删除**（非别名）：`set-power-limit` 与 `set-ocp-limit` 两个 CLI 名字直接移除，clap 解析旧名即报错。决策记录在 `cli/RENAME_DECISIONS.md`。
+- **测试**：新增 `set_pwr_cur_limit_parses_all_targets`（tgp/board/nvvdd/msvdd/数值 index、`--policy-index`/`--nvml` 解析、旧名报错）；`commands_listed_in_lexicographic_order` 门禁通过（spec 置于 `set-public-vftable-range-offset` 与 `set-temp-limit` 之间）；cli 73 测试绿。
+- **风险面不变**：抬升 OCP 上限仍是解除一项安全网（无确认门），`--nvml` 主功率墙仍为常规操作。本机 P100 非提权，写臂照旧优雅跳过（NVML NoPermission / NVAPI -137）。
