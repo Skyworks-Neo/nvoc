@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 
 from src import cli_runner
@@ -182,6 +183,75 @@ def test_cli_runner_shutdown_cancels_synchronously(monkeypatch) -> None:
     runner.shutdown()
 
     assert waits == [True]
+
+
+def test_cli_runner_exe_override_streams_output_tap(monkeypatch) -> None:
+    """Per-run exe override (VF Curve stressor panel) drives cmd and cwd."""
+    queued: list[QueuedJob] = []
+    console: list[str] = []
+    tapped: list[str] = []
+
+    def submit(_name, task):
+        job = QueuedJob(task)
+        queued.append(job)
+        return job
+
+    recorded: dict = {}
+
+    class FakeStdout:
+        def __init__(self) -> None:
+            self._lines = iter(['VERDICT_JSON: {"result": "pass"}\n', ""])
+
+        def readline(self) -> str:
+            return next(self._lines)
+
+        def close(self) -> None:
+            return
+
+    class FakeProcess:
+        def __init__(self, cmd, **kwargs) -> None:
+            recorded["cmd"] = cmd
+            recorded["cwd"] = kwargs.get("cwd")
+            self.stdout = FakeStdout()
+
+        def poll(self):
+            return 0
+
+        def wait(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            return
+
+    monkeypatch.setattr(cli_runner.subprocess, "Popen", FakeProcess)
+    runner = CLIRunner("nvoc-autooptimizer", console.append, submit=submit)
+    stressor = os.path.join("C:", "tools", "cli-stressor-cuda-rs.exe")
+
+    runner.run(["--duration", "5"], exe=stressor, on_output=tapped.append)
+    queued[0].task()
+
+    assert recorded["cmd"] == [stressor, "--duration", "5"]
+    assert recorded["cwd"] == os.path.dirname(stressor)
+    assert tapped == ['VERDICT_JSON: {"result": "pass"}\n']
+    assert any(stressor in message for message in console)
+    assert not runner.is_running
+
+
+def test_cli_runner_reports_missing_override_executable(monkeypatch) -> None:
+    console: list[str] = []
+    finished: list[int] = []
+
+    def raising_popen(*_args, **_kwargs):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(cli_runner.subprocess, "Popen", raising_popen)
+    runner = CLIRunner("nvoc-autooptimizer", console.append)
+    stressor = os.path.join("C:", "tools", "cli-stressor-cuda-rs.exe")
+
+    runner.run(["--duration", "5"], exe=stressor, on_finished=finished.append)
+
+    assert any(stressor in message for message in console)
+    assert finished == [-1]
 
 
 def test_cli_runner_cancel_kills_process_after_timeout() -> None:

@@ -4,12 +4,28 @@ from src.config import DEFAULT_CONFIG
 from src.widgets.output_console import OutputConsole
 
 
-def test_autoscan_defaults_use_portable_path_separators() -> None:
-    autoscan = DEFAULT_CONFIG["autoscan"]
+def test_stressor_defaults_block_is_present() -> None:
+    stressor = DEFAULT_CONFIG["stressor"]
 
-    assert isinstance(autoscan, dict)
-    assert autoscan["output_csv"] == "./ws/vfp-tem.csv"
-    assert autoscan["init_csv"] == "./ws/vfp-init.csv"
+    assert isinstance(stressor, dict)
+    assert stressor["exe_path"] == ""
+    assert stressor["profile"] == "(default)"
+    assert stressor["duration"] == "90"
+    assert stressor["stream_mode"] == "(default)"
+    assert stressor["json_out"] == ""
+    assert stressor["gpu_generate"] is False
+
+
+def test_defaults_use_portable_path_separators() -> None:
+    """No persisted default may hard-code a Windows-only separator."""
+
+    for key, value in DEFAULT_CONFIG.items():
+        if isinstance(value, str):
+            assert "\\" not in value, key
+        elif isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                if isinstance(sub_value, str):
+                    assert "\\" not in sub_value, f"{key}.{sub_key}"
 
 
 def test_console_uses_native_fixed_font_off_windows(monkeypatch) -> None:
