@@ -306,7 +306,7 @@ P2 —— 依赖未定案或无实机，暂缓：
 | 9 | TopRels 比率写 CLI（set-top-rels-ratio） | 仅 50 系可验证 |
 | 10 | RTX50 隔离 P0 写 CLI（set-p0-reference-clock） | 仅 50 系 |
 | 11 | V/F 公共表写修正（set_vfp_table 偏移/文档回改 + deltaScale 接入 CLI 曲线写） | 等 e1c 定位真字段 |
-| 12 | 板功率 mW 直写（set-power-channel-value 走 (0,subtype) 通道） | 与既有 set-power-limit 重叠，价值存疑 |
+| 12 | 板功率 mW 直写（set-power-channel-value 走 (0,subtype) 通道） | ~~与既有 set-power-limit 重叠，价值存疑~~ 已实施为 set-ocp-limit 数值 index（全表入口），与 set-power-limit 同源不同门，见 §18 |
 
 P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply 级联回滚栈+undo、双速遥测、opt-in 安全门控、self-test 命令档、基准 worker 协议。
 
@@ -314,7 +314,7 @@ P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply
 
 已实施（用户裁决：P0 全部 + P1 仅 #4 不加保护 + TopRels 比率写 CLI；#5/#6 缓做、#7 不采纳）：
 - nvoc-core：OperationKind 新增 6 变体（QueryNvapiPowerChannels/QueryNvapiBoostLocks/QueryNvapiThermalChannels/SetNvapiPowerChannelValue/QueryNvapiTopRelsRatio/SetNvapiTopRelsRatio，写侧入 is_nvapi_write GC6 预热门）+ 6 个 GpuOperation（读侧包装 None-降级，OCP 写直通 nvapi-rs 内建钳位/RMW/回滚）。
-- cli：6 命令落地——get-power-channels（mA/A 双列 + 哨兵标注 + 几何检测）、get-boost-locks（含谓词与 hint 行）、get-thermal-channels（primary 类型表 + 逐通道实测 °C）、set-ocp-limit <nvvdd|msvdd> <A|ma>（按用户要求无确认门；代际解析 + 驱动窗钳位，xOCD 紧凑几何全代际通用，§16.9）、get-top-rels-ratio、set-top-rels-ratio <0.7-1.2>（0.9=0xE660 字面量）。
+- cli：6 命令落地——get-power-channels（mA/A 双列 + 哨兵标注 + 几何检测）、get-boost-locks（含谓词与 hint 行）、get-thermal-channels（primary 类型表 + 逐通道实测 °C）、set-ocp-limit <nvvdd|msvdd|INDEX> <A|ma|W|mw>（按用户要求无确认门；代际解析 + 驱动窗钳位，xOCD 紧凑几何全代际通用，§16.9；任意 index 与 TGP 同源判定见 §18）、get-top-rels-ratio、set-top-rels-ratio <0.7-1.2>（0.9=0xE660 字面量）。
 - nvapi-rs hi 层：7 个透传（power_channel_policies/ocp_channels/power_channel_control/boost_lock_snapshot/top_rels_ratio + 2 写）。
 - 门禁：fmt/clippy 全绿，cli 68 / core 71 / nvapi 全绿（含 specs 排序与穷举守卫）。
 
@@ -324,3 +324,24 @@ P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply
 - cli 新命令入 Groups（Power/Clock/Voltage/Thermal）+ output.rs 渲染管线约定（BTreeMap 序、mA/A 双列、uV 命名 allow 惯例）。
 - ~~pre-50 系 OCP 写在 E3-r3 定位前保持 NotSupported 拒绝~~（已随 §16.9 撤销：戳笔误修正后全代际同走紧凑几何；写侧失败仍由 nvapi-rs 内建几何检测/RMW 回滚兜底，core/cli 无需额外判断）。
 - 全部 P0 读命令在 P100 上即可验收（info v4/BoostLock/ThermChannel 四代可用）。
+
+## 18. TGP-watt 与 OCP 通道的同源判定（2026-10-05 用户提问）+ 任意 index 写入落地
+
+### 18.1 结论：`set-power-limit`(--nvapi) 与 `set-ocp-limit` 是**同一个底层控制对象**
+
+用户观察"这里的 id 也包含了功耗墙的设置"成立，且不止是"包含"——是同一个 GET/SET 函数对、同一个 RMW 缓冲、同一张条目表：
+
+- **同一函数对**：两者最终都打 `0x8B3E7343`（ClientTgpWattGetStatus / 别名 PowerPolicyGetControl）与 `0xAFFC2279`（ClientTgpWattSetStatus / PowerPolicySetControl）。`set-power-limit --nvapi`（SetNvapiTgpWatt→set_tgp_watt）写"目标 mW 在 buf+0x8A0+40*index"的 **v1|10016 (0x12720)** 全表视图（ref tool 配方；538+ 驱动才有此戳）；`set-ocp-limit` 写 **v1|2636 (0x10A4C)** 紧凑视图（xOCD 配方；`COMPACT_ENTRY_BASE 28/STRIDE 40/VALUE_OFF 4`）。两者是同 handler 版本 switch 的不同表项——R465 IDA 实证接受 `{0x10298, 0x106DC, 0x10A4C, 0x11F10}`（§16.9，另 0x12720 为 538+），同一对象的多版本视图。
+- **同一信息源**：`0x67F31384`（ClientPowerPoliciesGetInfoPrivate）既是 TGP 范围（348KB 私有结构，`policy_index` 默认 2）又是通道表（v4 6312B 通道视图）的唯一来源；两条 CLI 命令的"policy index"来自同一个表的同一索引空间。
+- **公开/NVML 面同条目**：ClientPowerPoliciesGetInfo/GetStatus/SetStatus（0x34206D86/0x70916171/0xAD95F5ED）与 NVML 功耗上限是该**板功率政策条目的公开门**。
+- **P100/582.41 实机数值三点一致（毫瓦级）**：NVML `get-public-power-limit` 当前/最小/最大 = **250/125/250 W**；私有 TGP 范围 = **250/125/250 W @policy_index 2**；通道表 index 2 = policyId 0 板功率 **250000/125000/250000 mW**，控制缓冲当前值 250000。三面同值即同对象。
+- **对写路径的硬约束（两条路径均已是 mask-scoped RMW）**：TGP 与 OCP 写共用一张表，任何写入必须 `mask=1<<index` 只动自己那行——我们的 OCP 全链如此（§16.9 配方），现有 `set_power_mw` 亦 OR 同一位。否则 TGP 写会顺手把 OCP 行清成零。
+- **未实测**：公开/NVML 写的实机闭环（本机非提权，`nvmlDeviceSetPowerManagementLimit` 返回 NoPermission）；读侧三面一致性已闭环。可裁决点：下次提权时 `set-power-limit --nvml <x>` 后回读通道表 index 2 的 current_raw 应随动——即公开写落在同一控制缓冲。
+
+### 18.2 `set-ocp-limit` 任意 index 写入（本次落地）
+
+- 位置参数 `<nvvdd|msvdd|INDEX>`：INDEX = `get-power-channels` 打印的条目 index（= info mask 位 = 控制条目 = 写掩码位，四者在四代机器上与 xOCD 驱动一致）。单位随行解析：OCP 电流条目 A/`ma`、板功率条目 W/`mw`，`ma`/`mw` 后缀（大小写不敏感）= 原始驱动整数。越界 index 报错并列出可用集合。
+- 驱动 `[min,max]` 窗口钳位在 nvapi-rs 内完成（OCP 电流另有 1000..=5001000 硬包络）；当实写值 ≠ 请求值时输出新增 `requested_mA/mW` + `clamped_to_driver_window`，用户可见（例：40 系 nvvdd 求 140 A、窗口 135 A 上限 → applied 135000）。
+- `get-power-channels` 每行新增 `current_raw`（与 index 配对的活体控制值）；P100 实机 = 各行默认值（股票卡 250000 等，8 行逐项吻合）。
+- 渲染修正（用户报告"Raw MA"）：`format_label` 补 `mA/mW` SI 大小写映射与 `OCP/NVVDD/MSVDD/TGP` 缩写词表；`parse_power_channel_value` 后缀大小写不敏感。cli 72 测试绿（新增 value 语法与渲染回归）。
+- 关联：§17.2 P2 #12"板功率 mW 直写，价值存疑"**解除存疑**——与 set-power-limit 同源但入口不同（同表任意行 vs TGP 专用视图），保留两条入口（前者=全表/诊断，后者=常规 TGP 操作）。
