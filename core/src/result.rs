@@ -97,12 +97,13 @@ pub enum OperationKind {
     /// temperatures (0x65FE3AAD v2, 8.8 fixed point ÷256 °C; index
     /// semantics 0=GPU/1=hotspot/VRAM=2(RTX50)/7(RTX40)/9(older)).
     QueryNvapiThermalChannels,
-    /// OCP / power-channel limit write (0xAFFC2279): raw mA on the
-    /// policyId-19 family, generation-resolved by nvapi-rs
-    /// (`set_power_channel_value`, RMW + readback + rollback inside).
-    /// HIGH RISK: raises an over-current protection ceiling. Drives the
-    /// xOCD compact control geometry (stamp v1|2636, info-mask seed) on
-    /// every generation; the old pre-50 -9 "fail-closed" was a stamp typo.
+    /// PowerChannels control write (0xAFFC2279): raw driver-unit value on
+    /// any populated channel identity (mA on OCP current channels, mW on
+    /// the board-power row), generation-resolved by nvapi-rs
+    /// (`set_power_channel_value`, RMW + readback + rollback inside);
+    /// the CLI's nvvdd/msvdd aliases resolve to the generation's OCP pair,
+    /// or any `get-power-channels` index can be targeted. HIGH RISK:
+    /// raising an OCP ceiling disables a safety net.
     SetNvapiPowerChannelValue,
     /// TopRels relation-ratio read (0xCBFF71D0, U16.16 at the resolved
     /// offset). Control GET only answers on 50-series (Pascal/Turing

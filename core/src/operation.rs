@@ -2247,11 +2247,13 @@ impl GpuOperation for QueryNvapiThermalChannels {
     }
 }
 
-/// OCP / power-channel limit write (raw mA on the policyId-19 family;
-/// nvapi-rs resolves the generation identity, clamps to the driver window
-/// and the 1..5001 A hard envelope, and runs the full RMW + readback +
-/// rollback recipe). HIGH RISK: raises an over-current protection
-/// ceiling. Every generation shares the xOCD compact control geometry
+/// PowerChannels control write (raw driver-unit value: mA on OCP current
+/// channels, mW on the board-power row; the CLI resolves nvvdd/msvdd to
+/// the generation's OCP pair or takes any `get-power-channels` index).
+/// nvapi-rs clamps to the driver [min,max] window (plus the 1..5001 A
+/// envelope on OCP current channels) and runs the full RMW + readback +
+/// rollback recipe. HIGH RISK: raising an OCP ceiling disables a safety
+/// net. Every generation shares the xOCD compact control geometry
 /// (stamp v1|2636, feature-detected at runtime); the old pre-50 -9
 /// "fail-closed" was a stamp typo, not a generation gate.
 #[derive(Clone, Copy, Debug)]

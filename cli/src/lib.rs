@@ -589,7 +589,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             ),
             (
                 Command::GetPowerChannels,
-                CommandSpec::new("get-power-channels", Group::Power, "Read the PowerChannels policy table (0x67F31384 v4): board power in raw mW (policyId 0, defaults = the card TGP spec) + per-rail OCP current in raw mA (50-series (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none) with the resolved NVVDD/MSVDD OCP channels and live control values (xocd audit §16.1)")
+                CommandSpec::new("get-power-channels", Group::Power, "Read the PowerChannels policy table (0x67F31384 v4): board power in raw mW (policyId 0, defaults = the card TGP spec) + per-rail OCP current in raw mA (50-series (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none) with the resolved NVVDD/MSVDD OCP channels, the live control value paired to each row, and the geometry detection (xocd audit §16.1). Each row's `index` is a valid set-ocp-limit write target")
             ),
             (
                 Command::GetPowerMode,
@@ -1077,15 +1077,15 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         PositionalArg::free(
                             "arg_rail",
                             "RAIL",
-                            "OCP rail: nvvdd (core) or msvdd (memory); see get-power-channels for the resolved channel per generation",
+                            "Target channel: nvvdd (core) / msvdd (memory), or a numeric index from get-power-channels to write any populated channel (value units then follow the row: A/mA on current channels, W/mW on board power)",
                         ),
                         PositionalArg::hyphen(
                             "arg_current",
-                            "CURRENT",
-                            "Current limit: amperes by default (one decimal allowed), `ma` suffix = raw milliamperes (e.g. 240 or 240000ma)",
+                            "VALUE",
+                            "Limit value: amperes by default on current channels (watts on the board-power row; one decimal allowed), `ma`/`mw` suffix (case-insensitive) = raw driver integer in the row's own unit (e.g. 240 or 240000ma)",
                         ),
                     ])),
-                    ..CommandSpec::new("set-ocp-limit", Group::Power, "Write the NVVDD/MSVDD OCP current limit (0xAFFC2279, raw mA; HIGH RISK — raises an over-current protection ceiling, no confirmation gate). nvapi-rs resolves the generation identity, clamps to the driver [min,max] window and the 1..5001 A envelope, and runs the full RMW + readback + rollback recipe. Drives the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET) on every generation; the buffer's geometry is feature-detected at runtime (xocd audit E3)")
+                    ..CommandSpec::new("set-ocp-limit", Group::Power, "Write a PowerChannels control value (0xAFFC2279; HIGH RISK — raising an OCP ceiling disables a safety net, no confirmation gate). Targets: nvvdd/msvdd, or any index printed by get-power-channels. nvapi-rs resolves the identity, clamps to the driver [min,max] window (plus the 1..5001 A envelope on OCP current channels), and runs the full RMW + readback + rollback recipe. Drives the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET) on every generation; the buffer's geometry is feature-detected at runtime (xocd audit E3)")
                 },
             ),
             (
@@ -1825,6 +1825,29 @@ fn parse_output_format(raw: &str) -> CliResult<OutputFormat> {
             "invalid output format {other:?}; expected human or json"
         ))),
     }
+}
+
+/// Power-channel value grammar (set-ocp-limit): the plain number is the
+/// channel's natural big unit — amperes on OCP current channels, watts on
+/// the board-power row (both ×1000 = the raw driver unit) — and a `ma`/`mw`
+/// suffix (case-insensitive) is the raw integer in that same driver unit,
+/// whatever it is.
+fn parse_power_channel_value(raw: &str) -> CliResult<u32> {
+    let raw = raw.trim();
+    let lower = raw.to_ascii_lowercase();
+    if lower.ends_with("ma") || lower.ends_with("mw") {
+        return raw[..raw.len() - 2]
+            .trim()
+            .parse::<u32>()
+            .map_err(|e| CliError::new(format!("invalid raw value: {e}")));
+    }
+    let big: f64 = raw
+        .parse()
+        .map_err(|e| CliError::new(format!("invalid value: {e}")))?;
+    if !big.is_finite() || big < 0.0 {
+        return Err(CliError::new(format!("invalid value: {raw}")));
+    }
+    Ok((big * 1000.0).round() as u32)
 }
 
 fn parse_command(raw: &str) -> CliResult<Command> {
@@ -3924,9 +3947,11 @@ fn execute_target(
             };
             // raw + derived display per identity: policyId 0 = mW (board
             // power), OCP mA family = A. Sentinels (def==max==5001000) are
-            // "unbounded".
+            // "unbounded". `current_raw` is the live control value paired to
+            // this index (index = the set-ocp-limit write target).
+            let control_values = snap.control.as_ref().map(|(values, _)| values.clone());
             Ok(json!({
-                "policies": snap.policies.iter().map(|c| {
+                "policies": snap.policies.iter().enumerate().map(|(i, c)| {
                     let display = if c.is_board_power() {
                         format!("{} W default / {} W max", c.default_raw / 1000, c.max_raw / 1000)
                     } else if c.is_ocp_current() && c.max_raw != 5_001_000 {
@@ -3943,6 +3968,7 @@ fn execute_target(
                         "min_raw": c.min_raw,
                         "default_raw": c.default_raw,
                         "max_raw": c.max_raw,
+                        "current_raw": control_values.as_ref().and_then(|v| v.get(i)).copied(),
                         "display": display,
                     })
                 }).collect::<Vec<_>>(),
@@ -4030,35 +4056,46 @@ fn execute_target(
         }
         Command::SetPowerChannelLimit => {
             let rail = invocation.positionals[0].to_ascii_lowercase();
-            let raw = invocation.positionals[1].trim();
-            // A by default (one decimal allowed); `ma` suffix = raw mA.
-            let value_raw: u32 = if let Some(ma) = raw.strip_suffix("ma") {
-                ma.trim()
-                    .parse::<u32>()
-                    .map_err(|e| CliError::new(format!("invalid mA value: {e}")))?
-            } else {
-                (raw.parse::<f64>()
-                    .map_err(|e| CliError::new(format!("invalid current: {e}")))?
-                    * 1000.0)
-                    .round() as u32
-            };
+            let value_raw = parse_power_channel_value(&invocation.positionals[1])?;
             let snap = run(target, QueryNvapiPowerChannels)?
                 .output
                 .ok_or_else(|| {
                     CliError::new("PowerChannels table not supported on this GPU/driver")
                 })?;
-            let channel = match rail.as_str() {
-                "nvvdd" | "core" => snap.nvvdd_ocp,
-                "msvdd" | "memory" => snap.msvdd_ocp,
-                other => {
-                    return Err(CliError::new(format!(
-                        "unknown rail '{other}' (expected nvvdd|msvdd)"
-                    )))
-                }
-            }
-            .ok_or_else(|| CliError::new(format!(
-                "no OCP current channel resolved for rail '{rail}' on this generation (Pascal has none; see get-power-channels)"
-            )))?;
+            // Rail resolution: named NVVDD/MSVDD aliases, or a numeric index
+            // straight off get-power-channels (any populated channel —
+            // value units follow the row: A/mA on current channels, W/mW on
+            // the board-power row).
+            let channel = if let Ok(index) = rail.parse::<u32>() {
+                snap.policies
+                    .iter()
+                    .find(|c| c.index == index)
+                    .ok_or_else(|| {
+                        CliError::new(format!(
+                            "no populated power channel at index {index} (available: {})",
+                            snap.policies
+                                .iter()
+                                .map(|c| c.index.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                    })?
+            } else {
+                let named = match rail.as_str() {
+                    "nvvdd" | "core" => snap.nvvdd_ocp.as_ref(),
+                    "msvdd" | "memory" => snap.msvdd_ocp.as_ref(),
+                    other => {
+                        return Err(CliError::new(format!(
+                            "unknown rail '{other}' (expected nvvdd|msvdd or a numeric index from get-power-channels)"
+                        )));
+                    }
+                };
+                named.ok_or_else(|| {
+                    CliError::new(format!(
+                        "no OCP current channel resolved for rail '{rail}' on this generation (Pascal has none; see get-power-channels)"
+                    ))
+                })?
+            };
             let applied = run(
                 target,
                 SetNvapiPowerChannelValue {
@@ -4068,14 +4105,39 @@ fn execute_target(
                 },
             )?
             .output;
-            Ok(json!({
-                "applied": true,
-                "rail": rail,
-                "identity": format!("({},{})", channel.policy_id, channel.subtype),
-                "raw_mA": applied,
-                "amperes": applied as f64 / 1000.0,
-                "driver_window_mA": [channel.min_raw, channel.max_raw],
-            }))
+            // Unit-suffixed keys so the human labels carry the row's own
+            // unit: "Raw mA" / "Driver Window mA" on an OCP current channel,
+            // "Raw mW" / "Watts" on the board-power row.
+            let board = channel.is_board_power();
+            let (raw_key, window_key, big_key) = if board {
+                ("raw_mW", "driver_window_mW", "watts")
+            } else {
+                ("raw_mA", "driver_window_mA", "amperes")
+            };
+            let mut output = serde_json::Map::new();
+            output.insert("applied".to_string(), json!(true));
+            output.insert("rail".to_string(), json!(rail));
+            output.insert("index".to_string(), json!(channel.index));
+            output.insert(
+                "identity".to_string(),
+                json!(format!("({},{})", channel.policy_id, channel.subtype)),
+            );
+            output.insert(big_key.to_string(), json!(applied as f64 / 1000.0));
+            output.insert(raw_key.to_string(), json!(applied));
+            output.insert(
+                window_key.to_string(),
+                json!([channel.min_raw, channel.max_raw]),
+            );
+            if applied != value_raw {
+                // The write went through the driver's [min,max] window (the
+                // user's own run: 140 A asked, 135 A window max stored).
+                output.insert(
+                    format!("requested_{}", if board { "mW" } else { "mA" }),
+                    json!(value_raw),
+                );
+                output.insert("clamped_to_driver_window".to_string(), json!(true));
+            }
+            Ok(Value::Object(output))
         }
         Command::GetTopRelsRatio => {
             let Some((offset, raw)) = run(target, QueryNvapiTopRelsRatio)?.output else {
@@ -8627,6 +8689,25 @@ fn summarize_errors(execution: &Execution) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// set-ocp-limit value grammar: the plain number is the channel's big
+    /// unit (A on OCP rows, W on the board-power row) ×1000 = raw; a `ma`/
+    /// `mw` suffix (case-insensitive) is the raw driver integer; negatives/
+    /// NaN are rejected.
+    #[test]
+    fn power_channel_value_grammar() {
+        assert_eq!(parse_power_channel_value("240").unwrap(), 240_000);
+        assert_eq!(parse_power_channel_value("0.5").unwrap(), 500);
+        assert_eq!(parse_power_channel_value("240000ma").unwrap(), 240_000);
+        assert_eq!(parse_power_channel_value(" 125000ma ").unwrap(), 125_000);
+        assert_eq!(parse_power_channel_value("140000mA").unwrap(), 140_000);
+        assert_eq!(parse_power_channel_value("175mw").unwrap(), 175);
+        assert_eq!(parse_power_channel_value("250 MW").unwrap(), 250);
+        assert!(parse_power_channel_value("-5").is_err());
+        assert!(parse_power_channel_value("abc").is_err());
+        assert!(parse_power_channel_value("nan").is_err());
+        assert!(parse_power_channel_value("inf").is_err());
+    }
 
     /// Mode-0 control VALUE is signed (i32 kHz, stored two's complement):
     /// -100000 kHz ×2 Pascal axis must render -100.0 MHz, not the
