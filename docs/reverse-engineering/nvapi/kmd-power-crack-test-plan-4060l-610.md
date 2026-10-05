@@ -98,10 +98,34 @@ e. 写回原值:nvoc-cli set-pwr-cur-limit tgp <默认>
 注意:cap 值可能有多份拷贝(遥测镜像),用"同页含 max+default 三元组"消歧;
 `set-pwr-cur-limit` 会窗钳到 [min,max],选扰动值必须在窗内。
 
-### 3.3 定位交付
+### 3.3 Root 形状签名(NvpwrControl 源码补充,2026-10-06)
+
+差分扫描的消歧器(来自 NvpwrControl driver.c 源码,xOCD 审计
+nvpwrcontrol-blackwell-tuner-audit.md §2.8):候选策略对象处应呈字段序列
+
+```text
++0x3D10 init=1(u8) | elig(u8) | amountActive(u8) | pad
++0x3D14 cTGP(u32) | 0x3D18 amount(u32) | 0x3D1C policy_key(u32,<0x40)
++0x3D20 LOWER(u32) | 0x3D24 UPPER(u32)
+```
+
+出厂 4060L 期待 cTGP=amount=UPPER=100000、LOWER=min;差分(90→95W)时
+amount 变、邻位不动。注意:以上偏移是 **616.92 布局**,610 上作为"五元组
+相邻形状"的搜索模式使用(找到等价五元组再定 610 的实际偏移),不得照抄数值。
+
+### 3.4 定位交付
 
 对象内核 VA、物理帧、base/amount/UPPER/selector 槽位偏移表(3.1 与 3.2
 互相印证后定稿)。**没有这页档案,禁止进入 L3。**
+
+### 3.5 L3 写协议纪律(NvpwrControl 两阶段范本)
+
+内核写保持 RM 状态连贯的完整范本(audit 文档 §2.8 ②):Phase A 檐下整备
+(MAX/UPPER 钉回出厂 → 经**原生 setter** 改 cTGP/amount/elig 触发生成器重跑
+→ F7/CURRENT 验证连贯)→ Phase B 抬顶(MAX+UPPER)→ 收敛验证;回滚镜像逆序。
+610 适配清单(全部需 610 idalib):§2.4 的 6 个 RVA+签名、GPU 表链、
+Major+0x25B0→Root、Board+0x2D0 setter。粗验证起步可只直写 UPPER+amount
+观察生成器是否回写,连贯写再补原生调用。
 
 ## 4. L3 执行层写探针(写,高危)
 
