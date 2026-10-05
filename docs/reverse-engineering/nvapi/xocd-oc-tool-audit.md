@@ -345,3 +345,11 @@ P3 —— 设计借鉴（用户已裁决后续再做）：Profile 体系、Apply
 - `get-power-channels` 每行新增 `current_raw`（与 index 配对的活体控制值）；P100 实机 = 各行默认值（股票卡 250000 等，8 行逐项吻合）。
 - 渲染修正（用户报告"Raw MA"）：`format_label` 补 `mA/mW` SI 大小写映射与 `OCP/NVVDD/MSVDD/TGP` 缩写词表；`parse_power_channel_value` 后缀大小写不敏感。cli 72 测试绿（新增 value 语法与渲染回归）。
 - 关联：§17.2 P2 #12"板功率 mW 直写，价值存疑"**解除存疑**——与 set-power-limit 同源但入口不同（同表任意行 vs TGP 专用视图），保留两条入口（前者=全表/诊断，后者=常规 TGP 操作）。
+
+### 18.3 两视图几何对齐（2026-10-05 用户要求"v1 全表应与紧凑表对齐"）——已实证
+
+用户要求先做视图对齐：理论上 0x12720 全表（v1|10016，`set-power-limit` 用）与 0x10A4C 紧凑表（v1|2636，`set-ocp-limit` 用）应逐条对齐。**结论：两视图是同一张表的两个基址，逐条完全对齐，已由活体实证。**
+
+- **几何（代码已发布并对齐）**：`NV_GPU_CLIENT_TGP_WATT_STATUS_V1` 现公开 `ENTRY_BASE=0x8A0`/`ENTRY_STRIDE=40`/`ENTRY_VALUE_OFF=4`；紧凑视图 `NV_GPU_CLIENT_TGP_WATT_STATUS_10A4C_V1` 的 `COMPACT_STRIDE=40`/`COMPACT_VALUE_OFF=4`/`COMPACT_ENTRY_BASE=28`。**两视图共享 stride 与 value 偏移（entry+4），唯一差异是表基址**（0x8A0 vs 28）；行索引 = info 掩码位 = 控制条目 = 写掩码位，写契约 `1<<index` 两视图一致。sys 单测 `tgp_full_and_compact_views_align` 断言该几何恒等式（stride/value 相等、基址不等、buffer dword = base+value_off+40i），已绿。
+- **活体实证（P100/582.41，探针 e8）**：同一 info 掩码播种（`seed=0x449f`）下，两戳 GET 均 `status=0`；8 个已填充条目（bit 0/1/2/3/4/7/10/14，含板功率 bit2 id(0,0)、Turing OCP 家族的 (6,1)/(3,x) 等）**compact 值 == full 值 == info 默认值，逐条 ALIGNED，0 MISMATCH**。快照 `reverse/xocd/e8-tgp-alignment.json`；探针 `e8_tgp_full_compact_alignment`（GET-only）。
+- **对写路径的含义**：`set-power-limit`(--nvapi) 现走 0x12720（538+ 才有此戳）；紧凑 0x10A4C 是**兼容面更宽**的同一对象视图（R465 起即接受）。故"把 TGP 写落到共享的紧凑核心上"在几何上无阻碍（同一 stride/value/掩码契约），可作为后续统一点——收益=pre-538 驱动也能走同一 `set_tgp_watt` 核心；风险=需按 §16.9 配方（info 播种 + 几何检测 + `1<<index` 读回/回滚）改写并实机回归。当前不强制合并，两视图各自可写。
