@@ -39,16 +39,56 @@ const DEVICE_ACCESS: u32 = 0xC000_0000;
 const DEVICE_SHARE: u32 = 0x3;
 /// `OPEN_EXISTING`。
 const DEVICE_OPEN_EXISTING: u32 = 0x3;
-/// `CTL_CODE(FILE_DEVICE_UNKNOWN, 0xAAE, METHOD_BUFFERED, FILE_ANY_ACCESS)`。
+/// 驱动构建代际(码表分键)。
 ///
-/// 注意:IDA 反编译器对分发器 `sub edx,imm / jz` 链的常量折叠会把基址选错
-/// (给出 0x222840 族),汇编实证基址是 0x222A80(`sub edx, 222A80h`),实测
-/// 0x2228 族全数 87 拒绝、0x222A 族命中。
-const IOCTL_MAP_PHYS: u32 = 0x222AB8;
-/// `CTL_CODE(FILE_DEVICE_UNKNOWN, 0xAAF, ...)`。
-const IOCTL_UNMAP_PHYS: u32 = 0x222ABC;
-/// `CTL_CODE(FILE_DEVICE_UNKNOWN, 0xAB4, ...)`。
-const IOCTL_LAST_ERROR: u32 = 0x222AD0;
+/// 两代共享同一 PMxDrv32e 源码与请求布局,但功能号排布不同:
+///
+/// | 原语 | `Intel2019`(xOCD 内嵌款) | `Paiptac`(PAIPTAC 重建款) |
+/// |---|---|---|
+/// | MAP_PHYS | `0x222AB8` | `0x222878` |
+/// | UNMAP_PHYS | `0x222ABC` | `0x22287C` |
+/// | LAST_ERROR | `0x222AD0` | `0x222890` |
+///
+/// 布局实证:PAIPTAC 逆向前 idalib 记录见
+/// `reverse/kmd-driver-exploit-candidate/ANALYSIS.md`;map 多一条 `pa != 0`
+/// 校验(2019 版无),本通道从不映射 0 页,不受影响。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PmxDrvBuild {
+    Intel2019,
+    Paiptac,
+}
+
+/// 一代构建的三码表。
+struct PmxDrvTable {
+    map: u32,
+    unmap: u32,
+    last_error: u32,
+}
+
+const INTEL_2019_TABLE: PmxDrvTable = PmxDrvTable {
+    map: 0x222AB8,
+    unmap: 0x222ABC,
+    last_error: 0x222AD0,
+};
+
+const PAIPTAC_TABLE: PmxDrvTable = PmxDrvTable {
+    map: 0x222878,
+    unmap: 0x22287C,
+    last_error: 0x222890,
+};
+
+impl PmxDrvBuild {
+    fn table(self) -> PmxDrvTable {
+        match self {
+            PmxDrvBuild::Intel2019 => INTEL_2019_TABLE,
+            PmxDrvBuild::Paiptac => PAIPTAC_TABLE,
+        }
+    }
+}
+
+/// 全部已知构建,连接时按序探测。
+const KNOWN_BUILDS: [PmxDrvBuild; 2] = [PmxDrvBuild::Intel2019, PmxDrvBuild::Paiptac];
+
 /// 64 位进程的固定输入长度(驱动 prologue 校验,`sub_140001884`)。
 const INPUT_LEN: usize = 16;
 /// 请求结构 tag(=结构长);不匹配驱动直接拒绝。
@@ -72,16 +112,24 @@ quick_error! {
         MapFailed(code: Option<u32>) {
             display("PMxDrv map rejected (driver code {:?}: request tag/size or unreachable physical range)", code)
         }
+        UnknownBuild {
+            display("PMxDrv device answered but neither known build's code table matched (Intel2019 0x222A80-family / Paiptac 0x222840-family)")
+        }
     }
 }
 
-/// 一个 PMxDrv 设备句柄。
+/// 一个 PMxDrv 设备句柄(连接时自动探测构建代际)。
 pub struct PmxDrv {
     handle: HANDLE,
+    build: PmxDrvBuild,
 }
 
 impl PmxDrv {
     /// 打开 `\\.\PMXDRV`(驱动须已由服务方式加载)。
+    ///
+    /// 用 LAST_ERROR 探针做构建自动探测:它无副作用(只把驱动的内部错误码
+    /// 回填到请求 `+4`),两代构建都存在;哪个码表命中就是哪代。两代都不
+    /// 命中 = 未知构建(码表又漂了),报 [`PmxError::UnknownBuild`]。
     pub fn connect() -> Result<Self, PmxError> {
         let wide: Vec<u16> = DEVICE_PATH
             .encode_utf16()
@@ -106,18 +154,34 @@ impl PmxDrv {
                 other => PmxError::Win32(other),
             });
         }
-        Ok(Self { handle })
+        for build in KNOWN_BUILDS {
+            let mut request = [0u8; 24];
+            if Self::forward_raw(handle, build.table().last_error, &mut request).is_ok() {
+                return Ok(Self { handle, build });
+            }
+        }
+        Err(PmxError::UnknownBuild)
+    }
+
+    /// 探测到的驱动构建代际。
+    pub fn build(&self) -> PmxDrvBuild {
+        self.build
     }
 
     /// 发一次「指针转发」IOCTL:输入 16 字节,内容是用户态请求结构的地址。
     fn forward(&self, ioctl: u32, request: &mut [u8]) -> Result<(), PmxError> {
+        Self::forward_raw(self.handle, ioctl, request)
+    }
+
+    /// [`Self::forward`] 的裸句柄版(构建探测期还没有 Self,避免双关句柄)。
+    fn forward_raw(handle: HANDLE, ioctl: u32, request: &mut [u8]) -> Result<(), PmxError> {
         debug_assert!(request.len() >= 24);
         let mut input = [0u8; INPUT_LEN];
         input[..8].copy_from_slice(&(request.as_ptr() as u64).to_le_bytes());
         let mut returned: u32 = 0;
         let ok = unsafe {
             DeviceIoControl(
-                self.handle,
+                handle,
                 ioctl,
                 input.as_ptr() as *const c_void,
                 input.len() as u32,
@@ -136,7 +200,8 @@ impl PmxDrv {
     /// 读驱动的内部错误码(`LAST_ERROR` 把请求 `+4` 复位为 0 后回填)。
     fn last_error(&self) -> Option<u32> {
         let mut request = [0u8; 24];
-        self.forward(IOCTL_LAST_ERROR, &mut request).ok()?;
+        self.forward(self.build.table().last_error, &mut request)
+            .ok()?;
         Some(u32::from_le_bytes(request[4..8].try_into().unwrap()))
     }
 
@@ -146,7 +211,7 @@ impl PmxDrv {
         request[0..4].copy_from_slice(&REQ_MAP_LEN.to_le_bytes());
         request[4..12].copy_from_slice(&pa.to_le_bytes());
         request[12..16].copy_from_slice(&pages.to_le_bytes());
-        self.forward(IOCTL_MAP_PHYS, &mut request)
+        self.forward(self.build.table().map, &mut request)
             .map_err(|err| self.map_failure(err))?;
         let va = u64::from_le_bytes(request[16..24].try_into().unwrap());
         if va == 0 || va == MAP_FAIL_MARK {
@@ -168,7 +233,7 @@ impl PmxDrv {
         let mut request = [0u8; 24];
         request[0..4].copy_from_slice(&REQ_MAP_LEN.to_le_bytes());
         request[16..24].copy_from_slice(&va.to_le_bytes());
-        self.forward(IOCTL_UNMAP_PHYS, &mut request)
+        self.forward(self.build.table().unmap, &mut request)
     }
 }
 

@@ -24,14 +24,20 @@
   符号链接 `\DosDevices\PMXDRV`(用户态开 `\\.\PMXDRV`),全部
   `CTL_CODE(FILE_DEVICE_UNKNOWN, fn, METHOD_BUFFERED, FILE_ANY_ACCESS)`:
 
-  | IOCTL | 值 | 用途 / 请求布局(经 16 字节指针转发) |
+  IOCTL 面按构建代际分两套码表(请求布局两代相同,连接时用无副作用的
+  LAST_ERROR 探针自动探测,`PmxDrv::build()` 返回代际):
+
+  | 原语(请求布局,经 16 字节指针转发) | `Intel2019` 码 | `Paiptac` 码 |
   |---|---|---|
-  | MAP_PHYS | `0x222AB8` | `{tag=24, u64 pa@4, u32 pages@12, u64 va_out@16}` |
-  | UNMAP_PHYS | `0x222ABC` | `{tag=24, u64 va@16}` |
-  | LAST_ERROR | `0x222AD0` | 驱动写 u32 内部错误码到请求 `+4` |
-  | PORT_IO | `0x222AA4` | `{tag=16, op@4(1/2/3 in b/w/d, 4/5/6 out), u16 port@8, val@12}`(未接线) |
-  | PCI_CFG | `0x222AA8` | `{tag=28, mode@4, bdf/off@8, bus@10, and@12, or@16, old@20, val@24}`(未接线) |
-  | 事件环 | `0x222A80` | 17168 字节日志缓冲(xOCD 遥测,未接线) |
+  | MAP_PHYS `{tag=24, u64 pa@4(≠0), u32 pages@12, u64 va_out@16}` | `0x222AB8` | `0x222878` |
+  | UNMAP_PHYS `{tag=24, u64 va@16}` | `0x222ABC` | `0x22287C` |
+  | LAST_ERROR(驱动写 u32 错误码到请求 `+4`) | `0x222AD0` | `0x222890` |
+  | PORT_IO `{tag=16, op@4(1/2/3 in b/w/d, 4/5/6 out), u16 port@8, val@12}` | `0x222AA4` | `0x222864`(未接线) |
+  | PCI_CFG `{tag=28, mode@4, bdf/off@8, bus@10, and@12, or@16, old@20, val@24}` | `0x222AA8` | `0x222868`(未接线) |
+  | 事件环 17168 字节日志缓冲(xOCD 遥测) | `0x222A80` | `0x222840`(未接线) |
+
+  Paiptac 构建还有 16 个其余码(0x222844..0x2228A4 面共 22 码,含 MSR/cpuid/
+  虚拟读写等),未接线。
 
 - **调用形态**(也是它被归为"漏洞驱动"的原因):DeviceIoControl 输入恒
   16 字节 = `[u64 用户态请求指针][u32 aux<=0x3F][u32 pad]`,驱动**不加探测
@@ -40,9 +46,11 @@
   **当前进程**,返回的 `va_out` 是本进程用户态地址,读完 `UNMAP_PHYS` 即可。
   映射页保护是 PAGE_READWRITE:传输层天然可写,本车道只读、写路径继续封存。
   映射失败的哨兵:va_out = 0 或 `0xBEEF`(32 位分支另有 `0xDEAD` = VA 超 32 位)。
-- **坑(已踩)**:IDA 反编译器对分发器 `sub edx,imm / jz` 链的常量折叠会
-  给出**错 0x240 的 IOCTL 基址**(0x222840 族)——汇编实证基址是
-  `0x222A80`(`sub edx, 222A80h`);0x2228 族全数 win32 87 拒绝。
+- **坑(已踩,后记修正)**:对 2019 款,IDA 反编译器把分发器 IOCTL 基址
+  折叠成 0x222840 族(实测 0x2228 族全数 win32 87 拒绝),汇编实证真基址是
+  `0x222A80`(`sub edx, 222A80h`)。**但 0x222840 族并非虚构**——它恰是
+  PAIPTAC 重建款的真码表(idalib case 表 + map/unmap handler 调用图实证,
+  见下节):两代构建功能号排布互换,所以本通道按构建分键双码表。
 - **实机复现**(本机 K4000/582.41):两段探针全绿 ——
   `probe_pmxdrv_transport_maps_low_memory`(map/read/unmap 冒烟)+
   `probe_kernel_walk_reads_nvlddmkm_header`(255/255 低内存页可读,
@@ -85,7 +93,9 @@ Intel 于 2019-11-12 发过修复版。实测 **PAIPTAC 重建版(`pmxdrv_new.sy
 逐点同构,且 IOCTL 面膨胀到 22 码(**0x222840 族**,与 2019 版 0x222A80 族
 不同代;双版兼容传输层需按构建分键码表)。同目录微软 WHQL 的 `KslD` 是
 Defender TDT 传感器驱动(Rust,tdt_driver_lib),非物理内存 provider,排除。
-本车道维持 Intel 1.0.0.1003(哈希钉死)不变。
+本车道主用 Intel 1.0.0.1003(哈希钉死);**2026-10-06 起 pmxdrv.rs 双码表
+兼容 PAIPTAC 重建款**(连接时 LAST_ERROR 探针自动分代,`PmxDrv::build()` 可查;
+map/unmap/lasterror 布局两代逐字段相同,仅 map 多 `pa≠0` 校验,本通道不受影响)。
 
 ## 同类替代品盘点(2026-10-05)
 

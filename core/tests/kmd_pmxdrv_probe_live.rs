@@ -26,6 +26,7 @@ fn probe_pmxdrv_transport_maps_low_memory() {
         Ok(drv) => drv,
         Err(err) => panic!("PMxDrv 打开失败: {err}"),
     };
+    println!("驱动构建代际: {:?}", drv.build());
     // IVT/BIOS 数据区(0x1000..0x2000)是恒在 RAM,任何 x64 机器可读。
     let va = drv.map_physical(0x1000, 1).expect("映射物理 0x1000 失败");
     println!("映射成功: 物理页 0x1000 -> 用户 VA 0x{va:016X}");
@@ -63,6 +64,7 @@ fn probe_kernel_walk_reads_nvlddmkm_header() {
         Ok(drv) => drv,
         Err(err) => panic!("PMxDrv 打开失败(先 sc start PMXDRV,elevated): {err}"),
     };
+    println!("驱动构建代际: {:?}", drv.build());
     let physical = PmxDrvPhysMem::new(&drv);
     let discovery = discover_root(&physical, module.base, &fingerprint);
     for event in &discovery.events {
