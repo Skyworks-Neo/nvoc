@@ -1148,14 +1148,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::SetPowerCommand,
                 CommandSpec {
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["channel", "command", "force"])),
+                    options: Box::leak(Box::new(["channel", "command", "force", "kmd", "pmxdrvpath"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_value",
                     "VALUE",
                     "Raw cell value; a bare number is watts (×1000 = the mW driver unit), a `mw` suffix is the raw integer. 0 and 0xFFFFFFFF are rejected (unset sentinels)",
                 )])),
                     formatter: Some(output::format_set_power_command),
-                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value")
+                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value. --kmd KERNEL PATH (HIGH RISK, admin): one-shot kernel cycle via the kmd lane (pmxdrv service register → page-walk + static layout probe → PowerRoot locate with D-state-aware live-wall matching → UPPER single-u32 write with readback → native tgp write (window follows UPPER) → this lease write LAST (echo sync) → re-verify → service unregister). --pmxdrvpath <file> is the driver binary (required with --kmd). UPPER is volatile (resets on reboot); absolute cap 500 W; --force required (it also bypasses the lease envelope)")
                 },
             ),
             (
@@ -2323,6 +2323,16 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("force")
             .action(ArgAction::SetTrue)
             .help("set-power-command: bypass the safety envelope (board default × 2, floor 1 W). The write still only moves the echo layer (GET/NVML/nvidia-smi readback), not load-time enforcement"),
+        "kmd" => Arg::new("kmd")
+            .long("kmd")
+            .action(ArgAction::SetTrue)
+            .conflicts_with("channel")
+            .conflicts_with("command")
+            .help("set-power-command: KERNEL wall raise via the kmd lane (pmxdrv). The positional becomes the target wall in watts; the command runs the full one-shot cycle (service register -> locate -> UPPER -> tgp -> lease -> verify -> unregister). Admin + --force + --pmxdrvpath required; UPPER is volatile; hard cap 500 W"),
+        "pmxdrvpath" => Arg::new("pmxdrvpath")
+            .long("pmxdrvpath")
+            .value_name("FILE")
+            .help("set-power-command --kmd: path to pmxdrv.sys (the Intel2019 signed build)"),
         "unsafe" => Arg::new("unsafe")
             .long("unsafe")
             .action(ArgAction::SetTrue)
@@ -2450,6 +2460,7 @@ fn collect_named_options(
             | "volt"
             | "dump-records"
             | "force"
+            | "kmd"
             | "unsafe" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
@@ -2506,6 +2517,12 @@ fn execute(invocation: &Invocation) -> CliResult<Execution> {
             .filter(|p| !p.is_empty())
     {
         return execute_get_vbios_file(invocation, command, path);
+    }
+
+    // set-power-command --kmd:内核功率墙原子流。系统级(无 GPU backend、
+    // 无 NVAPI 依赖的入口),在 backend 机器前短路。
+    if command == Command::SetPowerCommand && invocation.options.contains_key("kmd") {
+        return execute_set_power_command_kmd(invocation, command);
     }
 
     match invocation.backend {
@@ -6818,6 +6835,68 @@ fn vfp_point_type_label(point_type: VfPointType) -> &'static str {
 /// `get-vbios -i <file>`: parse a local ROM dump offline. Mirrors the live
 /// paths' output shapes (same decode functions, same formatter sniffing);
 /// NvAPI-only metadata (security_flags, status_string) is absent by design.
+/// `set-power-command --kmd` 处理器:位置参数 = 目标墙(W 或 mw 后缀),
+/// 调 core::kmd::power 的全周期原子流,输出步骤日志与已验证事实。
+fn execute_set_power_command_kmd(
+    invocation: &Invocation,
+    command: Command,
+) -> CliResult<Execution> {
+    if !invocation.options.contains_key("force") {
+        return Err(CliError::new(
+            "--kmd requires --force (kernel wall raise is beyond every driver envelope)",
+        ));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = invocation;
+        let _ = command;
+        return Err(CliError::new("--kmd is Windows-only"));
+    }
+    #[cfg(windows)]
+    {
+        let Some(raw) = option_one(invocation, "pmxdrvpath") else {
+            return Err(CliError::new(
+                "--kmd requires --pmxdrvpath <pmxdrv.sys> (the Intel2019 signed driver binary)",
+            ));
+        };
+        let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
+        // kmd 语义:目标墙(租约单位 mW;墙下限 50 W 由 core 门把守)
+        let wall_mw = value_raw;
+        let outcome = nvoc_core::kmd::power::set_power_wall_kmd(wall_mw, std::path::Path::new(raw))
+            .map_err(|e| CliError::new(format!("kmd wall raise failed: {e}")))?;
+        let steps = outcome.steps.iter().map(|s| format!("  {s}")).collect::<Vec<_>>();
+        let value = json!({
+            "kmd": true,
+            "root_va": format!("{:#016X}", outcome.root.root_va),
+            "root_frame": format!("{:#X}", outcome.root.frame_root),
+            "upper_frame": format!("{:#X}", outcome.root.frame_upper),
+            "upper_before_mw": outcome.upper_before_mw,
+            "upper_after_mw": outcome.upper_after_mw,
+            "tgp_written_w": outcome.tgp_written_w,
+            "tgp_note": outcome.tgp_write_note,
+            "lease_written_mw": outcome.lease_written_mw,
+            "lease_note": outcome.lease_note,
+            "layout": outcome.layout_summary,
+            "service": outcome.service,
+            "steps": steps,
+            "note": "UPPER is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
+        });
+        Ok(Execution {
+            function: command.name(),
+            command,
+            backend: "kmd".to_string(),
+            warnings: Vec::new(),
+            results: vec![TargetResult {
+                gpu_id: None,
+                backend: "kmd",
+                ok: true,
+                output: Some(value),
+                error: None,
+            }],
+        })
+    }
+}
+
 fn execute_get_vbios_file(
     invocation: &Invocation,
     command: Command,
