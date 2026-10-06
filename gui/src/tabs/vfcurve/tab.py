@@ -2038,8 +2038,8 @@ class VFCurveTab:
         # melonVolt payload slots for offset math (R610.74 marshal): control
         # offsets 1/2/3 = VBIOS wall / VRM wall / VMIN min-hold; status walls
         # 2/3/5 = the same walls' live values.
-        self._volt_slots_by_rail = {}
-        self._volt_walls_by_rail = {}
+        new_slots: Dict[int, tuple] = {}
+        new_walls: Dict[int, tuple] = {}
         for entry in vr.get("control", []) or []:
             if not isinstance(entry, dict):
                 continue
@@ -2049,7 +2049,7 @@ class VFCurveTab:
             except (TypeError, ValueError):
                 continue
             if len(vals) >= 4:
-                self._volt_slots_by_rail[bit] = (vals[1], vals[2], vals[3])
+                new_slots[bit] = (vals[1], vals[2], vals[3])
         for entry in vr.get("status", []) or []:
             if not isinstance(entry, dict):
                 continue
@@ -2059,7 +2059,14 @@ class VFCurveTab:
             except (TypeError, ValueError):
                 continue
             if len(vals) >= 6:
-                self._volt_walls_by_rail[bit] = (vals[2], vals[3], vals[5])
+                new_walls[bit] = (vals[2], vals[3], vals[5])
+        # A backend that hides the payloads (older pynvoc / CLI path) yields
+        # empty maps — keep the previous snapshot so the bind handles and
+        # offset baselines survive the refresh instead of blinking out.
+        if new_walls:
+            self._volt_walls_by_rail = new_walls
+        if new_slots:
+            self._volt_slots_by_rail = new_slots
         self._sync_active_p0_view()
         self._redraw()
 
@@ -3074,7 +3081,10 @@ class VFCurveTab:
         """
         bit = self._active_p0_rail_bit()
         walls = self._volt_walls_by_rail.get(bit)
-        if walls is None:
+        if walls is None or walls == (0, 0, 0):
+            # Fresh snapshot not landed yet (post-apply ensure_p0_bounds is
+            # async) — fall back to the p0 payload the indicators were drawn
+            # from so the handles never blink out.
             p0 = self._active_p0_bounds()
             if not isinstance(p0, dict):
                 return None, None
