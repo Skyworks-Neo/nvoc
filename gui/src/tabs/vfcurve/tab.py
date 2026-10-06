@@ -582,8 +582,8 @@ class VFCurveTab:
         self._dragging_floor: bool = False
         self._ceiling_handle = None  # static Polygon (figure margin)
         self._floor_handle = None  # static Polygon (figure margin)
-        self._pending_ceiling_line = None  # animated dashed vline (blit)
-        self._pending_floor_line = None  # animated dashed vline (blit)
+        self._p0_ceiling_vline = None  # solid indicator; follows the drag
+        self._p0_floor_vline = None  # solid indicator; follows the drag
         self._volt_slots_by_rail: Dict[int, tuple] = {}
         self._volt_walls_by_rail: Dict[int, tuple] = {}
 
@@ -2977,9 +2977,11 @@ class VFCurveTab:
                     lw=0,
                     zorder=1.5,
                 )
+            self._p0_floor_vline = None
+            self._p0_ceiling_vline = None
             if floor_uv > 0:
                 floor_mv = floor_uv / 1000.0
-                ax.axvline(
+                self._p0_floor_vline = ax.axvline(
                     x=floor_mv,
                     color="#8b0000",
                     linewidth=1.2,
@@ -3004,7 +3006,7 @@ class VFCurveTab:
             walls = [w for w in (vbios_uv, vrm_uv) if w > 0]
             if walls:
                 ceil_mv = min(walls) / 1000.0
-                ax.axvline(
+                self._p0_ceiling_vline = ax.axvline(
                     x=ceil_mv,
                     color="#8b0000",
                     linewidth=1.2,
@@ -3184,50 +3186,6 @@ class VFCurveTab:
                 self._floor_handle.set_visible(False)
         if call_draw_idle:
             self.canvas.draw_idle()
-
-    def _hide_bind_ghosts(self) -> None:
-        for attr in ("_pending_ceiling_line", "_pending_floor_line"):
-            line = getattr(self, attr, None)
-            if line is not None:
-                try:
-                    line.set_visible(False)
-                except Exception:
-                    pass
-
-    def _draw_bind_ghosts(self, call_draw_idle: bool = True):
-        """Dashed ghost vlines for pending ceiling/floor drags."""
-        pairs = (
-            ("#cc0000", self._pending_ceiling_mv, "_pending_ceiling_line"),
-            ("#7a1fa2", self._pending_floor_mv, "_pending_floor_line"),
-        )
-        for color, mv, attr in pairs:
-            line = getattr(self, attr, None)
-            if mv is None:
-                if line is not None:
-                    try:
-                        line.set_visible(False)
-                    except Exception:
-                        pass
-                continue
-            if line is not None:
-                line.set_xdata([mv, mv])
-                line.set_visible(True)
-            else:
-                setattr(
-                    self,
-                    attr,
-                    self.ax.axvline(
-                        x=mv,
-                        color=color,
-                        linewidth=1.2,
-                        linestyle="--",
-                        alpha=0.85,
-                        zorder=4.15,
-                        animated=True,
-                    ),
-                )
-        if call_draw_idle:
-            self._blit_animated()
 
     def _hit_bind_handle(self, event) -> Optional[str]:
         """'ceiling' / 'floor' when a click lands on a bind triangle."""
@@ -3445,7 +3403,6 @@ class VFCurveTab:
                     if self._pending_floor_mv is None:
                         _, floor = self._bind_current_mv()
                         self._pending_floor_mv = floor
-                self._draw_bind_ghosts()
                 self._draw_bind_handles()
                 return
         # Wall-drag handle lives ABOVE the axes (in the top figure margin),
@@ -3571,13 +3528,17 @@ class VFCurveTab:
                 lo = max(450.0, (floor + self._WALL_STEP_MV) if floor else 450.0)
                 ceiling = max(lo, mv)
                 self._pending_ceiling_mv = ceiling
+                if self._p0_ceiling_vline is not None:
+                    self._p0_ceiling_vline.set_xdata([ceiling, ceiling])
             else:
                 hi = (ceiling - self._WALL_STEP_MV) if ceiling else mv
                 floor = min(450.0 if hi < 450.0 else hi, max(450.0, mv))
                 floor = min(floor, hi)
                 self._pending_floor_mv = max(450.0, floor)
-            self._draw_bind_ghosts()
+                if self._p0_floor_vline is not None:
+                    self._p0_floor_vline.set_xdata([floor, floor])
             self._draw_bind_handles()
+            self.canvas.draw_idle()
             return
 
         if self._dragging_wall and event.x is not None:
