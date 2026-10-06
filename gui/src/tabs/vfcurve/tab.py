@@ -3106,11 +3106,10 @@ class VFCurveTab:
     def _draw_bind_handles(self, call_draw_idle: bool = True):
         """Draw the ceiling/floor bind triangles.
 
-        Ceiling: inverted dark-red triangle in the TOP margin (base on the
-        axes top spine, tip up) — visually distinct from the light-red
-        tip-down effective-wall handle sharing that margin. Floor:
-        dark-red triangle hanging BELOW the axes bottom spine (tip up).
-        Both track pending drags when active, else the applied walls.
+        Ceiling and floor triangles BOTH hang below the voltage axis
+        (apex just under the bottom spine, tip pointing UP at the wall —
+        opposite of the top-margin effective-wall handle). Both track
+        pending drags when active, else the applied walls.
         """
         if self.ax is None or self.fig is None:
             return
@@ -3149,34 +3148,40 @@ class VFCurveTab:
             self.ax.add_patch(patch)
             return patch
 
-        # Ceiling: inverted dark-red triangle above the axes top spine.
-        if ceiling_mv is None:
+        # Both bind triangles live BELOW the voltage axis, tip UP (opposite
+        # of the top-margin effective-wall handle): apex just under the
+        # bottom spine pointing at the wall, base below the tick labels.
+        if ceiling_mv is None and floor_mv is None:
             self._hide_bind_handles()
         else:
-            face = "#cc0000" if self._pending_ceiling_mv is None else "#ff2200"
-            self._ceiling_handle = _triangle(
-                [
-                    (ceiling_mv, y_top + 0.070),
-                    (ceiling_mv - hw, y_top + 0.006),
-                    (ceiling_mv + hw, y_top + 0.006),
-                ],
-                face,
-                0.92,
-                self._ceiling_handle,
-            )
-        # Floor: dark-red triangle below the axes bottom spine, tip up.
-        if floor_mv is not None:
-            face = "#cc0000" if self._pending_floor_mv is None else "#ff2200"
-            self._floor_handle = _triangle(
-                [
-                    (floor_mv, y_bot - 0.075),
-                    (floor_mv - hw, y_bot - 0.010),
-                    (floor_mv + hw, y_bot - 0.010),
-                ],
-                face,
-                0.92,
-                self._floor_handle,
-            )
+            if ceiling_mv is not None:
+                face = "#cc0000" if self._pending_ceiling_mv is None else "#ff2200"
+                self._ceiling_handle = _triangle(
+                    [
+                        (ceiling_mv, y_bot - 0.006),
+                        (ceiling_mv - hw, y_bot - 0.075),
+                        (ceiling_mv + hw, y_bot - 0.075),
+                    ],
+                    face,
+                    0.92,
+                    self._ceiling_handle,
+                )
+            elif self._ceiling_handle is not None:
+                self._ceiling_handle.set_visible(False)
+            if floor_mv is not None:
+                face = "#cc0000" if self._pending_floor_mv is None else "#ff2200"
+                self._floor_handle = _triangle(
+                    [
+                        (floor_mv, y_bot - 0.006),
+                        (floor_mv - hw, y_bot - 0.075),
+                        (floor_mv + hw, y_bot - 0.075),
+                    ],
+                    face,
+                    0.92,
+                    self._floor_handle,
+                )
+            elif self._floor_handle is not None:
+                self._floor_handle.set_visible(False)
         if call_draw_idle:
             self.canvas.draw_idle()
 
@@ -5188,9 +5193,14 @@ class VFCurveTab:
                 (1, vbios_wall - vbios_off, "VBIOS wall"),
                 (2, vrm_wall - vrm_off, "VRM wall"),
             ):
+                # Baseline wall = 0 → the driver does not expose this wall on
+                # the rail (mobile vbios wall is the common case). Writing an
+                # offset against a nonexistent wall is undefined — leave that
+                # slot untouched and the ceiling rides the other wall.
                 if base_wall <= 0:
                     messages.append(
-                        f"Warning: {name} baseline unavailable — slot {slot} skipped."
+                        f"P0 ceiling: {name} not exposed on this rail "
+                        f"(baseline 0) — slot {slot} left uncontrolled."
                     )
                     continue
                 offset = target_uV - base_wall
@@ -5206,6 +5216,12 @@ class VFCurveTab:
                     f"P0 ceiling → {name} offset {applied} µV (wall = {ceiling_mv:g} mV)."
                 )
         if floor_mv is not None:
+            if min_wall <= 0:
+                messages.append(
+                    "P0 floor: VMIN min-hold not exposed on this rail "
+                    "(baseline 0) — slot 3 left uncontrolled."
+                )
+                return messages
             floor_mv = max(450.0, floor_mv)
             target_uV = int(round(floor_mv * 1000))
             base_min = min_wall - min_off
