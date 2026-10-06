@@ -1795,16 +1795,24 @@ class VFCurveTab:
     # ────────────────────────────────────────────
     # P0 voltage-boundary lines (deep red walls + light red effective)
     # ────────────────────────────────────────────
-    def ensure_p0_bounds(self, gpu: str) -> None:
-        """Query P0 voltage bounds once per GPU (hardware walls don't move).
+    def ensure_p0_bounds(self, gpu: str, force: bool = False) -> None:
+        """Query P0 voltage bounds once per GPU (walls were assumed static).
 
         Called the first time the VF curve loads for a given GPU. The full
         ``p0`` dict is cached and the effective-wall line seeded; subsequent
         refreshes short-circuit on the gpu key (no per-second NVAPI read).
         The overclock panel's post-apply path calls
         :meth:`update_p0_effective_wall` to move just the light-red line.
+
+        ``force=True`` re-queries on the SAME gpu — required after a
+        ceiling/floor bind write, because those payload slots MOVE the
+        walls (the once-static assumption no longer holds).
         """
-        if self._p0_bounds_gpu == gpu and self._p0_bounds is not None:
+        if (
+            not force
+            and self._p0_bounds_gpu == gpu
+            and self._p0_bounds is not None
+        ):
             return
         # GPU changed (or first load): clear any stale line so the old GPU's
         # effective wall isn't briefly shown over the new curve.
@@ -5206,8 +5214,9 @@ class VFCurveTab:
                 messages.append(
                     f"P0 floor → VMIN offset {applied} µV (min hold = {floor_mv:g} mV)."
                 )
-        # Refresh the p0 snapshot so handles/baselines track the new walls.
-        self.app.after(0, lambda: self.ensure_p0_bounds(gpu))
+        # Refresh the p0 snapshot so handles/indicators/baselines track the
+        # new walls (forced: the walls themselves moved).
+        self.app.after(0, lambda: self.ensure_p0_bounds(gpu, force=True))
         return messages
 
     def _on_wall_applied(self, eff_mv: float, rail_bit: Optional[int] = None) -> None:
