@@ -2560,6 +2560,8 @@ class VFCurveTab:
         # stale references so the _draw_*_handle calls below recreate them.
         self._pending_wall_line = None
         self._wall_handle = None
+        self._ceiling_handle = None
+        self._floor_handle = None
         active_colors = _curve_colors_for(self._active_curve)
         active_label = self._curve_label(self._active_curve)
 
