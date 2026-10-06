@@ -1,7 +1,7 @@
 # nvoc kmd 通道(内核驱动物理读 + nvlddmkm 地址空间走查)
 
 内核态驱动读写实验的落地目录。**当前只读**:物理读经已签名内核驱动转发,
-在 [nvoc-core/src/kmd](../src/kmd/) 里复刻 xOCD 2.0.0 `NvidiaKernelReader` 的
+复刻 xOCD 2.0.0 `NvidiaKernelReader` 的
 页表走查算法,用于直接读取 `nvlddmkm.sys` 的内核虚拟地址空间。写路径
 (驱动原语天然可写)留给后续能力位实验。
 
@@ -9,14 +9,13 @@
 
 2026-10-05 经用户裁决定下的内核通道,即 xOCD 同款的「Intel ME 驱动路子」:
 
-- **来源**:`reverse/xocd/xOCD.exe` 内嵌资源(xOCD.exe+0x38E5F4,43632 字节,
+- **来源**:`xOCD.exe` 内嵌资源(xOCD.exe+0x38E5F4,43632 字节,
   SHA256 `B1A8EE1222EEA5F199028D90B9B77C2ACF46D6D84A9E125403B2888C6F681C72`);
   PDB 路径 `C:\MyProjects\git\pmx-cse-new\x64\Release\pmxdrv.pdb` —— CSE 即
   Intel Converged Security Engine(ME 的现代名),驱动自称
   `PMxDrv32e - IA32e Protected Mode Execution MP WinNT Driver`,2019-07-07 构建,
   Authenticode 签名 `Intel(R) Embedded Subsystems and IP Blocks Group`(有效,
-  时间戳服务器 timestamp.intel.com)。驱动本体不入库(Intel 专有),留在
-  `reverse/xocd/pmxdrv.sys`。
+  时间戳服务器 timestamp.intel.com)`。
 - **加载**:管理员 `sc create PMXDRV type= kernel start= demand binPath=<sys 绝对路径>`
   + `sc start PMXDRV`。本机实测(Win11 26200,HVCI 关):装载成功;
   微软漏洞驱动黑名单未拦(注册表 `VulnerableDriverBlocklistEnable` 未设)。
@@ -52,7 +51,7 @@
   2239104 = **0x222A80**——反编译器与汇编从来一致,错的是我的进制换算。
   教训:CTL_CODE 常量一律用工具换算,不手算(见 nvapi-struct-magic-idioms
   同类教训)。
-- **实机复现**(本机 K4000/582.41):两段探针全绿 ——
+- **实机复现**(P100/582.41):两段探针全绿 ——
   `probe_pmxdrv_transport_maps_low_memory`(map/read/unmap 冒烟)+
   `probe_kernel_walk_reads_nvlddmkm_header`(255/255 低内存页可读,
   low-stub 唯一根 `0x1AE000`,活体 nvlddmkm 头 timestamp/SizeOfImage/
@@ -60,7 +59,7 @@
 
   ```
   # 管理员
-  sc create PMXDRV type= kernel start= demand binPath= D:\git-repo\nvoc\reverse\xocd\pmxdrv.sys
+  sc create PMXDRV type= kernel start= demand binPath= [pmxdrv.sys]
   sc start PMXDRV
   cargo test -p nvoc-core --test kmd_pmxdrv_probe_live -- --ignored --nocapture
   sc stop PMXDRV && sc delete PMXDRV
@@ -114,7 +113,7 @@ PAIPTAC 款被安全策略阻止装载、Intel 2019 款正常**(2026-10-06 用�
 的组合;风险口径是 BYOVD(自带漏洞驱动)——传输层天然可写、无探测解引用,
 本车道代码只读并只触碰 RAM 范围(低内存/页表帧)。
 
-KDU(hfiref0x,`reverse/KDU-master`)考察结论(2026-10-06):**不采用**。其
+KDU考察结论(2026-10-06):**不采用**。其
 pmxdrv provider 与本通道逐项相同(intel.cpp 同码 0x222AB8/ABC、同 low-stub
 根发现、同 VtoP 走查——三方同源互证),`-map` 机制解决的是我们不需要的
 "装载未签名驱动",且 KDU.exe 是 AV/EDR 摩擦最大的 BYOVD 工具、其 provider
