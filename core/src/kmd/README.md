@@ -1,9 +1,10 @@
 # nvoc kmd 通道(内核驱动物理读 + nvlddmkm 地址空间走查)
 
-内核态驱动读写实验的落地目录。**当前只读**:物理读经已签名内核驱动转发,
-复刻 xOCD 2.0.0 `NvidiaKernelReader` 的
-页表走查算法,用于直接读取 `nvlddmkm.sys` 的内核虚拟地址空间。写路径
-(驱动原语天然可写)留给后续能力位实验。
+内核态驱动读写实验的落地目录。读路径:物理读经已签名内核驱动转发,
+复刻 xOCD 2.0.0 `NvidiaKernelReader` 的页表走查算法,直接读取
+`nvlddmkm.sys` 的内核虚拟地址空间。写路径已于 2026-10-06 **受控开放**:
+仅限 [`power.rs`](power.rs) 的功率墙原子流(`set-power-command --kmd`,
+见下文「功率墙原子流」节),其余通道保持只读。
 
 ## 主传输层:Intel PMxDrv(`pmxdrv.sys`,pmxdrv.rs)
 
@@ -126,4 +127,82 @@ trait,不引入 KDU)。详见 `ANALYSIS.md` §5。
 - 走查限内核指针(`>= 0xFFFF8000_00000000`),单次虚拟读 ≤64 KiB,
   低内存扫描 255 页固定范围;
 - 读错物理页的后果是读到垃圾(探针报活体/磁盘不一致),不会写坏;
-- 唯一的写风险在显式接写路径之后——当前 Rust 层无任何写调用。
+- 写路径受控开放:仅 [`power.rs`](power.rs) 功率墙原子流,其余只读。
+
+## 跨代静态布局探测(`layout_probe.rs`,2026-10-06)
+
+对任意一代 x64 nvlddmkm **磁盘镜像**,纯静态推导 RM 电源策略对象链的
+全部偏移(fail-closed,零硬件):DriverGlobal 槽 → GPU 表(count/ID/Major)
+→ Major→root → root 七字段(init/elig/amountActive/base/amount/key/LOWER/
+UPPER),外加 RM 命令 0x2080A61A/0x2080E61B 的分派表项与 handler RVA。
+
+锚点链(全部跨代实证,576.02/610.74/616.92 三代):
+
+1. **F7 记录写签名** `66 C7 44 24 ?? F7 03`(字节级稳定)→ int3 边界回溯
+   得生成器 → 反汇编提 root 字段:结构间距分类(byte 对 {x,x+1} + 五 dword
+   {x+4..x+14}),绝对偏移即出。注意 init(x) 本身可能不被生成器访问
+   (610 实测只摸 elig/amountActive/key),从 elig 候选回退推 x;
+2. **SetAmount 族互证**:`80 B8 [init] 00`(cmp byte [reg+init],0)签名
+   → 序首 `mov r64,[rcx+M]` = Major→root,与锚 1 不一致即拒绝;
+3. **字节锚定语义扫描**:全 .text 扫 `48/4C 8B ??(mod=00,rm=101)`
+   (mov r64,[rip+d32],目标在写段)→ 0x200 小窗寄存器跟踪。跨代教训:
+   全量线性反汇编在数据混排段失同步,字节锚定是唯一可靠路径。产物 =
+   DriverGlobal 槽 + state→表 + 表内大偏移簇;
+4. **表链消歧**:ID/Major 谁带 disp32 随代码生成翻转(610: ID 可见;
+   616.92: Major 可见)——按**访问宽度**消歧(dword=ID、qword=Major),
+   dword 候选逐个试,「ID 后方 0x100..0x400 有 count」为接受条件;
+   count−ID = **0x1F8 三代恒定**(结构不变量,可作硬校验);
+5. **RM 分派**:cmd 立即数在 .text(代码引用)与 .rdata(分派表)各命中
+   一次,只认「+0x10 处为镜像内指针」的分派表命中。
+
+产物 `NvlddmkmLayout`(serde)带锚点审计 trail;校准测试
+`kmd_layout_probe_calibration.rs` 钉死三代地面真值逐字段断言。
+
+| | 576.02 | 610.74 | 616.92 |
+|---|---|---|---|
+| state 槽 | 0x1239E50 | 0x13AAD58 | 0x13B2E18 |
+| state→表 | 0x1F0 | 0x200 | 0x208 |
+| count/ID/Major | 3F1F0/3EFF0/3EFF8 | 48440/48248/48240 | 48C48/48A50/48A48 |
+| Major→root | 0x2258 | 0x2510 | 0x25B0 |
+| root init/UPPER | 0x1638/0x164C | 0x3CE0/0x3CF4 | 0x3D10/0x3D24 |
+
+## 功率墙原子流(`power.rs`,`set-power-command --kmd`)
+
+写路径受控开放的唯一出口。**一条命令完成全周期**,漏洞驱动只在内存里
+停留一个命令周期:
+
+```text
+nvoc-cli set-power-command 160 --kmd --pmxdrvpath <pmxdrv.sys> --force
+```
+
+```text
+服务注册(PMXDRV_KMD,残留自清;设备已在位则复用,崩溃残留认领)
+→ 布局自动探测(layout_probe,对本机在役镜像;跨代零硬编码)
+→ 走查(255 页低内存扫根 → 页表翻译)
+→ D 状态感知定位(活体墙 = tgp-control-current,与候选 UPPER 精确匹配;
+  非 D1 场景如 D2=55W 时 UPPER≠滑条顶,靠活体墙消歧,多候选歧义即拒)
+→ UPPER 单 u32 写(身份门 init=1/key<0x40;读回校验,不符即时回滚)
+→ 原生 tgp 写(仅控制值 < 目标时写 —— 防窗钳把已抬的控制压回)
+→ 租约写最后(set_power_command_checked,回显面同步)
+→ 复验 → 服务注销(驱动拒卸载时诚实上报:标记删除,重启消失)
+```
+
+安全设计(逐条实证):
+
+- `--force` 必需;**绝对上限 500 W**,任何旗标都不过;
+- UPPER 写易失(重启回落)——与「每开机一跑」的单命令形态互相成全;
+- 定位门:init==1 ∧ key<0x40 ∧ UPPER∈[10W,500W] ∧ LOWER≤UPPER;
+- 崩溃自愈:服务名 PMXDRV_KMD 是本命令专属,上次进程死在清理前时,
+  下次运行认领残留并在结尾清理;用户自管服务(如 PMXDRV_NEW)永不触碰;
+- System32\drivers 回退:内核取不到原始卷镜像时(StartService win32 2)
+  自动复制重试一次;`\??\` ImagePath 不吃 canonicalize 的 `\\?\` 前缀;
+- 设备名冲突(`\\.\Pmxdrv` 已被在役实例占用 → win32 183):复用分支兜住,
+  不与用户自管服务打架。
+
+实测(4060L/610.74,2026-10-06):UPPER 140000→160000 抬墙后窗钳跟随
+(tgp 160 接受),负载 Board Power **164.1 W**(超越 140 W 滑条顶),
+1000 s FP32 GEMM 无计算错误;三代校准全绿。端到端三轮:干净态全周期 ✓、
+幂等重跑 ✓、崩溃残留自愈 ✓。
+
+前置:管理员令牌;显卡低电压锁已解(不解除则负载吃不满新墙,详见
+任务书 §4 field note)。
