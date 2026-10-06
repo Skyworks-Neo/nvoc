@@ -58,6 +58,20 @@ const CASES: &[GroundTruth] = &[
         init: 0x3D10,
         upper: 0x3D24,
     },
+    // 576.02(Pre-Ada 老一代;地面真值由独立 Python 方法学推导,2026-10-06。
+    // 结构不变量 count-ID=0x1F8 与 610/616.92 一致,state→表按代 -8)
+    GroundTruth {
+        path: r"D:\git-repo\nvoc\reverse\nvlddmkm_57602.sys",
+        timestamp: 0x67FA012A,
+        size_of_image: 0x06C1B000,
+        slot: 0x1239E50,
+        state_d: 0x1F0,
+        count: 0x3F1F0,
+        major: 0x3EFF0,
+        major_root: 0x2258,
+        init: 0x1638,
+        upper: 0x164C,
+    },
 ];
 
 #[test]
