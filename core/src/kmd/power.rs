@@ -168,9 +168,13 @@ pub struct BoardWindowOutcome {
     /// 三元组所在页(页对齐 VA)与物理帧。
     pub page_va: u64,
     pub frame: u64,
-    /// 页内偏移:max=写目标槽,cur/def/min=活体锚(cur=None = info 行,
-    /// 页上无 control 槽)。
+    /// 页内偏移:max=写目标槽(主槽),cur/def/min=活体锚(cur=None =
+    /// 无 control 槽的行)。
     pub max_off: usize,
+    /// 本次抬升写入的全部 max 槽(行 = 1 槽;宽记录页 = 全部镜像槽)。
+    pub max_offs: Vec<usize>,
+    /// 行类型:control(活体控制行)/ info(静态策略行)/ wide(宽记录页)。
+    pub row_kind: String,
     pub cur_off: Option<usize>,
     pub def_off: usize,
     pub min_off: Option<usize>,
@@ -749,12 +753,13 @@ fn board_arm(
     }
     let cands =
         board::probeable_candidates(&scan, board::PROBE_CAP).map_err(KmdPowerError::Locate)?;
-    // 候选校验:max 槽读回必须等于活体窗顶 + 帧翻译可用,不过者剔除
-    let mut valid: Vec<&board::BoardWindowCandidate> = Vec::new();
+    // 候选校验:max 槽读回必须等于活体窗顶 + 帧翻译可用,不过者剔除;
+    // 控制行(cur Some)优先,info 行(静态策略行,无 control 槽)殿后
+    let mut valid: Vec<board::BoardWindowCandidate> = Vec::new();
     for cand in cands {
         let max_va = cand.page_va + cand.hit.max_off as u64;
         if rd_u32(phys, walk_root, max_va) == Some(live.max_mw) && cand.frame != 0 {
-            valid.push(cand);
+            valid.push(cand.clone());
         } else {
             steps.push(format!(
                 "候选剔除: 页 {:#x} max@+{:#x}(读回/帧校验不过)",
@@ -762,46 +767,100 @@ fn board_arm(
             ));
         }
     }
-    if valid.is_empty() {
-        return Err(KmdPowerError::Locate(
-            "全部候选读回/帧校验不过 — 拒(用 locate-trace 打印候选邻域人工判读)".into(),
+    valid.sort_by_key(|c| c.hit.cur_off.is_none());
+    let mut targets: Vec<ProbeTarget> = valid.into_iter().map(ProbeTarget::Row).collect();
+
+    // 宽记录页候选(行候选之后):2070/3060 共现实证 —— 功率通道控制表的
+    // 行内 {min, default, max} 各 2-3 副本、步距 0x4C/0x50(2070: 0xAE0/
+    // 0xB30/0xB80;3060: 0x8F0/0x93C/0x988),远超行判据的 0x20 聚拢;
+    // 钳源若读这张表,页内全部 max 槽必须同抬(镜像一致)。
+    {
+        let (worklist, _) = board::scan_domain_pages(phys, walk_root, root_va);
+        let co =
+            board::value_cooccurrence_scan(phys, walk_root, &worklist, &live, board::PAGE_BUDGET);
+        let row_pages: std::collections::HashSet<u64> =
+            targets.iter().map(|t| t.page_va()).collect();
+        let mut wide_added = 0usize;
+        for hit in &co {
+            if targets.len() >= board::PROBE_CAP {
+                break;
+            }
+            if row_pages.contains(&hit.page_va) {
+                continue; // 行候选已覆盖该页
+            }
+            let Some((_, offs)) = hit.values.iter().find(|(v, _)| *v == live.max_mw) else {
+                continue;
+            };
+            let mut max_offs: Vec<usize> = offs.clone();
+            max_offs.sort_unstable();
+            max_offs.truncate(16);
+            let frame = super::pagewalk::translate(phys, walk_root, hit.page_va)
+                .map(|pa| pa & !0xFFF)
+                .unwrap_or(0);
+            if frame == 0 {
+                continue;
+            }
+            targets.push(ProbeTarget::Wide {
+                page_va: hit.page_va,
+                frame,
+                max_offs,
+            });
+            wide_added += 1;
+        }
+        steps.push(format!(
+            "宽行候选: 共现 {} 页(≥2 活体值),纳入探测 {wide_added} 页(排在行候选之后)",
+            co.len()
         ));
     }
-    // 控制行(cur Some)优先,info 行(静态策略行,无 control 槽)殿后
-    valid.sort_by_key(|c| c.hit.cur_off.is_none());
-    // 逐候选探测:写 max → **到达验证**。oracle 优先级:nvidia-smi -pl 瓦特
-    // 地面真值(接受 = 窗真抬了,current 同时落位;拒绝时 stderr 的范围读数
-    // 直接指认钳源)→ percent 多假设(安全面)。2070 三轮实证链:控制行
-    // control 槽跟 NVML 写走、range GET 读静态 info 行、"GET 跟随"失灵 ——
-    // 到达类 oracle 是唯一可靠判据;失败轮回滚 max + 恢复 current,零残留。
-    let mut success: Option<(&board::BoardWindowCandidate, String, Option<u32>)> = None;
-    for (round, cand) in valid.iter().enumerate() {
+
+    // 逐目标探测:写全部 max 槽 → **到达验证**。oracle 优先级:nvidia-smi
+    // -pl 瓦特地面真值(接受 = 窗真抬了,current 同时落位;拒绝时的范围
+    // 读数直接指认钳源)→ percent 多假设(安全面)。失败轮回滚全部槽 +
+    // 恢复 current,零残留。
+    let mut success: Option<(ProbeTarget, String, Option<u32>)> = None;
+    for (round, target) in targets.iter().enumerate() {
         if success.is_some() {
             break;
         }
-        let max_va = cand.page_va + cand.hit.max_off as u64;
         steps.push(format!(
-            "探测 {}/{}: 页 {:#x}(帧 {:#x})max@+{:#x} cur@{:?} def@+{:#x} min@{:?} 跨度 {}B",
+            "探测 {}/{}: {}",
             round + 1,
-            valid.len(),
-            cand.page_va,
-            cand.frame,
-            cand.hit.max_off,
-            cand.hit.cur_off,
-            cand.hit.def_off,
-            cand.hit.min_off,
-            cand.hit.span
+            targets.len(),
+            target.label()
         ));
-        if let Err(e) = write_u32_phys(
-            phys,
-            walk_root,
-            max_va,
-            wall_mw,
-            live.max_mw,
-            "Board max",
-            steps,
-        ) {
-            steps.push(format!("  → 写入失败,跳过该候选({e})"));
+        let slots = target.max_slots();
+        let mut written: Vec<u64> = Vec::new();
+        let mut write_err = None;
+        for va in &slots {
+            match write_u32_phys(
+                phys,
+                walk_root,
+                *va,
+                wall_mw,
+                live.max_mw,
+                "Board max",
+                steps,
+            ) {
+                Ok(()) => written.push(*va),
+                Err(e) => {
+                    write_err = Some(e);
+                    break;
+                }
+            }
+        }
+        if let Some(e) = write_err {
+            for va in &written {
+                let _ = write_u32_phys(
+                    phys,
+                    walk_root,
+                    *va,
+                    live.max_mw,
+                    wall_mw,
+                    "Board max 回滚",
+                    steps,
+                );
+            }
+            steps.push(format!("  → 写入失败,跳过该目标({e})"));
             continue;
         }
         let (reached, ok_writes) = window_reach_probe(gpu, wall_mw, &live, steps);
@@ -809,18 +868,20 @@ fn board_arm(
             steps.push(format!(
                 "  → 窗跟验证 ✓({how} 读回到达 {wall_mw} mW)— 保持抬升"
             ));
-            success = Some((cand, how, rb));
+            success = Some((target.clone(), how, rb));
         } else {
             steps.push("  → 各 oracle 读回均 < 目标(镜像/窗未跟)— 回滚 max".into());
-            write_u32_phys(
-                phys,
-                walk_root,
-                max_va,
-                live.max_mw,
-                wall_mw,
-                "Board max 回滚",
-                steps,
-            )?;
+            for va in &slots {
+                write_u32_phys(
+                    phys,
+                    walk_root,
+                    *va,
+                    live.max_mw,
+                    wall_mw,
+                    "Board max 回滚",
+                    steps,
+                )?;
+            }
             if ok_writes > 0 {
                 current_restore(gpu, &live, steps);
             }
@@ -828,24 +889,26 @@ fn board_arm(
     }
     let Some((primary, how, readback)) = success else {
         return Err(KmdPowerError::Write(
-            "全部候选探测后无一让窗跟 oracle 到达目标 — 已全部回滚。把失败输出里的 \
-             nvidia-smi 拒绝行(范围读数)与 locate-trace 差分(control 槽跟动行)发回判读"
+            "全部目标(行+宽页)探测后无一让窗跟 oracle 到达 — 已全部回滚。把失败输出里的 \
+             nvidia-smi 拒绝行(范围读数)与 locate-trace 共现地图发回判读"
                 .into(),
         ));
     };
-    let max_va = primary.page_va + primary.hit.max_off as u64;
+    let max_va = primary.max_slots()[0];
     steps.push(format!(
-        "Board 臂收束: 页 {:#x}(帧 {:#x})max@+{:#x} 抬至 {wall_mw} ✓,current 经 {how} 顶到 {readback:?}",
-        primary.page_va, primary.frame, primary.hit.max_off
+        "Board 臂收束: {} 抬至 {wall_mw} ✓,current 经 {how} 顶到 {readback:?}",
+        primary.label()
     ));
     Ok((
         BoardWindowOutcome {
-            page_va: primary.page_va,
-            frame: primary.frame,
-            max_off: primary.hit.max_off,
-            cur_off: primary.hit.cur_off,
-            def_off: primary.hit.def_off,
-            min_off: primary.hit.min_off,
+            page_va: primary.page_va(),
+            frame: primary.frame(),
+            max_off: primary.primary_off(),
+            max_offs: primary.max_offs(),
+            row_kind: primary.kind().to_string(),
+            cur_off: primary.cur_off(),
+            def_off: primary.def_off(),
+            min_off: primary.min_off(),
             live_current_mw: live.current_mw,
             live_default_mw: live.default_mw,
             live_max_mw: live.max_mw,
@@ -860,6 +923,113 @@ fn board_arm(
         },
         max_va,
     ))
+}
+
+/// 一个探测目标:行候选(控制行/info 行,单 max 槽)或宽记录页(共现页,
+/// 页内全部 max 槽同抬 —— 镜像必须一起动)。
+#[derive(Debug, Clone)]
+enum ProbeTarget {
+    Row(board::BoardWindowCandidate),
+    Wide {
+        page_va: u64,
+        frame: u64,
+        max_offs: Vec<usize>,
+    },
+}
+
+impl ProbeTarget {
+    fn page_va(&self) -> u64 {
+        match self {
+            Self::Row(c) => c.page_va,
+            Self::Wide { page_va, .. } => *page_va,
+        }
+    }
+
+    fn frame(&self) -> u64 {
+        match self {
+            Self::Row(c) => c.frame,
+            Self::Wide { frame, .. } => *frame,
+        }
+    }
+
+    /// 本目标的全部 max 槽 VA(行 = 1 槽;宽页 = 全部镜像槽)。
+    fn max_slots(&self) -> Vec<u64> {
+        match self {
+            Self::Row(c) => vec![c.page_va + c.hit.max_off as u64],
+            Self::Wide {
+                page_va, max_offs, ..
+            } => max_offs.iter().map(|o| page_va + *o as u64).collect(),
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Row(c) => format!(
+                "[行] 页 {:#x}(帧 {:#x})max@+{:#x} cur@{:?} def@+{:#x} min@{:?} 跨度 {}B",
+                c.page_va,
+                c.frame,
+                c.hit.max_off,
+                c.hit.cur_off,
+                c.hit.def_off,
+                c.hit.min_off,
+                c.hit.span
+            ),
+            Self::Wide {
+                page_va,
+                frame,
+                max_offs,
+            } => format!(
+                "[宽页] 页 {:#x}(帧 {:#x})max 槽 {} 个 @{:?}(镜像同抬)",
+                page_va,
+                frame,
+                max_offs.len(),
+                max_offs
+            ),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Row(c) if c.hit.cur_off.is_some() => "control",
+            Self::Row(_) => "info",
+            Self::Wide { .. } => "wide",
+        }
+    }
+
+    fn primary_off(&self) -> usize {
+        match self {
+            Self::Row(c) => c.hit.max_off,
+            Self::Wide { max_offs, .. } => max_offs.first().copied().unwrap_or(0),
+        }
+    }
+
+    fn max_offs(&self) -> Vec<usize> {
+        match self {
+            Self::Row(c) => vec![c.hit.max_off],
+            Self::Wide { max_offs, .. } => max_offs.clone(),
+        }
+    }
+
+    fn cur_off(&self) -> Option<usize> {
+        match self {
+            Self::Row(c) => c.hit.cur_off,
+            Self::Wide { .. } => None,
+        }
+    }
+
+    fn def_off(&self) -> usize {
+        match self {
+            Self::Row(c) => c.hit.def_off,
+            Self::Wide { .. } => 0,
+        }
+    }
+
+    fn min_off(&self) -> Option<usize> {
+        match self {
+            Self::Row(c) => c.hit.min_off,
+            Self::Wide { .. } => None,
+        }
+    }
 }
 
 /// percent 试探序列(整数 percent,ceil 保证换算值 ≥ 目标):100%

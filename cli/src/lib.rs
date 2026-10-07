@@ -6896,7 +6896,9 @@ fn execute_set_power_command_kmd(
             value["board_page_va"] = json!(format!("{:#016X}", board.page_va));
             value["board_frame"] = json!(format!("{:#X}", board.frame));
             value["window_offsets"] = json!({
+                "kind": board.row_kind,
                 "max": board.max_off,
+                "max_all": board.max_offs,
                 "cur": board.cur_off,
                 "def": board.def_off,
                 "min": board.min_off,
