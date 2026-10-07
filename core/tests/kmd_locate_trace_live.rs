@@ -296,6 +296,29 @@ fn locate_root_trace_live() {
             }
         }
     }
+    // ---- 值共现地图(宽记录行 >MATCH_SPAN 的定位手段;基本域 = root + 指针一跳)
+    let (worklist, _domain_notes) = board::scan_domain_pages(&pm, walk_root, root_va);
+    let co = board::value_cooccurrence_scan(&pm, walk_root, &worklist, &live, board::PAGE_BUDGET);
+    println!("值共现: {} 页含 ≥2 种活体值(前 12)", co.len());
+    for hit in co.iter().take(12) {
+        let vals = hit
+            .values
+            .iter()
+            .map(|(v, offs)| {
+                let os = offs
+                    .iter()
+                    .map(|o| format!("{o:#x}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{v}@[{os}]")
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("  页 {:#016X}: {}", hit.page_va, vals);
+    }
+    if co.len() > 12 {
+        println!("  …(+{} 页略,需要更窄判据)", co.len() - 12);
+    }
     match scan.candidates.len() {
         1 => println!("唯一候选 ✓"),
         0 => println!(

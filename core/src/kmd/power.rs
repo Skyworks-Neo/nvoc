@@ -939,13 +939,19 @@ fn window_reach_probe(
             }
         }
         Ok(out) => {
+            // nvidia-smi 的报错常走 stdout 而非 stderr —— 两路都抓,
+            // 范围读数(out of range [min, max])是钳源窗口的直接证据
             let err = String::from_utf8_lossy(&out.stderr);
-            let err = err.trim();
-            if err.is_empty() {
-                steps.push("  nvidia-smi -pl 被拒(stderr 空)".into());
+            let sout = String::from_utf8_lossy(&out.stdout);
+            let msg = format!("{}{}", err.trim(), sout.trim());
+            if msg.is_empty() {
+                steps.push(format!(
+                    "  nvidia-smi -pl 被拒(exit {:?},stdout/stderr 全空)",
+                    out.status.code()
+                ));
             } else {
                 steps.push(format!(
-                    "  nvidia-smi -pl 被拒:{err}(这一行是钳源窗口的直接读数,失败也有判读价值)"
+                    "  nvidia-smi -pl 被拒:{msg}(这一行是钳源窗口的直接读数,失败也有判读价值)"
                 ));
             }
         }

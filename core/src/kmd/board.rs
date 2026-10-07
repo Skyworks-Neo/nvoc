@@ -268,21 +268,13 @@ pub fn scan_pages<P: PhysicalMemory>(
     scan
 }
 
-/// 完整定位扫查,两阶段:
-///
-/// 1. root 对象页(直接扫)+ 其内核指针一跳目标(展开后扫),预算
-///    [`PAGE_BUDGET`];
-/// 2. 命中候选页的池邻域(±[`NEIGHBORHOOD_PAGES`] 页)再扫,预算
-///    [`SWEEP_BUDGET`] —— 活体行常与 echo/lease 行同池而未被指针覆盖。
-///
-/// 返回全部候选,**不**做放行裁决(写臂做逐候选探测,人工判读走 trace
-/// 工具打印全部)。
-pub fn locate_board_window_candidates<P: PhysicalMemory>(
+/// 域内工作表:root 对象页 + 其内核指针一跳目标(去重;扫查与值共现报告
+/// 共用)。返回 (页列表, 截断等 note)。
+pub fn scan_domain_pages<P: PhysicalMemory>(
     phys: &P,
     walk_root: u64,
     root_va: u64,
-    live: &BoardLiveValues,
-) -> BoardWindowScan {
+) -> (Vec<u64>, Vec<String>) {
     let root_pages = root_object_pages(root_va);
     let mut notes = Vec::new();
     // hop1:root 对象页里的内核指针 → 目标页(排除自指/对象页自身)
@@ -310,6 +302,82 @@ pub fn locate_board_window_candidates<P: PhysicalMemory>(
     }
     let mut worklist = root_pages;
     worklist.extend(targets);
+    (worklist, notes)
+}
+
+/// 值共现报告:含有 ≥2 种活体值的页(各值全部页内偏移)。宽记录值行
+/// (步距 > [`MATCH_SPAN`],如 0x148 记录族)三元组/邻域判据抓不到 ——
+/// 共现地图是它们的定位手段(2070/3060 判读用,read-only)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CooccurrenceHit {
+    pub page_va: u64,
+    /// (值, 该值全部页内偏移);按 distinct 值种数降序后按值升序。
+    pub values: Vec<(u32, Vec<usize>)>,
+}
+
+pub fn value_cooccurrence_scan<P: PhysicalMemory>(
+    phys: &P,
+    walk_root: u64,
+    pages: &[u64],
+    live: &BoardLiveValues,
+    budget: usize,
+) -> Vec<CooccurrenceHit> {
+    let mut targets: Vec<u32> = vec![live.current_mw, live.default_mw, live.max_mw];
+    targets.extend(live.min_mw);
+    targets.sort_unstable();
+    targets.dedup();
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut hits = Vec::new();
+    let mut scanned = 0usize;
+    for &pg in pages {
+        if scanned >= budget {
+            break;
+        }
+        if !seen.insert(pg) {
+            continue;
+        }
+        let Ok(page) = read_virtual(phys, walk_root, pg, 4096) else {
+            continue;
+        };
+        scanned += 1;
+        let mut values: Vec<(u32, Vec<usize>)> = Vec::new();
+        for &v in &targets {
+            let offs: Vec<usize> = page
+                .chunks_exact(4)
+                .enumerate()
+                .filter(|(_, c)| u32::from_le_bytes((*c).try_into().expect("4 对齐")) == v)
+                .map(|(i, _)| i * 4)
+                .collect();
+            if !offs.is_empty() {
+                values.push((v, offs));
+            }
+        }
+        if values.len() >= 2 {
+            hits.push(CooccurrenceHit {
+                page_va: pg,
+                values,
+            });
+        }
+    }
+    hits
+}
+
+/// 完整定位扫查,两阶段:
+///
+/// 1. root 对象页(直接扫)+ 其内核指针一跳目标(展开后扫),预算
+///    [`PAGE_BUDGET`];
+/// 2. 命中候选页的池邻域(±[`NEIGHBORHOOD_PAGES`] 页)再扫,预算
+///    [`SWEEP_BUDGET`] —— 活体行常与 echo/lease 行同池而未被指针覆盖。
+///
+/// 返回全部候选,**不**做放行裁决(写臂做逐候选探测,人工判读走 trace
+/// 工具打印全部)。
+pub fn locate_board_window_candidates<P: PhysicalMemory>(
+    phys: &P,
+    walk_root: u64,
+    root_va: u64,
+    live: &BoardLiveValues,
+) -> BoardWindowScan {
+    let (worklist, notes) = scan_domain_pages(phys, walk_root, root_va);
     let mut seen: HashSet<u64> = HashSet::new();
     let mut scan = scan_pages(phys, walk_root, &worklist, live, PAGE_BUDGET, &mut seen);
 
@@ -643,6 +711,29 @@ mod tests {
         let scan = locate_board_window_candidates(&phys, WALK_ROOT, ROOT_VA, &live());
         assert_eq!(scan.candidates.len(), 2);
         assert!(probeable_candidates(&scan, 1).is_err(), "超探测上限必须拒");
+    }
+
+    #[test]
+    fn cooccurrence_reports_wide_record_rows() {
+        // 宽记录行:current 与 max 跨度 0x3C0(> MATCH_SPAN),三元组抓不到,
+        // 共现报告按"≥2 种活体值同页"给出全部偏移
+        let mut pages: HashMap<u64, [u8; 4096]> = HashMap::new();
+        let mut next_table = 0x10_000u64;
+        let va = 0xFFFF_9000_0200_0000;
+        map_page(&mut pages, WALK_ROOT, va, 0x40_000, &mut next_table);
+        {
+            let f = pages.get_mut(&0x40_000).unwrap();
+            f[0x40..0x44].copy_from_slice(&90_000u32.to_le_bytes());
+            f[0x400..0x404].copy_from_slice(&140_000u32.to_le_bytes());
+        }
+        let phys = MockPhysical { pages };
+        let hits = value_cooccurrence_scan(&phys, WALK_ROOT, &[va], &live(), 8);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].page_va, va);
+        assert_eq!(
+            hits[0].values,
+            vec![(90_000, vec![0x40]), (140_000, vec![0x400])]
+        );
     }
 
     #[test]
