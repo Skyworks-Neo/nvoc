@@ -10,9 +10,10 @@
 //!     写 UPPER(单 u32,物理帧,读回校验)→ 原生 tgp 写(窗随 UPPER)
 //!   board 臂(身份门全拒 = 桌面形态,PowerRoot 未武装,见 kmd/board.rs):
 //!     活体窗三元组定位 Board 控制表(root 8 页 + 指针一跳 + 候选页池邻域)
-//!     → 逐候选探测:写窗 max(读回)→ GET 窗跟随验 → 不跟随即回滚
-//!     (跟随者胜出,多镜像同抬)→ percent 写 current(0xAD95F5ED 安全线;
-//!     Turing 上 watt SET 0xAFFC2279 毒,本臂绝不触碰 set_tgp_watt)
+//!     → 逐候选探测:写窗 max(读回)→ percent 到达验证(多假设;桌面
+//!     range GET 读静态 info 行,percent 读回 ≥ 目标是唯一可靠判据)
+//!     → 不到达即回滚+恢复(每轮自愈)→ percent 安全线写 current
+//!     (0xAD95F5ED;Turing 上 watt SET 0xAFFC2279 毒,本臂绝不触碰)
 //! → 租约写(回显面,最后,两臂共用)→ 复验 → 服务停止+注销
 //! ```
 //!
@@ -20,8 +21,8 @@
 //! - 入口要求 `--force`(调用方责任线,与 set-power-command 一致);
 //! - 绝对上限 500 W 硬拒(任何旗标都不过);
 //! - root 臂定位门:init==1 ∧ key<0x40 ∧ UPPER∈[50W,500W](防误配对象);
-//! - board 臂定位门:三元组候选 ≤8(读回+帧校验)+ 逐候选"写-GET 跟随
-//!   验-回滚"探测,跟随者胜出、多镜像同抬;无一跟随全回滚拒写;
+//! - board 臂定位门:三元组候选 ≤8(读回+帧校验)+ 逐候选"写-percent
+//!   到达验-回滚+恢复"探测,胜出行保持抬升;无一到达全回滚拒写;
 //! - board 臂窗内目标直接拒(不需要内核写,percent/NVML 即可);
 //! - 写后读回不一致 → 立即回滚到存档值并报错;
 //! - 任一步失败 → 已注册的服务照常注销(finally 语义),不留残余。
@@ -174,10 +175,10 @@ pub struct BoardWindowOutcome {
     pub live_min_mw: Option<u32>,
     pub max_before_mw: u32,
     pub max_after_mw: u32,
-    /// 写后 GET 窗顶跟随到目标(镜像副本防线通过)。
+    /// 窗跟验证通过(percent 读回到达目标;兼容保留名,oracle 详见
+    /// board_arm 文档)。
     pub window_followed: bool,
-    /// 探测中 GET 窗顶跟随的候选数(echo/镜像行静态不可分,跟随者胜出;
-    /// 多跟随 = 同逻辑字段的镜像副本,全部保持抬升保持一致)。
+    /// 探测胜出的候选数(1 = 恰一行的 max 抬升后 percent 能顶到目标)。
     pub followers: usize,
     /// percent 写(percent 安全面;None = 失败,steps 有说明)。
     pub percent_written: Option<u32>,
@@ -663,11 +664,12 @@ fn write_u32_phys(
 
 /// Board 窗臂:root 未武装(桌面形态)时的破解路径 —— 目标是 Board 控制表
 /// 滑条窗 max(percent/NVML 写路径的窗钳源头)。活体窗三元组定位(扫查含
-/// 候选页池邻域)→ **逐候选探测**:写 max(读回)→ GET 窗跟随验 → 不跟随
-/// 即回滚(“写-验-回滚”是 echo/lease 镜像行的唯一可靠消歧器,每轮自愈)
-/// → 跟随者胜出、多镜像同抬 → percent 写 current(0xAD95F5ED 安全面;Turing
-/// 上 watt SET 0xAFFC2279 毒,**本臂绝不触碰 set_tgp_watt**)。返回(结果
-/// 现场, 墙字段 VA 供终验)。
+/// 候选页池邻域)→ **逐候选探测**:写 max(读回)→ **percent 到达验证**
+/// (多假设 100%/按窗顶/按 default;2070 二轮差分实证 range GET 读静态
+/// info 行,"GET 跟随" oracle 失灵,percent 读回 ≥ 目标是唯一可靠判据)
+/// → 不到达即回滚 max + 恢复 current(每轮自愈)→ 胜出行保持抬升
+/// (percent 安全面 0xAD95F5ED;Turing 上 watt SET 0xAFFC2279 毒,**本臂
+/// 绝不触碰 set_tgp_watt**)。返回(结果现场, 墙字段 VA 供终验)。
 fn board_arm(
     phys: &CachedPhys,
     walk_root: u64,
@@ -758,11 +760,17 @@ fn board_arm(
             "全部候选读回/帧校验不过 — 拒(用 locate-trace 打印候选邻域人工判读)".into(),
         ));
     }
-    // 逐候选探测:写 → GET 窗跟随验 → 不跟随即回滚。echo/lease 镜像行与
-    // 活体行静态不可分(2070 实测 0xFE 标记的 lease cell 三元组同样成立),
-    // "写-验-回滚"探测是唯一可靠的消歧器 —— 每次探测自愈,失败轮零残留。
-    let mut followers: Vec<&board::BoardWindowCandidate> = Vec::new();
+    // 逐候选探测:写 max → **percent 到达验证**。2070 第二轮差分实证
+    // (NVML -pl 200 扰动):控制行的 control 槽跟写走,但 range GET
+    // (0x67F31384)读的是静态 policy info 行 —— "GET 跟随" oracle 在桌面
+    // 天生失灵;percent 读回 ≥ 目标是唯一可靠判据(percent = 安全面
+    // 0xAD95F5ED,watt SET 毒绝不触碰)。echo/lease 镜像行与活体行静态不可
+    // 分,"写-percent 验-回滚+恢复"逐候选自愈消歧。
+    let mut success: Option<(&board::BoardWindowCandidate, u32, Option<u32>)> = None;
     for (round, cand) in valid.iter().enumerate() {
+        if success.is_some() {
+            break;
+        }
         let max_va = cand.page_va + cand.hit.max_off as u64;
         steps.push(format!(
             "探测 {}/{}: 页 {:#x}(帧 {:#x})max@+{:#x} cur@+{:#x} def@+{:#x} min@{:?} 跨度 {}B",
@@ -788,12 +796,14 @@ fn board_arm(
             steps.push(format!("  → 写入失败,跳过该候选({e})"));
             continue;
         }
-        let followed = gpu.tgp_watt_range().ok().flatten().and_then(|r| r.max_mw) == Some(wall_mw);
-        if followed {
-            steps.push("  → GET 窗顶跟随 ✓(保持抬升)".into());
-            followers.push(cand);
+        let (reached, ok_writes) = percent_reach_probe(gpu, wall_mw, &live, steps);
+        if let Some((p, rb)) = reached {
+            steps.push(format!(
+                "  → 窗跟验证 ✓(percent {p}% 读回到达 {wall_mw} mW)— 保持抬升"
+            ));
+            success = Some((cand, p, rb));
         } else {
-            steps.push("  → GET 窗顶未跟随(echo/镜像副本)— 回滚".into());
+            steps.push("  → percent 各假设读回均 < 目标(镜像/窗未跟)— 回滚 max".into());
             write_u32_phys(
                 phys,
                 walk_root,
@@ -803,46 +813,24 @@ fn board_arm(
                 "Board max 回滚",
                 steps,
             )?;
+            if ok_writes > 0 {
+                percent_restore(gpu, &live, steps);
+            }
         }
     }
-    if followers.is_empty() {
+    let Some((primary, percent_used, readback)) = success else {
         return Err(KmdPowerError::Write(
-            "全部候选探测后无一让 GET 窗顶跟随 — 已全部回滚,零残留。差分判读: \
-             nvidia-smi -pl <窗内非默认值> 扰动 current 后重跑 locate-trace,哪一行的 current 跟动哪行才是活体行"
+            "全部候选探测后无一让 percent 到达目标 — 已全部回滚。percent 写全数报错时先提权重试;\
+             否则跑差分: nvidia-smi -pl <窗内非默认值> 扰动 current 后重跑 locate-trace \
+             (control 槽跟动的那行是活体行)"
                 .into(),
         ));
-    }
-    let primary = followers[0];
+    };
     let max_va = primary.page_va + primary.hit.max_off as u64;
     steps.push(format!(
-        "窗跟随验证 ✓(GET max {max_mw} → {wall_mw};{}/{} 候选跟随,镜像同抬保持一致,主判定页 {:#x})",
-        followers.len(),
-        valid.len(),
-        primary.page_va
+        "Board 臂收束: 页 {:#x}(帧 {:#x})max@+{:#x} 抬至 {wall_mw} ✓,percent {percent_used}% 已把 current 顶到 {readback:?}",
+        primary.page_va, primary.frame, primary.hit.max_off
     ));
-    // current 写:percent 安全面(Turing watt SET 毒,绝不走 set_tgp_watt)
-    let (percent_written, readback) = match gpu.set_power_limits([nvapi::Percentage(100)]) {
-        Ok(()) => {
-            let rb = gpu
-                .tgp_watt_status()
-                .ok()
-                .flatten()
-                .and_then(|s| s.current_mw);
-            match rb {
-                Some(c) if c >= wall_mw => steps.push(format!("percent 100% ✓ 控制值读回 {c} mW")),
-                other => steps.push(format!(
-                    "percent 100% 已写,控制值读回 {other:?}(< 目标 {wall_mw}?换算/取整所致,可手动 set-public-tgp-percent 补)"
-                )),
-            }
-            (Some(100), rb)
-        }
-        Err(e) => {
-            steps.push(format!(
-                "percent 写失败({e})— 窗已抬,控制值可手动补: set-public-tgp-percent 100 / NVML -pl"
-            ));
-            (None, None)
-        }
-    };
     Ok((
         BoardWindowOutcome {
             page_va: primary.page_va,
@@ -858,13 +846,85 @@ fn board_arm(
             max_before_mw: live.max_mw,
             max_after_mw: wall_mw,
             window_followed: true,
-            followers: followers.len(),
-            percent_written,
+            followers: 1,
+            percent_written: Some(percent_used),
             current_readback_mw: readback,
             candidates_seen: scan.candidates.len(),
         },
         max_va,
     ))
+}
+
+/// percent 试探序列(整数 percent,ceil 保证换算值 ≥ 目标):100%
+/// (percent-of-max 语义)→ 按旧窗顶折算 → 按 default 折算
+/// (percent-of-default 语义)。驱动若钳 100% 或拒 >100,读回会说明;
+/// 上限 500% 防极端比值。全程安全面 0xAD95F5ED。
+fn percent_probe_percents(wall_mw: u32, live: &board::BoardLiveValues) -> Vec<u32> {
+    let mut vals = vec![100u32];
+    let by_max = (u64::from(wall_mw) * 100).div_ceil(u64::from(live.max_mw));
+    let by_def = (u64::from(wall_mw) * 100).div_ceil(u64::from(live.default_mw));
+    for p in [by_max, by_def] {
+        let p = p.min(500) as u32;
+        if !vals.contains(&p) {
+            vals.push(p);
+        }
+    }
+    vals
+}
+
+/// percent 到达探测:逐假设写 → 读回 current,≥ 目标即成功。
+/// 返回 (Some((percent, 读回)) = 到达; 成功写入次数 —— 恢复判断用)。
+fn percent_reach_probe(
+    gpu: &nvapi::hi::Gpu,
+    wall_mw: u32,
+    live: &board::BoardLiveValues,
+    steps: &mut Vec<String>,
+) -> (Option<(u32, Option<u32>)>, usize) {
+    let mut ok_writes = 0usize;
+    for p in percent_probe_percents(wall_mw, live) {
+        match gpu.set_power_limits([nvapi::Percentage(p)]) {
+            Ok(()) => {
+                ok_writes += 1;
+                let rb = gpu
+                    .tgp_watt_status()
+                    .ok()
+                    .flatten()
+                    .and_then(|s| s.current_mw);
+                steps.push(format!(
+                    "  percent {p}% → current 读回 {rb:?}(目标 {wall_mw})"
+                ));
+                if rb.is_some_and(|c| c >= wall_mw) {
+                    return (Some((p, rb)), ok_writes);
+                }
+            }
+            Err(e) => steps.push(format!("  percent {p}% 写失败:{e}")),
+        }
+    }
+    (None, ok_writes)
+}
+
+/// 失败候选的 current 恢复:按 percent-of-max 折算探针写回,current ==
+/// default 时补 100% 假设(percent-of-default 语义);读回 ±2W 内算命中。
+fn percent_restore(gpu: &nvapi::hi::Gpu, live: &board::BoardLiveValues, steps: &mut Vec<String>) {
+    let mut vals =
+        vec![((u64::from(live.current_mw) * 100).div_ceil(u64::from(live.max_mw))).min(100) as u32];
+    if live.current_mw == live.default_mw && !vals.contains(&100) {
+        vals.push(100);
+    }
+    for p in vals {
+        if gpu.set_power_limits([nvapi::Percentage(p)]).is_ok() {
+            let rb = gpu
+                .tgp_watt_status()
+                .ok()
+                .flatten()
+                .and_then(|s| s.current_mw);
+            if rb.is_some_and(|c| c.abs_diff(live.current_mw) <= 2_000) {
+                steps.push(format!("  current 恢复 {rb:?}(percent {p}%)"));
+                return;
+            }
+        }
+    }
+    steps.push("  current 恢复未精确命中(读回 ≠ 探测前值)— 手动 nvidia-smi -pl 校正".into());
 }
 
 // ---------------------------------------------------------------- 公开入口
@@ -1096,4 +1156,42 @@ fn root_arm_tgp_write(
 fn first_hi_gpu() -> Option<nvapi::hi::Gpu> {
     let first = nvapi::PhysicalGpu::enumerate().ok()?.into_iter().next()?;
     Some(nvapi::hi::Gpu::new(first))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn live(max: u32, default: u32) -> board::BoardLiveValues {
+        board::BoardLiveValues {
+            current_mw: default,
+            default_mw: default,
+            max_mw: max,
+            min_mw: None,
+        }
+    }
+
+    #[test]
+    fn percent_probe_values_ceil_and_dedup() {
+        // 2070 活体窗:260W → 100% / 119%(按窗顶 ceil)/ 149%(按 default ceil)
+        assert_eq!(
+            percent_probe_percents(260_000, &live(219_000, 175_000)),
+            [100, 119, 149]
+        );
+        // 整除时 ceil 不进位:300000/219000=136.98→137
+        assert_eq!(
+            percent_probe_percents(300_000, &live(219_000, 175_000)),
+            [100, 137, 172]
+        );
+        // 目标恰为窗顶:按窗顶假设坍缩为 100,按 default 假设仍要 126
+        assert_eq!(
+            percent_probe_percents(219_000, &live(219_000, 175_000)),
+            [100, 126]
+        );
+        // 极端比值触 500% 上限
+        assert_eq!(
+            percent_probe_percents(500_000, &live(219_000, 100_000))[2],
+            500
+        );
+    }
 }

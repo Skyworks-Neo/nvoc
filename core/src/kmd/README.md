@@ -191,9 +191,12 @@ nvoc-cli set-power-command 160 --kmd --pmxdrvpath <pmxdrv.sys> --force
     → Board 控制表扫查(root 对象 8 页 + 内核指针一跳 + 候选页池邻域
       ±64 页;同页 {current,default,max} 三元组判据,值相撞时要求互异
       dword,全等三元组要求三处)
-    → 逐候选探测(≤8):写窗 max(读回)→ GET 窗跟随验 → 不跟随即回滚。
-      echo/lease 镜像行(0xFE 标记 cell)与活体行静态不可分,"写-验-回滚"
-      探测是唯一可靠消歧器 —— 跟随者胜出、多镜像同抬、每轮自愈零残留;
+    → 逐候选探测(≤8):写窗 max(读回)→ percent 到达验证(多假设
+      100%/按窗顶/按 default)→ 不到达即回滚+恢复 current。
+      教训两连:① echo/lease 镜像行(0xFE 标记 cell)与活体行静态不可分;
+      ② range GET(0x67F31384)读静态 policy info 行 —— 二轮差分(NVML -pl
+      200)实证控制行 control 槽跟写走而 GET 不动,"GET 跟随" oracle 天生
+      失灵,percent 读回 ≥ 目标是唯一可靠判据(每轮自愈零残留);
       无一跟随全回滚拒写(转差分:NVML 扰动 current 后重 trace)
     → percent 写 current(0xAD95F5ED 安全线;Turing 上 watt SET 0xAFFC2279
       毒,本臂绝不触碰 set_tgp_watt)
@@ -233,10 +236,10 @@ nvoc-cli set-power-command 160 --kmd --pmxdrvpath <pmxdrv.sys> --force
 - **判据**:同页 dword 值签名 —— {current, default, max} 逐一等于活体 GET
   读数,全字段跨度 ≤0x20 字节;current==default(出厂未扰动)要求两处
   互异 dword,三元全等要求三处(噪声门);min 可选加分;
-- **消歧 = 探测,不是拒绝**:echo/lease 镜像行(2070 实测:0xFE 标记
-  lease cell 的三元组同样成立、写它 GET 不跟)与活体行静态不可分 ——
-  写臂对候选逐个"写-GET 跟随验-回滚"(每轮自愈零残留),跟随者胜出、
-  多镜像同抬保持一致;候选 >8 拒(歧义面失控);
+- **消歧 = 探测,不是拒绝**:echo/lease 镜像行与活体行静态不可分
+  (2070 实测:0xFE 标记 lease cell 的三元组同样成立),且 range GET 读
+  静态 info 行不反映 max 写 —— 写臂对候选逐个"写-percent 到达验-回滚+
+  恢复"(每轮自愈零残留),胜出行保持抬升;候选 >8 拒(歧义面失控);
 - `kmd_locate_trace_live.rs` 打印全部候选 + max 槽 ±0x20 hexdump 供人工
   判读;0 候选时跑差分(NVML 扰动 current 后重 trace,活体行的 current
   会跟动)。

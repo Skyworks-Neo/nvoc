@@ -213,10 +213,13 @@ board 选择器解析失败时静默 return)→ root UPPER 桌面零观察者,�
 → Board 控制表扫查:root 对象 8 页 + 内核指针一跳 + 候选页池邻域 ±64 页
   (总预算 ≤1288 页),同页 {current,default,max} 值签名(跨度 ≤0x20;
   值相撞要求互异 dword,全等三元组要求三处)
-→ 逐候选探测(≤8):写窗 max(读回)→ GET 窗跟随验 → 不跟随即回滚。
-  实测教训(2070 首轮):echo/lease cell(0xFE 标记行)的三元组同样成立、
-  写它 GET 不跟 —— 镜像与活体行静态不可分,"写-验-回滚"探测是唯一可靠
-  消歧器(每轮自愈零残留);跟随者胜出、多镜像同抬
+→ 逐候选探测(≤8):写窗 max(读回)→ percent 到达验证(多假设
+  100%/按窗顶/按 default)→ 不到达即回滚+恢复 current。
+  实测教训两连(2070):① 首轮写中的是 echo/lease cell(0xFE 标记行),
+  三元组同样成立 —— 镜像与活体行静态不可分;② 二轮差分(NVML -pl 200)
+  实证控制行 control 槽(+0x600)跟写走而 range GET 不动 —— range GET
+  读静态 policy info 行,"GET 跟随" oracle 失灵,percent 读回 ≥ 目标是
+  唯一可靠判据(每轮自愈零残留)
 → percent 写 current(0xAD95F5ED 安全线;Turing 毒 SET 0xAFFC2279 绝不触碰)
 → 租约写 → 复验
 ```
