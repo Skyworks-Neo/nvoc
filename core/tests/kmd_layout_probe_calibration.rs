@@ -82,8 +82,9 @@ fn probe_matches_ground_truth() {
             continue;
         }
         let img = std::fs::read(case.path).unwrap_or_else(|e| panic!("读 {} 失败: {e}", case.path));
-        let layout = probe(&img)
-            .unwrap_or_else(|e| panic!("probe {:#x} 失败: {e:?}(fail-closed 生效)", case.timestamp));
+        let layout = probe(&img).unwrap_or_else(|e| {
+            panic!("probe {:#x} 失败: {e:?}(fail-closed 生效)", case.timestamp)
+        });
         println!("=== {:#x} anchors ===", case.timestamp);
         for a in &layout.anchors {
             println!("  {a}");
@@ -103,8 +104,7 @@ fn probe_matches_ground_truth() {
         assert_eq!(layout.major_root_off, case.major_root, "Major→root");
         assert_eq!(layout.root_init_off, case.init, "root init");
         assert_eq!(
-            layout.root_upper_off,
-            case.upper,
+            layout.root_upper_off, case.upper,
             "{:#x} root UPPER",
             case.timestamp
         );
