@@ -327,39 +327,103 @@ pub fn value_cooccurrence_scan<P: PhysicalMemory>(
     targets.sort_unstable();
     targets.dedup();
     let mut seen: HashSet<u64> = HashSet::new();
-    let mut hits = Vec::new();
+    let mut hits: Vec<CooccurrenceHit> = Vec::new();
+    let mut scanned = 0usize;
+    loop {
+        // 一轮 = 基本域(首轮)/ 命中页池邻域(后续轮):591.86 实测钳表不与
+        // 宽表同页,同池分配是下一个先验位置(与行 sweep 同一教训)
+        let mut round_pages: Vec<u64> = if hits.is_empty() {
+            pages.to_vec()
+        } else {
+            let mut nbr: Vec<u64> = Vec::new();
+            for h in &hits {
+                for i in 1..=NEIGHBORHOOD_PAGES {
+                    if let Some(lo) = h.page_va.checked_sub(i * 0x1000) {
+                        nbr.push(lo);
+                    }
+                    if let Some(hi) = h.page_va.checked_add(i * 0x1000) {
+                        nbr.push(hi);
+                    }
+                }
+            }
+            nbr.sort_unstable();
+            nbr.dedup();
+            nbr
+        };
+        let mut new_hit = false;
+        for pg in round_pages.drain(..) {
+            if scanned >= budget {
+                break;
+            }
+            if !seen.insert(pg) {
+                continue;
+            }
+            let Ok(page) = read_virtual(phys, walk_root, pg, 4096) else {
+                continue;
+            };
+            scanned += 1;
+            let mut values: Vec<(u32, Vec<usize>)> = Vec::new();
+            for &v in &targets {
+                let offs: Vec<usize> = page
+                    .chunks_exact(4)
+                    .enumerate()
+                    .filter(|(_, c)| u32::from_le_bytes((*c).try_into().expect("4 对齐")) == v)
+                    .map(|(i, _)| i * 4)
+                    .collect();
+                if !offs.is_empty() {
+                    values.push((v, offs));
+                }
+            }
+            if values.len() >= 2 {
+                hits.push(CooccurrenceHit {
+                    page_va: pg,
+                    values,
+                });
+                new_hit = true;
+            }
+        }
+        if !new_hit || scanned >= budget || hits.len() >= 16 {
+            break;
+        }
+    }
+    hits
+}
+
+/// 仅含 max 值的页(钳表可能只有窗顶、无 min/default 邻位 —— 行判据与
+/// 共现都抓不到;591.86 判读用)。返回 (页 VA, max 全部偏移)。
+pub fn max_only_scan<P: PhysicalMemory>(
+    phys: &P,
+    walk_root: u64,
+    pages: &[u64],
+    live: &BoardLiveValues,
+    budget: usize,
+    exclude: &[u64],
+) -> Vec<(u64, Vec<usize>)> {
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut out = Vec::new();
     let mut scanned = 0usize;
     for &pg in pages {
         if scanned >= budget {
             break;
         }
-        if !seen.insert(pg) {
+        if exclude.contains(&pg) || !seen.insert(pg) {
             continue;
         }
         let Ok(page) = read_virtual(phys, walk_root, pg, 4096) else {
             continue;
         };
         scanned += 1;
-        let mut values: Vec<(u32, Vec<usize>)> = Vec::new();
-        for &v in &targets {
-            let offs: Vec<usize> = page
-                .chunks_exact(4)
-                .enumerate()
-                .filter(|(_, c)| u32::from_le_bytes((*c).try_into().expect("4 对齐")) == v)
-                .map(|(i, _)| i * 4)
-                .collect();
-            if !offs.is_empty() {
-                values.push((v, offs));
-            }
-        }
-        if values.len() >= 2 {
-            hits.push(CooccurrenceHit {
-                page_va: pg,
-                values,
-            });
+        let offs: Vec<usize> = page
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(_, c)| u32::from_le_bytes((*c).try_into().expect("4 对齐")) == live.max_mw)
+            .map(|(i, _)| i * 4)
+            .collect();
+        if !offs.is_empty() {
+            out.push((pg, offs));
         }
     }
-    hits
+    out
 }
 
 /// 完整定位扫查,两阶段:
@@ -711,6 +775,30 @@ mod tests {
         let scan = locate_board_window_candidates(&phys, WALK_ROOT, ROOT_VA, &live());
         assert_eq!(scan.candidates.len(), 2);
         assert!(probeable_candidates(&scan, 1).is_err(), "超探测上限必须拒");
+    }
+
+    #[test]
+    fn cooccurrence_sweeps_hit_neighborhoods() {
+        // 钳表不在基本域、在命中页邻页:二轮 sweep 必须捞出
+        let mut pages: HashMap<u64, [u8; 4096]> = HashMap::new();
+        let mut next_table = 0x10_000u64;
+        let va = 0xFFFF_9000_0200_0000;
+        let clamp_va = va + 0x1000; // 邻页,不在调用方页表里
+        map_page(&mut pages, WALK_ROOT, va, 0x40_000, &mut next_table);
+        map_page(&mut pages, WALK_ROOT, clamp_va, 0x41_000, &mut next_table);
+        {
+            let f = pages.get_mut(&0x40_000).unwrap();
+            f[0x40..0x44].copy_from_slice(&90_000u32.to_le_bytes());
+            f[0x400..0x404].copy_from_slice(&140_000u32.to_le_bytes());
+            let g = pages.get_mut(&0x41_000).unwrap();
+            g[0x80..0x84].copy_from_slice(&90_000u32.to_le_bytes());
+            g[0x300..0x304].copy_from_slice(&140_000u32.to_le_bytes());
+        }
+        let phys = MockPhysical { pages };
+        // 只喂 va(基本域);clamp_va 应由 sweep 捞出
+        let hits = value_cooccurrence_scan(&phys, WALK_ROOT, &[va], &live(), 16);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(hits.iter().any(|h| h.page_va == clamp_va));
     }
 
     #[test]

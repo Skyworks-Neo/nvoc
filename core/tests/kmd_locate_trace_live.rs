@@ -319,6 +319,25 @@ fn locate_root_trace_live() {
     if co.len() > 12 {
         println!("  …(+{} 页略,需要更窄判据)", co.len() - 12);
     }
+    // ---- 仅含 max 值的页(钳表可能只有窗顶无邻位;排除共现已报页)
+    let co_pages: Vec<u64> = co.iter().map(|h| h.page_va).collect();
+    let max_only = board::max_only_scan(
+        &pm,
+        walk_root,
+        &worklist,
+        &live,
+        board::PAGE_BUDGET,
+        &co_pages,
+    );
+    println!("仅含 max 的页: {} 页(前 8,排除共现页)", max_only.len());
+    for (pg, offs) in max_only.iter().take(8) {
+        let os = offs
+            .iter()
+            .map(|o| format!("{o:#x}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!("  页 {pg:#016X}: max@[{os}]");
+    }
     match scan.candidates.len() {
         1 => println!("唯一候选 ✓"),
         0 => println!(
