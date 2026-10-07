@@ -319,6 +319,32 @@ fn locate_root_trace_live() {
     if co.len() > 12 {
         println!("  …(+{} 页略,需要更窄判据)", co.len() - 12);
     }
+    // ---- 单位变体(µW = ×1000):FIFO 寄存器族的常见存储单位,值签名全家桶
+    let mut live_uw = live.clone();
+    live_uw.current_mw = live.current_mw.saturating_mul(1000);
+    live_uw.default_mw = live.default_mw.saturating_mul(1000);
+    live_uw.max_mw = live.max_mw.saturating_mul(1000);
+    live_uw.min_mw = live.min_mw.map(|v| v.saturating_mul(1000));
+    let co_uw =
+        board::value_cooccurrence_scan(&pm, walk_root, &worklist, &live_uw, board::PAGE_BUDGET);
+    println!("µW 变体共现: {} 页(前 8)", co_uw.len());
+    for hit in co_uw.iter().take(8) {
+        let vals = hit
+            .values
+            .iter()
+            .map(|(v, offs)| {
+                let os = offs
+                    .iter()
+                    .map(|o| format!("{o:#x}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{v}@[{os}]")
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("  页 {:#016X}: {}", hit.page_va, vals);
+    }
+
     // ---- 仅含 max 值的页(钳表可能只有窗顶无邻位;排除共现已报页)
     let co_pages: Vec<u64> = co.iter().map(|h| h.page_va).collect();
     let max_only = board::max_only_scan(
