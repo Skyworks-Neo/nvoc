@@ -751,24 +751,30 @@ fn board_arm(
     for note in &scan.notes {
         steps.push(format!("  [scan] {note}"));
     }
-    let cands =
-        board::probeable_candidates(&scan, board::PROBE_CAP).map_err(KmdPowerError::Locate)?;
-    // 候选校验:max 槽读回必须等于活体窗顶 + 帧翻译可用,不过者剔除;
-    // 控制行(cur Some)优先,info 行(静态策略行,无 control 槽)殿后
-    let mut valid: Vec<board::BoardWindowCandidate> = Vec::new();
-    for cand in cands {
-        let max_va = cand.page_va + cand.hit.max_off as u64;
-        if rd_u32(phys, walk_root, max_va) == Some(live.max_mw) && cand.frame != 0 {
-            valid.push(cand.clone());
-        } else {
-            steps.push(format!(
-                "候选剔除: 页 {:#x} max@+{:#x}(读回/帧校验不过)",
-                cand.page_va, cand.hit.max_off
-            ));
+    // 行候选缺席(如 591.86/3060:窗口只在宽表里)不致命 —— 宽页阶段接手,
+    // 两类全空才拒。
+    let mut targets: Vec<ProbeTarget> = Vec::new();
+    match board::probeable_candidates(&scan, board::PROBE_CAP) {
+        Ok(cands) => {
+            // 候选校验:max 槽读回必须等于活体窗顶 + 帧翻译可用,不过者剔除;
+            // 控制行(cur Some)优先,info 行(静态策略行,无 control 槽)殿后
+            let mut valid: Vec<board::BoardWindowCandidate> = Vec::new();
+            for cand in cands {
+                let max_va = cand.page_va + cand.hit.max_off as u64;
+                if rd_u32(phys, walk_root, max_va) == Some(live.max_mw) && cand.frame != 0 {
+                    valid.push(cand.clone());
+                } else {
+                    steps.push(format!(
+                        "候选剔除: 页 {:#x} max@+{:#x}(读回/帧校验不过)",
+                        cand.page_va, cand.hit.max_off
+                    ));
+                }
+            }
+            valid.sort_by_key(|c| c.hit.cur_off.is_none());
+            targets.extend(valid.into_iter().map(ProbeTarget::Row));
         }
+        Err(msg) => steps.push(format!("[scan] {msg} — 直接进宽页探测")),
     }
-    valid.sort_by_key(|c| c.hit.cur_off.is_none());
-    let mut targets: Vec<ProbeTarget> = valid.into_iter().map(ProbeTarget::Row).collect();
 
     // 宽记录页候选(行候选之后):2070/3060 共现实证 —— 功率通道控制表的
     // 行内 {min, default, max} 各 2-3 副本、步距 0x4C/0x50(2070: 0xAE0/
