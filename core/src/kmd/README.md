@@ -169,7 +169,7 @@ UPPER),外加 RM 命令 0x2080A61A/0x2080E61B 的分派表项与 handler RVA。
 ## 功率墙原子流(`power.rs`,`set-power-command --kmd`)
 
 写路径受控开放的唯一出口。**一条命令完成全周期**,漏洞驱动只在内存里
-停留一个命令周期:
+停留一个命令周期,按 PowerRoot 武装态自动分双臂:
 
 ```text
 nvoc-cli set-power-command 160 --kmd --pmxdrvpath <pmxdrv.sys> --force
@@ -179,20 +179,34 @@ nvoc-cli set-power-command 160 --kmd --pmxdrvpath <pmxdrv.sys> --force
 服务注册(PMXDRV_KMD,残留自清;设备已在位则复用,崩溃残留认领)
 → 布局自动探测(layout_probe,对本机在役镜像;跨代零硬编码)
 → 走查(255 页低内存扫根 → 页表翻译)
-→ D 状态感知定位(活体墙 = tgp-control-current,与候选 UPPER 精确匹配;
-  非 D1 场景如 D2=55W 时 UPPER≠滑条顶,靠活体墙消歧,多候选歧义即拒)
-→ UPPER 单 u32 写(身份门 init=1/key<0x40;读回校验,不符即时回滚)
-→ 原生 tgp 写(仅控制值 < 目标时写 —— 防窗钳把已抬的控制压回)
-→ 租约写最后(set_power_command_checked,回显面同步)
-→ 复验 → 服务注销(驱动拒卸载时诚实上报:标记删除,重启消失)
+→ GPU 表链走查 → 臂选择:
+  root 臂(身份门过 = 移动/board 配置形态,4060L 实证)
+    → D 状态感知定位(活体墙 tgp-control-current 精确匹配候选;歧义即拒)
+    → UPPER 单 u32 写(身份门 init=1/key<0x40 + 读回,不符即时回滚)
+    → 原生 tgp watt 写(仅控制值 < 目标时;窗随 UPPER)
+  board 臂(身份门全拒 = 桌面形态:构造期无 board 配置对象,PowerRoot
+    永不武装 init=0/key=0/UPPER=0,2070/610.47 实证 + idalib 定案;
+    定位/扫查逻辑在 [`board.rs`](board.rs),纯值签名零布局硬编码)
+    → 活体窗三元组(tgp_watt_range + status,GET 全安全面)
+    → Board 控制表扫查(root 对象 8 页 + 内核指针一跳 + 候选页池邻域
+      ±64 页;同页 {current,default,max} 三元组判据,值相撞时要求互异
+      dword,全等三元组要求三处)
+    → 逐候选探测(≤8):写窗 max(读回)→ GET 窗跟随验 → 不跟随即回滚。
+      echo/lease 镜像行(0xFE 标记 cell)与活体行静态不可分,"写-验-回滚"
+      探测是唯一可靠消歧器 —— 跟随者胜出、多镜像同抬、每轮自愈零残留;
+      无一跟随全回滚拒写(转差分:NVML 扰动 current 后重 trace)
+    → percent 写 current(0xAD95F5ED 安全线;Turing 上 watt SET 0xAFFC2279
+      毒,本臂绝不触碰 set_tgp_watt)
+→ 租约写最后(回显面同步;checked 包络,越包络降级直写;两臂共用)
+→ 复验(墙字段仍 == 目标)→ 服务注销(驱动拒卸载时诚实上报)
 ```
 
 安全设计(逐条实证):
 
 - `--force` 必需;**绝对上限 500 W**,任何旗标都不过;
-- UPPER 写易失(重启回落)——与「每开机一跑」的单命令形态互相成全;
-- 定位门:init==1 ∧ key<0x40 ∧ UPPER∈[10W,500W] ∧ LOWER≤UPPER;
-- 崩溃自愈:服务名 PMXDRV_KMD 是本命令专属,上次进程死在清理前时,
+- board 臂窗内目标直接拒(不需要内核写,percent/NVML 即可);
+- root 臂 UPPER 易失、board 臂窗 max 预期同为易失(vBIOS 派生)——
+  「每开机一跑」的单命令形态互相成全;- 崩溃自愈:服务名 PMXDRV_KMD 是本命令专属,上次进程死在清理前时,
   下次运行认领残留并在结尾清理;用户自管服务(如 PMXDRV_NEW)永不触碰;
 - System32\drivers 回退:内核取不到原始卷镜像时(StartService win32 2)
   自动复制重试一次;`\??\` ImagePath 不吃 canonicalize 的 `\\?\` 前缀;
@@ -202,7 +216,27 @@ nvoc-cli set-power-command 160 --kmd --pmxdrvpath <pmxdrv.sys> --force
 实测(4060L/610.74,2026-10-06):UPPER 140000→160000 抬墙后窗钳跟随
 (tgp 160 接受),负载 Board Power **164.1 W**(超越 140 W 滑条顶),
 1000 s FP32 GEMM 无计算错误;三代校准全绿。端到端三轮:干净态全周期 ✓、
-幂等重跑 ✓、崩溃残留自愈 ✓。
+幂等重跑 ✓、崩溃残留自愈 ✓。board 臂 2026-10-07 落地待两机实测
+(桌面 2070/TU104 + 无 shunt mod 3060);单测覆盖三元组匹配/值相撞/
+全等三元组/跨度拒/指针一跳定位/歧义拒绝/预算记账。
 
 前置:管理员令牌;显卡低电压锁已解(不解除则负载吃不满新墙,详见
 任务书 §4 field note)。
+
+## Board 窗定位算法(`board.rs`,2026-10-07)
+
+桌面形态破解臂的目标搜索(纯算法,跨平台可单测,写臂共用同一实现):
+
+- **锚**:layout_probe 的 GPU 链给 root VA;root 对象页(root_va 起 8 页,
+  覆盖三代字段族)+ 页内内核指针一跳目标(≤512 页)+ **候选页池邻域**
+  (命中页 ±64 页,sweep 预算 768;总预算 ≤1288 ≤ BSOD 纪律 2000);
+- **判据**:同页 dword 值签名 —— {current, default, max} 逐一等于活体 GET
+  读数,全字段跨度 ≤0x20 字节;current==default(出厂未扰动)要求两处
+  互异 dword,三元全等要求三处(噪声门);min 可选加分;
+- **消歧 = 探测,不是拒绝**:echo/lease 镜像行(2070 实测:0xFE 标记
+  lease cell 的三元组同样成立、写它 GET 不跟)与活体行静态不可分 ——
+  写臂对候选逐个"写-GET 跟随验-回滚"(每轮自愈零残留),跟随者胜出、
+  多镜像同抬保持一致;候选 >8 拒(歧义面失控);
+- `kmd_locate_trace_live.rs` 打印全部候选 + max 槽 ±0x20 hexdump 供人工
+  判读;0 候选时跑差分(NVML 扰动 current 后重 trace,活体行的 current
+  会跟动)。

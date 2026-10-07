@@ -1,24 +1,34 @@
 //! kmd 功率墙原子流:`set-power-command --kmd` 的执行核心。
 //!
-//! 一个调用完成全周期,漏洞驱动(pmxdrv)**只在内存里停留一个命令周期**:
+//! 一个调用完成全周期,漏洞驱动(pmxdrv)**只在内存里停留一个命令周期**,
+//! 按 PowerRoot 武装态自动分双臂:
 //!
 //! ```text
 //! 服务注册(PMXDRV_KMD,先清残留)→ 启动 → 走查+布局探测(全自动,静态
-//! probe 本机在役镜像)→ GPU 表链定位 PowerRoot(身份门)→ 写 UPPER(单
-//! u32,物理帧,读回校验)→ 原生 tgp 写(窗随 UPPER)→ 租约写(回显面,
-//! 最后)→ 复验 → 服务停止+注销
+//! probe 本机在役镜像)→ GPU 表链走查 → 臂选择:
+//!   root 臂(身份门过 = 移动/board 配置形态):
+//!     写 UPPER(单 u32,物理帧,读回校验)→ 原生 tgp 写(窗随 UPPER)
+//!   board 臂(身份门全拒 = 桌面形态,PowerRoot 未武装,见 kmd/board.rs):
+//!     活体窗三元组定位 Board 控制表(root 8 页 + 指针一跳 + 候选页池邻域)
+//!     → 逐候选探测:写窗 max(读回)→ GET 窗跟随验 → 不跟随即回滚
+//!     (跟随者胜出,多镜像同抬)→ percent 写 current(0xAD95F5ED 安全线;
+//!     Turing 上 watt SET 0xAFFC2279 毒,本臂绝不触碰 set_tgp_watt)
+//! → 租约写(回显面,最后,两臂共用)→ 复验 → 服务停止+注销
 //! ```
 //!
 //! 安全设计:
 //! - 入口要求 `--force`(调用方责任线,与 set-power-command 一致);
 //! - 绝对上限 500 W 硬拒(任何旗标都不过);
-//! - 定位门:init==1 ∧ key<0x40 ∧ UPPER∈[50W,500W](防误配对象);
-//! - 写后读回不一致 → 立即回滚 UPPER 到存档值并报错;
+//! - root 臂定位门:init==1 ∧ key<0x40 ∧ UPPER∈[50W,500W](防误配对象);
+//! - board 臂定位门:三元组候选 ≤8(读回+帧校验)+ 逐候选"写-GET 跟随
+//!   验-回滚"探测,跟随者胜出、多镜像同抬;无一跟随全回滚拒写;
+//! - board 臂窗内目标直接拒(不需要内核写,percent/NVML 即可);
+//! - 写后读回不一致 → 立即回滚到存档值并报错;
 //! - 任一步失败 → 已注册的服务照常注销(finally 语义),不留残余。
 //!
 //! 前置(调用方环境):管理员令牌;显卡低电压锁已解(影响负载能否吃满,
-//! 不影响本流程)。UPPER 写为易失(重启回落)——这正是"每开机一跑"的
-//! 单命令形态与安全性的互相成全。
+//! 不影响本流程)。UPPER/Board max 写均为易失(重启回落)——这正是"每开机
+//! 一跑"的单命令形态与安全性的互相成全。
 
 use quick_error::quick_error;
 use std::cell::RefCell;
@@ -27,10 +37,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::layout_probe::{probe as probe_layout, NvlddmkmLayout};
+use super::board;
+use super::layout_probe::{NvlddmkmLayout, probe as probe_layout};
 use super::pagewalk::{
-    discover_root, find_loaded_module, read_virtual, LoadedModule, PeFingerprint, PhysicalMemory,
-    WalkError,
+    LoadedModule, PeFingerprint, PhysicalMemory, WalkError, discover_root, find_loaded_module,
+    read_virtual,
 };
 use super::pmxdrv::PmxDrv;
 
@@ -86,9 +97,7 @@ impl PhysicalMemory for CachedPhys {
         }
         // 8 字节(PTE)走缓存;其余直通。两路都落到一次 map→copy→unmap。
         let cached = out.len() == 8;
-        if cached
-            && let Some(page) = self.cache.borrow().get(&frame)
-        {
+        if cached && let Some(page) = self.cache.borrow().get(&frame) {
             out.copy_from_slice(&page[off..off + 8]);
             return Ok(());
         }
@@ -130,13 +139,66 @@ pub struct RootInfo {
     pub upper: u32,
 }
 
+/// 破解臂:root(移动/board 配置形态,PowerRoot 已武装,写 UPPER)或
+/// board(桌面形态,PowerRoot 未武装,写 Board 控制表滑条窗 max)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KmdArm {
+    Root,
+    Board,
+}
+
+impl KmdArm {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Board => "board",
+        }
+    }
+}
+
+/// Board 臂结果(全部为已验证事实)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardWindowOutcome {
+    /// 三元组所在页(页对齐 VA)与物理帧。
+    pub page_va: u64,
+    pub frame: u64,
+    /// 页内偏移:max=写目标槽,cur/def/min=活体锚。
+    pub max_off: usize,
+    pub cur_off: usize,
+    pub def_off: usize,
+    pub min_off: Option<usize>,
+    /// 写前活体窗(GET 面)。
+    pub live_current_mw: u32,
+    pub live_default_mw: u32,
+    pub live_max_mw: u32,
+    pub live_min_mw: Option<u32>,
+    pub max_before_mw: u32,
+    pub max_after_mw: u32,
+    /// 写后 GET 窗顶跟随到目标(镜像副本防线通过)。
+    pub window_followed: bool,
+    /// 探测中 GET 窗顶跟随的候选数(echo/镜像行静态不可分,跟随者胜出;
+    /// 多跟随 = 同逻辑字段的镜像副本,全部保持抬升保持一致)。
+    pub followers: usize,
+    /// percent 写(percent 安全面;None = 失败,steps 有说明)。
+    pub percent_written: Option<u32>,
+    /// percent 后控制值读回。
+    pub current_readback_mw: Option<u32>,
+    /// 扫查到的候选总数(放行时必为 1)。
+    pub candidates_seen: usize,
+}
+
 /// 全周期结果(全部为已验证事实)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KmdSetWallOutcome {
+    pub arm: KmdArm,
     pub layout_summary: String,
-    pub root: RootInfo,
-    pub upper_before_mw: u32,
-    pub upper_after_mw: u32,
+    /// root 臂现场(board 臂为 None)。
+    pub root: Option<RootInfo>,
+    /// board 臂现场(root 臂为 None)。
+    pub board: Option<BoardWindowOutcome>,
+    /// 墙字段前值/后值(root=UPPER,board=窗 max)。
+    pub wall_before_mw: u32,
+    pub wall_after_mw: u32,
     pub tgp_written_w: u32,
     pub tgp_write_note: String,
     pub lease_written_mw: Option<u32>,
@@ -158,13 +220,17 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Services::CloseServiceHandle;
     use windows_sys::Win32::System::Services::{
-        ControlService, CreateServiceW, DeleteService, OpenSCManagerW, OpenServiceW,
-        StartServiceW, SC_HANDLE, SC_MANAGER_CREATE_SERVICE, SERVICE_CONTROL_STOP,
-        SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL, SERVICE_KERNEL_DRIVER,
+        ControlService, CreateServiceW, DeleteService, OpenSCManagerW, OpenServiceW, SC_HANDLE,
+        SC_MANAGER_CREATE_SERVICE, SERVICE_CONTROL_STOP, SERVICE_DEMAND_START,
+        SERVICE_ERROR_NORMAL, SERVICE_KERNEL_DRIVER, StartServiceW,
     };
     const SERVICE_ALL_ACCESS: u32 = 0xF01FF;
 
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     // ImagePath 用 \??\ + 普通绝对路径(canonicalize 的 \?\ 前缀会叠加成非法名)
     let abs = if binary_path.is_absolute() {
         binary_path.to_path_buf()
@@ -175,7 +241,13 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
     };
     let path_w = wide(&format!(r"\??\{}", abs.to_string_lossy()));
     let name_w = wide(SERVICE_NAME);
-    let mgr = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CREATE_SERVICE) };
+    let mgr = unsafe {
+        OpenSCManagerW(
+            std::ptr::null(),
+            std::ptr::null(),
+            SC_MANAGER_CREATE_SERVICE,
+        )
+    };
     if mgr.is_null() {
         return Err(KmdPowerError::Service(format!(
             "OpenSCManager 失败(需管理员): win32 {}",
@@ -211,7 +283,9 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
     if svc.is_null() {
         let err = unsafe { GetLastError() };
         unsafe { CloseServiceHandle(mgr) };
-        return Err(KmdPowerError::Service(format!("CreateService 失败: win32 {err}")));
+        return Err(KmdPowerError::Service(format!(
+            "CreateService 失败: win32 {err}"
+        )));
     }
     if unsafe { StartServiceW(svc, 0, std::ptr::null()) } == 0 {
         let err = unsafe { GetLastError() };
@@ -287,13 +361,17 @@ fn fallback_copy(binary_path: &Path) -> Result<PathBuf, KmdPowerError> {
 /// 驱动可能拒绝卸载(引用计数/驱动自身不支持二次卸载),此时服务条目已
 /// 标记删除,重启后消失;返回 false 供步骤日志诚实上报。
 fn service_stop_and_delete() -> bool {
-    use windows_sys::Win32::System::Services::{CloseServiceHandle, 
-        ControlService, DeleteService, OpenSCManagerW, OpenServiceW, QueryServiceStatus,
-        SERVICE_CONTROL_STOP, SERVICE_STATUS, SC_HANDLE,
+    use windows_sys::Win32::System::Services::{
+        CloseServiceHandle, ControlService, DeleteService, OpenSCManagerW, OpenServiceW,
+        QueryServiceStatus, SC_HANDLE, SERVICE_CONTROL_STOP, SERVICE_STATUS,
     };
     const SERVICE_ALL_ACCESS: u32 = 0xF01FF;
     const SERVICE_STOPPED: u32 = 1;
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     let name_w = wide(SERVICE_NAME);
     let mgr = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SERVICE_ALL_ACCESS) };
     if mgr.is_null() {
@@ -327,7 +405,11 @@ fn service_exists() -> bool {
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_HANDLE,
     };
     const SERVICE_QUERY_STATUS: u32 = 0x4;
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     let mgr = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SERVICE_QUERY_STATUS) };
     if mgr.is_null() {
         return false;
@@ -381,18 +463,21 @@ fn is_kernel_va(v: u64) -> bool {
     (0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&v)
 }
 
-/// GPU 表链定位 PowerRoot。身份门:init=1 ∧ key<0x40 ∧ UPPER∈[10W,500W]
-/// (硬域,fail-closed)。**D 状态感知**:非 D1(如 D2=55W)时 UPPER 不是
-/// 滑条顶——候选收集后用活体墙(0x67F31384 控制表 current,秒级新鲜)精确
-/// 匹配择一;无活体参照时恰一候选才接受,多候选歧义即拒。
-fn locate_root(
+/// GPU 表链一个条目(已解引用,未做任何身份过滤)。
+struct ChainEntry {
+    index: u32,
+    major_va: u64,
+    root_va: u64,
+}
+
+/// 全局槽 → state → GPU 表 → 逐条目 Major/root(只验内核指针形,不过滤;
+/// root 臂身份门与 board 臂 root 锚共用这一段读链)。
+fn walk_gpu_chain(
     phys: &CachedPhys,
     walk_root: u64,
     layout: &NvlddmkmLayout,
     module_base: u64,
-    live_wall_mw: Option<u32>,
-    steps: &mut Vec<String>,
-) -> Result<RootInfo, KmdPowerError> {
+) -> Result<Vec<ChainEntry>, KmdPowerError> {
     let state = rd_u64(phys, walk_root, module_base + layout.global_slot_rva)
         .filter(|v| is_kernel_va(*v))
         .ok_or_else(|| KmdPowerError::Locate("全局槽不是内核指针".into()))?;
@@ -403,22 +488,57 @@ fn locate_root(
     if count == 0 || count > 32 {
         return Err(KmdPowerError::Locate(format!("GPU 表 count 异常: {count}")));
     }
-    let mut candidates: Vec<RootInfo> = Vec::new();
+    let mut entries = Vec::new();
     for i in 0..count {
         let Some(major) = rd_u64(
             phys,
             walk_root,
-            table + u64::from(layout.entry_major_off) + u64::from(i) * u64::from(layout.entry_stride),
+            table
+                + u64::from(layout.entry_major_off)
+                + u64::from(i) * u64::from(layout.entry_stride),
         )
         .filter(|v| is_kernel_va(*v)) else {
             continue;
         };
-        let Some(root_va) =
-            rd_u64(phys, walk_root, major + u64::from(layout.major_root_off)).filter(|v| is_kernel_va(*v))
+        let Some(root_va) = rd_u64(phys, walk_root, major + u64::from(layout.major_root_off))
+            .filter(|v| is_kernel_va(*v))
         else {
             continue;
         };
-        let init = rd_u32(phys, walk_root, root_va + u64::from(layout.root_init_off)).unwrap_or(0xFF);
+        entries.push(ChainEntry {
+            index: i,
+            major_va: major,
+            root_va,
+        });
+    }
+    Ok(entries)
+}
+
+/// root 臂定位失败分类:Unarmed = 链路通但全部条目未过身份门(桌面形态
+/// 预期:构造期无 board 配置对象,init 永不置位)→ 触发 board 臂回退;
+/// Fatal = 链路/择一本身断了(count 异常、表指针无效、多候选歧义)。
+enum RootLocateFail {
+    Unarmed,
+    Fatal(KmdPowerError),
+}
+
+/// root 臂定位 PowerRoot。身份门:init=1 ∧ key<0x40 ∧ UPPER∈[10W,500W]
+/// (硬域,fail-closed)。**D 状态感知**:非 D1(如 D2=55W)时 UPPER 不是
+/// 滑条顶——候选收集后用活体墙(0x67F31384 控制表 current,秒级新鲜)精确
+/// 匹配择一;无活体参照时恰一候选才接受,多候选歧义即拒。
+fn locate_root(
+    phys: &CachedPhys,
+    walk_root: u64,
+    layout: &NvlddmkmLayout,
+    chain: &[ChainEntry],
+    live_wall_mw: Option<u32>,
+    steps: &mut Vec<String>,
+) -> Result<RootInfo, RootLocateFail> {
+    let mut candidates: Vec<RootInfo> = Vec::new();
+    for entry in chain {
+        let root_va = entry.root_va;
+        let init =
+            rd_u32(phys, walk_root, root_va + u64::from(layout.root_init_off)).unwrap_or(0xFF);
         let key = rd_u32(phys, walk_root, root_va + u64::from(layout.root_key_off)).unwrap_or(0xFF);
         let upper = rd_u32(phys, walk_root, root_va + u64::from(layout.root_upper_off));
         if init & 0xFF != 1 || key & 0xFF >= 0x40 {
@@ -436,25 +556,38 @@ fn locate_root(
             .and_then(|_| super::pagewalk::translate(phys, walk_root, root_va).ok())
             .map(|pa| pa & !0xFFF)
             .unwrap_or(0);
-        let frame_upper = read_virtual(phys, walk_root, root_va + u64::from(layout.root_upper_off), 4)
-            .ok()
-            .and_then(|_| {
-                super::pagewalk::translate(phys, walk_root, root_va + u64::from(layout.root_upper_off))
-                    .ok()
-            })
-            .map(|pa| pa & !0xFFF)
-            .unwrap_or(0);
+        let frame_upper = read_virtual(
+            phys,
+            walk_root,
+            root_va + u64::from(layout.root_upper_off),
+            4,
+        )
+        .ok()
+        .and_then(|_| {
+            super::pagewalk::translate(phys, walk_root, root_va + u64::from(layout.root_upper_off))
+                .ok()
+        })
+        .map(|pa| pa & !0xFFF)
+        .unwrap_or(0);
         candidates.push(RootInfo {
-            major_va: major,
+            major_va: entry.major_va,
             root_va,
-            entry_index: i,
+            entry_index: entry.index,
             frame_root,
             frame_upper,
             init: (init & 0xFF) as u8,
-            elig: rd_u32(phys, walk_root, root_va + u64::from(layout.root_init_off + 1))
-                .unwrap_or(0xFF) as u8,
-            amount_active: rd_u32(phys, walk_root, root_va + u64::from(layout.root_init_off + 2))
-                .unwrap_or(0xFF) as u8,
+            elig: rd_u32(
+                phys,
+                walk_root,
+                root_va + u64::from(layout.root_init_off + 1),
+            )
+            .unwrap_or(0xFF) as u8,
+            amount_active: rd_u32(
+                phys,
+                walk_root,
+                root_va + u64::from(layout.root_init_off + 2),
+            )
+            .unwrap_or(0xFF) as u8,
             base: rd_u32(phys, walk_root, root_va + u64::from(layout.root_base_off))
                 .unwrap_or(u32::MAX),
             amount: rd_u32(phys, walk_root, root_va + u64::from(layout.root_amount_off))
@@ -465,9 +598,7 @@ fn locate_root(
         });
     }
     if candidates.is_empty() {
-        return Err(KmdPowerError::Locate(
-            "全部 GPU 表条目都未过身份门(布局假设与活体不符?)".into(),
-        ));
+        return Err(RootLocateFail::Unarmed);
     }
     // 择一:活体墙精确匹配 > 恰一候选 > 歧义拒绝
     if let Some(live) = live_wall_mw {
@@ -485,10 +616,255 @@ fn locate_root(
         steps.push("唯一身份门候选(无活体参照)".into());
         return Ok(candidates.remove(0));
     }
-    Err(KmdPowerError::Locate(format!(
+    Err(RootLocateFail::Fatal(KmdPowerError::Locate(format!(
         "{} 个候选歧义且活体墙无精确匹配(live={live_wall_mw:?})— 拒写",
         candidates.len()
-    )))
+    ))))
+}
+
+/// 单 u32 物理写 + 走查读回校验,不符即时回滚(root 臂 UPPER 与 board 臂
+/// 窗 max 共用一条写原语)。
+fn write_u32_phys(
+    phys: &CachedPhys,
+    walk_root: u64,
+    va: u64,
+    value: u32,
+    restore: u32,
+    label: &str,
+    steps: &mut Vec<String>,
+) -> Result<(), KmdPowerError> {
+    let pa = super::pagewalk::translate(phys, walk_root, va).map_err(KmdPowerError::Walk)?;
+    let frame = pa & !0xFFF;
+    let off_in_page = (va & 0xFFF) as usize;
+    let mapped = phys
+        .drv
+        .map_physical(frame, 1)
+        .map_err(|e| KmdPowerError::Write(format!("{label} 帧映射失败: {e}")))?;
+    unsafe {
+        ((mapped + off_in_page as u64) as *mut u32).write_volatile(value);
+    }
+    phys.drv
+        .unmap_physical(mapped)
+        .map_err(|e| KmdPowerError::Write(format!("{label} 反映射失败: {e}")))?;
+    if rd_u32(phys, walk_root, va) != Some(value) {
+        if let Ok(m2) = phys.drv.map_physical(frame, 1) {
+            unsafe {
+                ((m2 + off_in_page as u64) as *mut u32).write_volatile(restore);
+            }
+            let _ = phys.drv.unmap_physical(m2);
+        }
+        return Err(KmdPowerError::Write(format!(
+            "{label} 读回不符 — 已回滚到 {restore}"
+        )));
+    }
+    steps.push(format!("{label} {restore} → {value} ✓ 读回一致"));
+    Ok(())
+}
+
+/// Board 窗臂:root 未武装(桌面形态)时的破解路径 —— 目标是 Board 控制表
+/// 滑条窗 max(percent/NVML 写路径的窗钳源头)。活体窗三元组定位(扫查含
+/// 候选页池邻域)→ **逐候选探测**:写 max(读回)→ GET 窗跟随验 → 不跟随
+/// 即回滚(“写-验-回滚”是 echo/lease 镜像行的唯一可靠消歧器,每轮自愈)
+/// → 跟随者胜出、多镜像同抬 → percent 写 current(0xAD95F5ED 安全面;Turing
+/// 上 watt SET 0xAFFC2279 毒,**本臂绝不触碰 set_tgp_watt**)。返回(结果
+/// 现场, 墙字段 VA 供终验)。
+fn board_arm(
+    phys: &CachedPhys,
+    walk_root: u64,
+    chain: &[ChainEntry],
+    gpu: Option<&nvapi::hi::Gpu>,
+    wall_mw: u32,
+    steps: &mut Vec<String>,
+) -> Result<(BoardWindowOutcome, u64), KmdPowerError> {
+    steps.push(
+        "root 臂身份门全拒(PowerRoot 未武装 = 桌面形态预期:构造期无 board 配置对象,init 永不置位)→ 切 Board 窗臂"
+            .into(),
+    );
+    let Some(gpu) = gpu else {
+        return Err(KmdPowerError::Locate(
+            "Board 臂需要活体窗 GET(0x67F31384/0x8B3E7343):NVAPI GPU 不可达".into(),
+        ));
+    };
+    let range = gpu
+        .tgp_watt_range()
+        .map_err(|e| KmdPowerError::Locate(format!("tgp 窗 GET 失败: {e}")))?
+        .ok_or_else(|| {
+            KmdPowerError::Locate("驱动不暴露 tgp 窗(range=None)— Board 臂缺活体锚,拒".into())
+        })?;
+    let (Some(default_mw), Some(max_mw)) = (range.default_mw, range.max_mw) else {
+        return Err(KmdPowerError::Locate(format!(
+            "活体窗不完整(default={:?} max={:?})— Board 臂拒",
+            range.default_mw, range.max_mw
+        )));
+    };
+    let current_mw = gpu
+        .tgp_watt_status()
+        .ok()
+        .flatten()
+        .and_then(|s| s.current_mw)
+        .unwrap_or(default_mw);
+    let live = board::BoardLiveValues {
+        current_mw,
+        default_mw,
+        max_mw,
+        min_mw: range.min_mw,
+    };
+    steps.push(format!(
+        "活体窗: current={current_mw} default={default_mw} max={max_mw} min={:?}(GET 安全面)",
+        live.min_mw
+    ));
+    if !(10_000..=ABSOLUTE_WALL_CAP_MW).contains(&max_mw) {
+        return Err(KmdPowerError::Locate(format!(
+            "活体窗顶 {max_mw} 超硬域 [10W,500W] — 不像 Board 窗,拒"
+        )));
+    }
+    if wall_mw <= max_mw {
+        return Err(KmdPowerError::Locate(format!(
+            "目标 {wall_mw} ≤ 活体窗顶 {max_mw}:窗内目标不需要内核写,直接 set-public-tgp-percent / NVML"
+        )));
+    }
+    let Some(root_va) = chain.first().map(|e| e.root_va) else {
+        return Err(KmdPowerError::Locate(
+            "GPU 链为空 — Board 臂无 root 锚".into(),
+        ));
+    };
+    let scan = board::locate_board_window_candidates(phys, walk_root, root_va, &live);
+    steps.push(format!(
+        "Board 窗扫查: 可读 {} 页 / 跳过 {} 页 / 候选 {}",
+        scan.pages_scanned,
+        scan.pages_unreadable,
+        scan.candidates.len()
+    ));
+    for note in &scan.notes {
+        steps.push(format!("  [scan] {note}"));
+    }
+    let cands =
+        board::probeable_candidates(&scan, board::PROBE_CAP).map_err(KmdPowerError::Locate)?;
+    // 候选校验:max 槽读回必须等于活体窗顶 + 帧翻译可用,不过者剔除
+    let mut valid: Vec<&board::BoardWindowCandidate> = Vec::new();
+    for cand in cands {
+        let max_va = cand.page_va + cand.hit.max_off as u64;
+        if rd_u32(phys, walk_root, max_va) == Some(live.max_mw) && cand.frame != 0 {
+            valid.push(cand);
+        } else {
+            steps.push(format!(
+                "候选剔除: 页 {:#x} max@+{:#x}(读回/帧校验不过)",
+                cand.page_va, cand.hit.max_off
+            ));
+        }
+    }
+    if valid.is_empty() {
+        return Err(KmdPowerError::Locate(
+            "全部候选读回/帧校验不过 — 拒(用 locate-trace 打印候选邻域人工判读)".into(),
+        ));
+    }
+    // 逐候选探测:写 → GET 窗跟随验 → 不跟随即回滚。echo/lease 镜像行与
+    // 活体行静态不可分(2070 实测 0xFE 标记的 lease cell 三元组同样成立),
+    // "写-验-回滚"探测是唯一可靠的消歧器 —— 每次探测自愈,失败轮零残留。
+    let mut followers: Vec<&board::BoardWindowCandidate> = Vec::new();
+    for (round, cand) in valid.iter().enumerate() {
+        let max_va = cand.page_va + cand.hit.max_off as u64;
+        steps.push(format!(
+            "探测 {}/{}: 页 {:#x}(帧 {:#x})max@+{:#x} cur@+{:#x} def@+{:#x} min@{:?} 跨度 {}B",
+            round + 1,
+            valid.len(),
+            cand.page_va,
+            cand.frame,
+            cand.hit.max_off,
+            cand.hit.cur_off,
+            cand.hit.def_off,
+            cand.hit.min_off,
+            cand.hit.span
+        ));
+        if let Err(e) = write_u32_phys(
+            phys,
+            walk_root,
+            max_va,
+            wall_mw,
+            live.max_mw,
+            "Board max",
+            steps,
+        ) {
+            steps.push(format!("  → 写入失败,跳过该候选({e})"));
+            continue;
+        }
+        let followed = gpu.tgp_watt_range().ok().flatten().and_then(|r| r.max_mw) == Some(wall_mw);
+        if followed {
+            steps.push("  → GET 窗顶跟随 ✓(保持抬升)".into());
+            followers.push(cand);
+        } else {
+            steps.push("  → GET 窗顶未跟随(echo/镜像副本)— 回滚".into());
+            write_u32_phys(
+                phys,
+                walk_root,
+                max_va,
+                live.max_mw,
+                wall_mw,
+                "Board max 回滚",
+                steps,
+            )?;
+        }
+    }
+    if followers.is_empty() {
+        return Err(KmdPowerError::Write(
+            "全部候选探测后无一让 GET 窗顶跟随 — 已全部回滚,零残留。差分判读: \
+             nvidia-smi -pl <窗内非默认值> 扰动 current 后重跑 locate-trace,哪一行的 current 跟动哪行才是活体行"
+                .into(),
+        ));
+    }
+    let primary = followers[0];
+    let max_va = primary.page_va + primary.hit.max_off as u64;
+    steps.push(format!(
+        "窗跟随验证 ✓(GET max {max_mw} → {wall_mw};{}/{} 候选跟随,镜像同抬保持一致,主判定页 {:#x})",
+        followers.len(),
+        valid.len(),
+        primary.page_va
+    ));
+    // current 写:percent 安全面(Turing watt SET 毒,绝不走 set_tgp_watt)
+    let (percent_written, readback) = match gpu.set_power_limits([nvapi::Percentage(100)]) {
+        Ok(()) => {
+            let rb = gpu
+                .tgp_watt_status()
+                .ok()
+                .flatten()
+                .and_then(|s| s.current_mw);
+            match rb {
+                Some(c) if c >= wall_mw => steps.push(format!("percent 100% ✓ 控制值读回 {c} mW")),
+                other => steps.push(format!(
+                    "percent 100% 已写,控制值读回 {other:?}(< 目标 {wall_mw}?换算/取整所致,可手动 set-public-tgp-percent 补)"
+                )),
+            }
+            (Some(100), rb)
+        }
+        Err(e) => {
+            steps.push(format!(
+                "percent 写失败({e})— 窗已抬,控制值可手动补: set-public-tgp-percent 100 / NVML -pl"
+            ));
+            (None, None)
+        }
+    };
+    Ok((
+        BoardWindowOutcome {
+            page_va: primary.page_va,
+            frame: primary.frame,
+            max_off: primary.hit.max_off,
+            cur_off: primary.hit.cur_off,
+            def_off: primary.hit.def_off,
+            min_off: primary.hit.min_off,
+            live_current_mw: live.current_mw,
+            live_default_mw: live.default_mw,
+            live_max_mw: live.max_mw,
+            live_min_mw: live.min_mw,
+            max_before_mw: live.max_mw,
+            max_after_mw: wall_mw,
+            window_followed: true,
+            followers: followers.len(),
+            percent_written,
+            current_readback_mw: readback,
+            candidates_seen: scan.candidates.len(),
+        },
+        max_va,
+    ))
 }
 
 // ---------------------------------------------------------------- 公开入口
@@ -544,7 +920,6 @@ pub fn set_power_wall_kmd(
 
     result.map(|mut o| {
         o.steps = steps;
-        o.upper_before_mw = o.root.upper;
         o
     })
 }
@@ -563,88 +938,72 @@ fn set_power_wall_inner(
         layout.major_root_off,
         layout.root_init_off
     ));
-    steps.push(format!("走查根 {walk_root:#x}(nvlddmkm @{:#x})", module.base));
-
-    // 3) 活体墙(D 状态感知)+ 定位(身份门)
-    let live_wall = first_hi_gpu().and_then(|gpu| {
-        gpu.tgp_watt_status()
-            .ok()
-            .flatten()
-            .and_then(|st| st.current_mw)
-    });
     steps.push(format!(
-        "活体墙(tgp control current)= {live_wall_mw:?}",
-        live_wall_mw = live_wall
-    ));
-    let root = locate_root(&phys, walk_root, &layout, module.base, live_wall, steps)?;
-    steps.push(format!(
-        "PowerRoot @ {:#016X}(entry{}): init={} key={} UPPER={} LOWER={} base={} amount={}",
-        root.root_va, root.entry_index, root.init, root.key,
-        root.upper, root.lower, root.base, root.amount
+        "走查根 {walk_root:#x}(nvlddmkm @{:#x})",
+        module.base
     ));
 
-    // 4) 写 UPPER(单 u32,物理帧;读回校验,不符即时回滚)
-    let upper_va = root.root_va + u64::from(layout.root_upper_off);
-    if wall_mw != root.upper {
-        let pa = super::pagewalk::translate(&phys, walk_root, upper_va).map_err(KmdPowerError::Walk)?;
-        let frame = pa & !0xFFF;
-        let off_in_page = (upper_va & 0xFFF) as usize;
-        let mapped = phys
-            .drv
-            .map_physical(frame, 1)
-            .map_err(|e| KmdPowerError::Write(format!("帧映射失败: {e}")))?;
-        unsafe {
-            ((mapped + off_in_page as u64) as *mut u32).write_volatile(wall_mw);
-        }
-        phys.drv
-            .unmap_physical(mapped)
-            .map_err(|e| KmdPowerError::Write(format!("反映射失败: {e}")))?;
-        if rd_u32(&phys, walk_root, upper_va) != Some(wall_mw) {
-            // 即时回滚
-            if let Ok(m2) = phys.drv.map_physical(frame, 1) {
-                unsafe {
-                    ((m2 + off_in_page as u64) as *mut u32).write_volatile(root.upper);
+    // 3) 活体面(GET 全安全:0x8B3E7343 status / 0x67F31384 range)
+    let gpu = first_hi_gpu();
+    let live_wall = gpu
+        .as_ref()
+        .and_then(|g| g.tgp_watt_status().ok())
+        .flatten()
+        .and_then(|st| st.current_mw);
+    steps.push(format!("活体墙(tgp control current)= {live_wall:?}"));
+
+    let chain = walk_gpu_chain(&phys, walk_root, &layout, module.base)?;
+
+    // 4) 臂选择:root 身份门全拒(桌面形态)= 自动回退 board 臂
+    let (arm, root_info, board_outcome, field_va, tgp_written, tgp_note) =
+        match locate_root(&phys, walk_root, &layout, &chain, live_wall, steps) {
+            Ok(root) => {
+                steps.push(format!(
+                "PowerRoot @ {:#016X}(entry{}): init={} key={} UPPER={} LOWER={} base={} amount={}",
+                root.root_va,
+                root.entry_index,
+                root.init,
+                root.key,
+                root.upper,
+                root.lower,
+                root.base,
+                root.amount
+            ));
+                let upper_va = root.root_va + u64::from(layout.root_upper_off);
+                if wall_mw != root.upper {
+                    write_u32_phys(
+                        &phys, walk_root, upper_va, wall_mw, root.upper, "UPPER", steps,
+                    )?;
+                } else {
+                    steps.push(format!("UPPER 已是 {wall_mw}(幂等写跳过)"));
                 }
-                let _ = phys.drv.unmap_physical(m2);
+                let (tgp_written, tgp_note) = root_arm_tgp_write(gpu.as_ref(), wall_mw, steps);
+                (
+                    KmdArm::Root,
+                    Some(root),
+                    None,
+                    upper_va,
+                    tgp_written,
+                    tgp_note,
+                )
             }
-            return Err(KmdPowerError::Write(format!(
-                "读回不符 — 已回滚 UPPER 到 {}",
-                root.upper
-            )));
-        }
-        steps.push(format!("UPPER {} → {} ✓ 读回一致", root.upper, wall_mw));
-    } else {
-        steps.push(format!("UPPER 已是 {wall_mw}(幂等写跳过)"));
-    }
-
-    // 5) 原生 tgp 写(控制值 < 目标时才写;已达标绝不写 —— 防窗钳把控制压回)
-    let tgp_w = wall_mw / 1000;
-    let live_control = first_hi_gpu().and_then(|gpu| {
-        gpu.tgp_watt_status().ok().flatten().and_then(|st| st.current_mw)
-    });
-    let (tgp_written, tgp_note) = match live_control {
-        Some(cur) if cur >= wall_mw => {
-            (0, format!("tgp 控制已 {cur} mW ≥ 目标 {wall_mw} —— 跳过写(防窗钳压低)"))
-        }
-        Some(_) => match first_hi_gpu().map(|g| g.set_tgp_watt(tgp_w, 2)) {
-            Some(Ok(applied)) if applied * 1000 >= wall_mw => {
-                (tgp_w, format!("tgp {tgp_w} W 写入 ✓(读回 {applied} W)"))
+            Err(RootLocateFail::Unarmed) => {
+                let (outcome, field_va) =
+                    board_arm(&phys, walk_root, &chain, gpu.as_ref(), wall_mw, steps)?;
+                (
+                    KmdArm::Board,
+                    None,
+                    Some(outcome),
+                    field_va,
+                    0,
+                    "board 臂:current 走 percent 安全写(毒 SET 0xAFFC2279 不触碰)".into(),
+                )
             }
-            Some(Ok(applied)) => (
-                0,
-                format!(
-                    "tgp 写被窗钳回 {applied} W(< 目标)—— 窗未跟 UPPER,用 set-pwr-cur-limit 复查"
-                ),
-            ),
-            Some(Err(e)) => (0, format!("tgp 写失败(UPPER 已生效,可手动补): {e}")),
-            None => (0, "tgp 写跳过:GPU 0 不可达".into()),
-        },
-        None => (0, "tgp 写跳过:控制值不可读".into()),
-    };
-    steps.push(tgp_note.clone());
+            Err(RootLocateFail::Fatal(e)) => return Err(e),
+        };
 
-    // 6) 租约写(回显面,最后;checked 版自带包络,越其包络时降级为直写)
-    let (lease_written, lease_note) = match first_hi_gpu() {
+    // 5) 租约写(回显面,最后;两臂共用)
+    let (lease_written, lease_note) = match gpu.as_ref() {
         Some(gpu) => match gpu.set_power_command_checked(0, 0xFE, wall_mw) {
             Ok(report) => (
                 Some(wall_mw),
@@ -662,23 +1021,30 @@ fn set_power_wall_inner(
     };
     steps.push(lease_note.clone());
 
-    // 7) 复验
-    let final_upper = rd_u32(&phys, walk_root, upper_va);
-    if final_upper != Some(wall_mw) {
+    // 6) 复验(两臂同一判据:墙字段仍 == 目标)
+    let final_field = rd_u32(&phys, walk_root, field_va);
+    if final_field != Some(wall_mw) {
         return Err(KmdPowerError::Write(format!(
-            "复验失败:UPPER={final_upper:?} ≠ {wall_mw}(被外部改写?)"
+            "复验失败:墙字段={final_field:?} ≠ {wall_mw}(被外部改写?)"
         )));
     }
-    steps.push(format!("复验 UPPER={} ✓", final_upper.unwrap()));
+    steps.push(format!("复验墙字段={} ✓", final_field.unwrap()));
 
+    let wall_before_mw = match (&root_info, &board_outcome) {
+        (Some(root), _) => root.upper,
+        (_, Some(board)) => board.max_before_mw,
+        (None, None) => unreachable!("两臂必有其一场"),
+    };
     Ok(KmdSetWallOutcome {
+        arm,
         layout_summary: format!(
             "slot={:#x} table+{:#x} root_init={:#x}",
             layout.global_slot_rva, layout.state_table_off, layout.root_init_off
         ),
-        upper_before_mw: root.upper,
-        upper_after_mw: wall_mw,
-        root,
+        root: root_info,
+        board: board_outcome,
+        wall_before_mw,
+        wall_after_mw: wall_mw,
         tgp_written_w: tgp_written,
         tgp_write_note: tgp_note,
         lease_written_mw: lease_written,
@@ -686,6 +1052,44 @@ fn set_power_wall_inner(
         service: SERVICE_NAME.to_string(),
         steps: Vec::new(),
     })
+}
+
+/// root 臂原生 tgp 写(控制值 < 目标时才写;已达标绝不写 —— 防窗钳把控制
+/// 压回)。board 臂不经过这里(Turing watt SET 毒)。
+fn root_arm_tgp_write(
+    gpu: Option<&nvapi::hi::Gpu>,
+    wall_mw: u32,
+    steps: &mut Vec<String>,
+) -> (u32, String) {
+    let tgp_w = wall_mw / 1000;
+    let live_control = gpu
+        .and_then(|g| g.tgp_watt_status().ok())
+        .flatten()
+        .and_then(|st| st.current_mw);
+    let (written, note) = match live_control {
+        Some(cur) if cur >= wall_mw => (
+            0,
+            format!("tgp 控制已 {cur} mW ≥ 目标 {wall_mw} —— 跳过写(防窗钳压低)"),
+        ),
+        Some(_) => match gpu.map(|g| g.set_tgp_watt(tgp_w, 2)) {
+            Some(Ok(applied_mw)) if applied_mw >= wall_mw => (
+                tgp_w,
+                format!("tgp {tgp_w} W 写入 ✓(读回 {} W)", applied_mw / 1000),
+            ),
+            Some(Ok(applied_mw)) => (
+                0,
+                format!(
+                    "tgp 写被窗钳回 {} W(< 目标)—— 窗未跟 UPPER,用 set-pwr-cur-limit 复查",
+                    applied_mw / 1000
+                ),
+            ),
+            Some(Err(e)) => (0, format!("tgp 写失败(UPPER 已生效,可手动补): {e}")),
+            None => (0, "tgp 写跳过:GPU 0 不可达".into()),
+        },
+        None => (0, "tgp 写跳过:控制值不可读".into()),
+    };
+    steps.push(note.clone());
+    (written, note)
 }
 
 /// 第一块卡(`PhysicalGpu::enumerate()[0]`,NVAPI 不可达时 None)。

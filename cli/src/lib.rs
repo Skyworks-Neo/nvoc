@@ -1155,7 +1155,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "Raw cell value; a bare number is watts (×1000 = the mW driver unit), a `mw` suffix is the raw integer. 0 and 0xFFFFFFFF are rejected (unset sentinels)",
                 )])),
                     formatter: Some(output::format_set_power_command),
-                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value. --kmd KERNEL PATH (HIGH RISK, admin): one-shot kernel cycle via the kmd lane (pmxdrv service register → page-walk + static layout probe → PowerRoot locate with D-state-aware live-wall matching → UPPER single-u32 write with readback → native tgp write (window follows UPPER) → this lease write LAST (echo sync) → re-verify → service unregister). --pmxdrvpath <file> is the driver binary (required with --kmd). UPPER is volatile (resets on reboot); absolute cap 500 W; --force required (it also bypasses the lease envelope)")
+                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value. --kmd KERNEL PATH (HIGH RISK, admin): one-shot kernel cycle via the kmd lane (pmxdrv service register → page-walk + static layout probe → GPU-table chain walk → arm select: ROOT ARM (armed PowerRoot, mobile/board-config form) UPPER single-u32 write with readback + native tgp write (window follows UPPER) | BOARD ARM (desktop form: PowerRoot never arms, constructor finds no board-config object) live-window triplet locate of the Board control table → window-max single-u32 write with readback + GET follow verification (mirror-copy guard) + percent write (0xAD95F5ED safe path; the poisonous 0xAFFC2279 SET is never touched) → this lease write LAST (echo sync) → re-verify → service unregister). --pmxdrvpath <file> is the driver binary (required with --kmd). The wall field is volatile (resets on reboot); absolute cap 500 W; --force required (it also bypasses the lease envelope)")
                 },
             ),
             (
@@ -1400,7 +1400,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     arity: (2, 2),
-                    options: Box::leak(Box::new(["policy-index"])),
+                    options: Box::leak(Box::new(["policy-index", "force"])),
                     positionals: Box::leak(Box::new([
                         PositionalArg::free(
                             "arg_target",
@@ -1413,7 +1413,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                             "Limit value: watts on tgp/board (one decimal allowed), amperes on OCP current channels; `ma`/`mw` suffix (case-insensitive) = raw driver integer in the row's own unit (e.g. 240 or 240000ma)",
                         ),
                     ])),
-                    ..CommandSpec::new("set-pwr-cur-limit", Group::Power, "Set a power/current limit. Unified writer for the PowerChannels control table (0xAFFC2279; HIGH RISK — raising an OCP ceiling disables a safety net, no confirmation gate): tgp/board writes the TGP/board-power row (NVAPI compact core with --policy-index, or --nvml for the nvidia-smi -pl path), nvvdd/msvdd/INDEX writes any populated channel printed by get-pwr-cur-info. nvapi-rs resolves the identity, clamps to the driver [min,max] window (plus the 1..5001 A envelope on OCP current channels), and runs the full RMW + readback + rollback recipe against the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET); the buffer geometry is feature-detected at runtime (xocd audit E3/§18)")
+                    ..CommandSpec::new("set-pwr-cur-limit", Group::Power, "Set a power/current limit. Unified writer for the PowerChannels control table (0xAFFC2279; HIGH RISK — raising an OCP ceiling disables a safety net, no confirmation gate): tgp/board writes the TGP/board-power row (NVAPI compact core with --policy-index, or --nvml for the nvidia-smi -pl path), nvvdd/msvdd/INDEX writes any populated channel printed by get-pwr-cur-info. nvapi-rs resolves the identity, clamps to the driver [min,max] window (plus the 1..5001 A envelope on OCP current channels), and runs the full RMW + readback + rollback recipe against the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET); the buffer geometry is feature-detected at runtime (xocd audit E3/§18). Pre-Ampere (pre-RTX-30) GPUs are refused on the NVAPI paths by default — there the SET faults the driver (nvlddmkm 14/153) and the control table reverts to defaults; --force attempts the write anyway for debugging. --nvml (nvidia-smi -pl) is unaffected")
                 },
             ),
             (
@@ -2328,7 +2328,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::SetTrue)
             .conflicts_with("channel")
             .conflicts_with("command")
-            .help("set-power-command: KERNEL wall raise via the kmd lane (pmxdrv). The positional becomes the target wall in watts; the command runs the full one-shot cycle (service register -> locate -> UPPER -> tgp -> lease -> verify -> unregister). Admin + --force + --pmxdrvpath required; UPPER is volatile; hard cap 500 W"),
+            .help("set-power-command: KERNEL wall raise via the kmd lane (pmxdrv). The positional becomes the target wall in watts; the command runs the full one-shot cycle (service register -> chain walk -> arm select (root: UPPER+tgp / board: window max+percent) -> lease -> verify -> unregister). Admin + --force + --pmxdrvpath required; the wall field is volatile; hard cap 500 W"),
         "pmxdrvpath" => Arg::new("pmxdrvpath")
             .long("pmxdrvpath")
             .value_name("FILE")
@@ -4204,6 +4204,8 @@ fn execute_target(
         Command::SetPwrCurLimit => {
             let target_name = invocation.positionals[0].to_ascii_lowercase();
             let raw_value = &invocation.positionals[1];
+            // Feeds the pre-Ampere poison-write gate (default = refuse).
+            let force = invocation.options.contains_key("force");
 
             // tgp/board: the board-power / TGP policy row. This is the retired
             // `set-power-limit` surface — it keeps the NVML backend (nvidia-smi
@@ -4232,6 +4234,7 @@ fn execute_target(
                             SetNvapiTgpWatt {
                                 watts,
                                 policy_index,
+                                force,
                             },
                         )?
                         .output;
@@ -4299,6 +4302,7 @@ fn execute_target(
                     policy_id: channel.policy_id,
                     subtype: channel.subtype,
                     value_raw,
+                    force,
                 },
             )?
             .output;
@@ -6864,14 +6868,16 @@ fn execute_set_power_command_kmd(
         let wall_mw = value_raw;
         let outcome = nvoc_core::kmd::power::set_power_wall_kmd(wall_mw, std::path::Path::new(raw))
             .map_err(|e| CliError::new(format!("kmd wall raise failed: {e}")))?;
-        let steps = outcome.steps.iter().map(|s| format!("  {s}")).collect::<Vec<_>>();
-        let value = json!({
+        let steps = outcome
+            .steps
+            .iter()
+            .map(|s| format!("  {s}"))
+            .collect::<Vec<_>>();
+        let mut value = json!({
             "kmd": true,
-            "root_va": format!("{:#016X}", outcome.root.root_va),
-            "root_frame": format!("{:#X}", outcome.root.frame_root),
-            "upper_frame": format!("{:#X}", outcome.root.frame_upper),
-            "upper_before_mw": outcome.upper_before_mw,
-            "upper_after_mw": outcome.upper_after_mw,
+            "arm": outcome.arm.as_str(),
+            "wall_before_mw": outcome.wall_before_mw,
+            "wall_after_mw": outcome.wall_after_mw,
             "tgp_written_w": outcome.tgp_written_w,
             "tgp_note": outcome.tgp_write_note,
             "lease_written_mw": outcome.lease_written_mw,
@@ -6879,8 +6885,34 @@ fn execute_set_power_command_kmd(
             "layout": outcome.layout_summary,
             "service": outcome.service,
             "steps": steps,
-            "note": "UPPER is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
+            "note": "wall field write is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
         });
+        if let Some(root) = &outcome.root {
+            value["root_va"] = json!(format!("{:#016X}", root.root_va));
+            value["root_frame"] = json!(format!("{:#X}", root.frame_root));
+            value["upper_frame"] = json!(format!("{:#X}", root.frame_upper));
+        }
+        if let Some(board) = &outcome.board {
+            value["board_page_va"] = json!(format!("{:#016X}", board.page_va));
+            value["board_frame"] = json!(format!("{:#X}", board.frame));
+            value["window_offsets"] = json!({
+                "max": board.max_off,
+                "cur": board.cur_off,
+                "def": board.def_off,
+                "min": board.min_off,
+            });
+            value["live_window"] = json!({
+                "current_mw": board.live_current_mw,
+                "default_mw": board.live_default_mw,
+                "max_mw": board.live_max_mw,
+                "min_mw": board.live_min_mw,
+            });
+            value["window_followed"] = json!(board.window_followed);
+            value["followers"] = json!(board.followers);
+            value["percent_written"] = json!(board.percent_written);
+            value["current_readback_mw"] = json!(board.current_readback_mw);
+            value["candidates_seen"] = json!(board.candidates_seen);
+        }
         Ok(Execution {
             function: command.name(),
             command,
@@ -9837,6 +9869,9 @@ mod tests {
         assert_eq!(option_one(&invocation, "policy-index"), Some("2"));
         let invocation = parse_args(["set-pwr-cur-limit", "board", "140", "--nvml"]).unwrap();
         assert_eq!(invocation.backend, BackendChoice::Nvml);
+        // --force feeds the pre-Ampere poison-write gate (default = refuse).
+        let invocation = parse_args(["set-pwr-cur-limit", "nvvdd", "150", "--force"]).unwrap();
+        assert!(invocation.options.contains_key("force"));
         // --slot selects the melonVolt payload dword (0..5); raw passthrough.
         let invocation = parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "3"]).unwrap();
         assert_eq!(invocation.command, Some(Command::SetVoltRailLimit));

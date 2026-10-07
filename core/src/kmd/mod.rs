@@ -29,6 +29,7 @@
 //! 解引用用户指针,窗口内访问不可访问物理页的行为与 xOCD 同源,探针只触碰
 //! RAM 范围(低内存/页表帧/定位目标帧)。
 
+pub mod board;
 pub mod layout_probe;
 pub mod pagewalk;
 

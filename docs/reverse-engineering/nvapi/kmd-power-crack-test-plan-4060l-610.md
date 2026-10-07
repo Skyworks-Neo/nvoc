@@ -201,6 +201,55 @@ nvoc-cli set-power-command 100            # 恢复
 System32\drivers 回退:内核取不到原始卷镜像时自动复制重试一次。
 实现:`core/src/kmd/power.rs`(core 写路径受控开放,章程已同步)。
 
+## 9. Board 窗臂(2026-10-07,桌面形态;双臂自动化)
+
+桌面(无 board 配置对象)PowerRoot 永不武装(init=0/key=0/UPPER=0,2070
+TU104/610.47 活体 trace + idalib 定案:构造回调唯一写点 sub_1404ED4E0 在
+board 选择器解析失败时静默 return)→ root UPPER 桌面零观察者,身份门全拒
+改为**自动回退 board 臂**(`core/src/kmd/power.rs` + `board.rs`):
+
+```text
+活体窗三元组(tgp_watt_range 0x67F31384 + status 0x8B3E7343,GET 全安全)
+→ Board 控制表扫查:root 对象 8 页 + 内核指针一跳 + 候选页池邻域 ±64 页
+  (总预算 ≤1288 页),同页 {current,default,max} 值签名(跨度 ≤0x20;
+  值相撞要求互异 dword,全等三元组要求三处)
+→ 逐候选探测(≤8):写窗 max(读回)→ GET 窗跟随验 → 不跟随即回滚。
+  实测教训(2070 首轮):echo/lease cell(0xFE 标记行)的三元组同样成立、
+  写它 GET 不跟 —— 镜像与活体行静态不可分,"写-验-回滚"探测是唯一可靠
+  消歧器(每轮自愈零残留);跟随者胜出、多镜像同抬
+→ percent 写 current(0xAD95F5ED 安全线;Turing 毒 SET 0xAFFC2279 绝不触碰)
+→ 租约写 → 复验
+```
+
+**0 跟随的差分判读**(探测全回滚后):`nvidia-smi -pl <窗内非默认值>`(如
+200,避开 105/175/219 三个已知常量)扰动 current → 重跑 locate-trace →
+哪一行的 current 跟动哪行才是活体行;若扫查域内仍无,活体行在指针两跳
+之外,需扩 sweep 或从 percent-GET 表反查。
+
+与 root 臂的互补关系(跨代规律第一批实测):
+- 4060L(移动/Ada):board 配置在 → root 武装 → 窗=UPPER;watt SET 可用,
+  percent/NVML 不可用 → 破解 = UPPER 写(§8 已收官);
+- 2070/3060(桌面/pre-Ampere):board 配置缺席 → root 永不武装 → 窗在
+  Board;percent/NVML 可用而 watt SET 毒 → 破解 = 抬 Board 窗 + 安全写补
+  current。
+
+实验顺序(两台目标机:桌面 2070/TU104 610.47、3060 无 shunt mod):
+
+```powershell
+# 管理员;先只读诊断(身份门逐格 + board 链 dump + 三元组扫查 + 候选邻域)
+sc create PMXDRV type= kernel start= demand binPath= <pmxdrv.sys>; sc start PMXDRV
+cargo test -p nvoc-core --test kmd_locate_trace_live -- --ignored --nocapture
+# 唯一候选 ✓ 后再开写臂(自动选臂,输出带 "arm": "board"):
+nvoc-cli set-power-command <目标 W> --kmd --pmxdrvpath <pmxdrv.sys> --force
+# 负载实测:nvidia-smi --query-gpu=power.draw --format=csv -l 1
+# 恢复:重启(窗 max 预期易失);或回写原值 + set-public-tgp-percent 100
+sc stop PMXDRV; sc delete PMXDRV
+```
+
+判读要点:3060 若 percent 写后 current 读回 < 目标(换算/取整),手动
+`set-public-tgp-percent` 补;窗跟随验证失败 = 候选是遥测镜像,按 trace
+输出人工判读后重跑。
+
 ## 7. 对照机:P100/582.41
 
 同流程跑本机;静态轨对 `reverse/610_nvlddmkm.sys` 换成本机 582.41 镜像重推
