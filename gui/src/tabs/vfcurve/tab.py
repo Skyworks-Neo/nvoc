@@ -1808,11 +1808,7 @@ class VFCurveTab:
         ceiling/floor bind write, because those payload slots MOVE the
         walls (the once-static assumption no longer holds).
         """
-        if (
-            not force
-            and self._p0_bounds_gpu == gpu
-            and self._p0_bounds is not None
-        ):
+        if not force and self._p0_bounds_gpu == gpu and self._p0_bounds is not None:
             return
         # GPU changed (or first load): clear any stale line so the old GPU's
         # effective wall isn't briefly shown over the new curve.
@@ -3139,7 +3135,7 @@ class VFCurveTab:
         from matplotlib.transforms import blended_transform_factory
 
         pos = self.ax.get_position()
-        y_top, y_bot = pos.y1, pos.y0
+        y_bot = pos.y0
         if self._voltages and len(self._voltages) >= 2:
             span = self._voltages[-1] - self._voltages[0]
             hw = max(4.0, span * 0.006)
@@ -4814,9 +4810,7 @@ class VFCurveTab:
             v is not None for v in (pending_wall, pending_ceiling, pending_floor)
         )
         if any_pending and target_delta_mhz == 0:
-            self._apply_wall_and_binds(
-                pending_wall, pending_ceiling, pending_floor
-            )
+            self._apply_wall_and_binds(pending_wall, pending_ceiling, pending_floor)
             self._redraw()
             return
 
@@ -5125,9 +5119,7 @@ class VFCurveTab:
                 self._apply_binds_inline(native, gpu, rail_bit, ceiling_mv, floor_mv)
             )
             if wall_mv is not None:
-                messages.append(
-                    self._apply_wall_inline(native, gpu, wall_mv, rail_bit)
-                )
+                messages.append(self._apply_wall_inline(native, gpu, wall_mv, rail_bit))
             return "\n".join(m for m in messages if m)
 
         parts = []
