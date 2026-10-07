@@ -219,10 +219,21 @@ board 选择器解析失败时静默 return)→ root UPPER 桌面零观察者,�
   实测教训三连(2070):① 首轮写中的是 echo/lease cell(0xFE 标记行),
   三元组同样成立 —— 镜像与活体行静态不可分;② 二轮差分(NVML -pl 200)
   实证控制行 control 槽(+0x600)跟写走而 range GET 不动 —— range GET
-  读静态 policy info 行,"GET 跟随" oracle 失灵;③ percent 语义不定
-  (可能钳 100%),NVML 瓦特才是地面真值(每轮自愈零残留)。信息行候选:
-  静态策略行 {min,default,max}(无 control 槽)降级匹配,cur=None,探在
-  控制行之后 —— 钳源若读 info 行由它接手
+  读静态 policy info 行,"GET 跟随" oracle 失灵;③ percent 语义定案为
+  按 default 折算(100%→175000、119%→208250、>100% 可用,超 max 报
+  INVALID_ARGUMENT),且整数粒度够不到任意墙值 —— NVML 瓦特才是地面
+  真值。信息行候选:静态策略行 {min,default,max}(无 control 槽)降级
+  匹配,cur=None,探在控制行之后。
+
+  **④(2026-10-08 收官)宽通道表 = 桌面钳源实锤**:值共现地图在两机
+  各抓到一张宽表 —— 行内 {min, default, max} 各 2-3 副本、步距 0x4C/
+  0x50(2070: min@0xAE0/def@0xB30/max@0xB80 三副本;3060/591.86:
+  0x8F0/0x93C/0x988,跨版本同构),远超 0x20 行判据 —— 共现扫查是唯一
+  看得见它的手段。写臂升级为「行+宽页」双类目标(宽页全部 max 槽同抬,
+  一个目标一轮 oracle,不到达全槽回滚+恢复)。2070 实测:宽页三槽写
+  300000 → nvidia-smi -pl 300 **接受** → `nvidia-smi -q -d POWER`
+  Max Power Limit 219→**300**、Current/Requested 300 —— **桌面抬窗
+  成功**(default 175/min 105 不变;易失性待重启验证,预期回落 219)。
 → percent 写 current(0xAD95F5ED 安全线;Turing 毒 SET 0xAFFC2279 绝不触碰)
 → 租约写 → 复验
 ```
