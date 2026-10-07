@@ -234,6 +234,19 @@ board 选择器解析失败时静默 return)→ root UPPER 桌面零观察者,�
   300000 → nvidia-smi -pl 300 **接受** → `nvidia-smi -q -d POWER`
   Max Power Limit 219→**300**、Current/Requested 300 —— **桌面抬窗
   成功**(default 175/min 105 不变;易失性待重启验证,预期回落 219)。
+
+  **第三机 P100/582.41 同日收官(kmd 流程 ok)**:探针零硬码自动推导
+  (M→root=0x22E0/init=0x1830),root 未武装同桌面形态;宽表三行
+  policy 行、行距 0x4C(max@0x5FC/0x648/0x72C 各 max 三副本+0xFE+def),
+  写臂三行逐探命中。P100 亦被 shunt,负载验证受限,以 -q Max 读数归档。
+  **宽表家族三代实证:582.41 ✓ / 610.47 ✓ / 591.86 在而非钳源**。
+
+  **3060/591.86 残局**:宽页三 max 槽写 300000 读回一致但 nvidia-smi 仍拒
+  [100,212](stdout 抓到原文);percent(142%/177% INVALID)与瓦特 SET
+  (`set-pwr-cur-limit tgp 300` → Applied 212000)**全部被窗钳** ——
+  591.86 唯一通路 = RM regtab 通道 shadow 写(idalib 轨迹见台账:
+  regtab = *(*(arg1+0x4280)+0x4280),按通道号查 region,arg1 身份待挖
+  公共分发器)。
 → percent 写 current(0xAD95F5ED 安全线;Turing 毒 SET 0xAFFC2279 绝不触碰)
 → 租约写 → 复验
 ```
