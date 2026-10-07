@@ -191,12 +191,14 @@ nvoc-cli set-power-command 160 --kmd --pmxdrvpath <pmxdrv.sys> --force
     → Board 控制表扫查(root 对象 8 页 + 内核指针一跳 + 候选页池邻域
       ±64 页;同页 {current,default,max} 三元组判据,值相撞时要求互异
       dword,全等三元组要求三处)
-    → 逐候选探测(≤8):写窗 max(读回)→ percent 到达验证(多假设
-      100%/按窗顶/按 default)→ 不到达即回滚+恢复 current。
-      教训两连:① echo/lease 镜像行(0xFE 标记 cell)与活体行静态不可分;
-      ② range GET(0x67F31384)读静态 policy info 行 —— 二轮差分(NVML -pl
-      200)实证控制行 control 槽跟写走而 GET 不动,"GET 跟随" oracle 天生
-      失灵,percent 读回 ≥ 目标是唯一可靠判据(每轮自愈零残留);
+    → 逐候选探测(≤8,控制行优先、info 行殿后):写窗 max(读回)→
+      到达验证 —— nvidia-smi -pl 瓦特地面真值优先(拒绝时 stderr 的范围
+      读数直接指认钳源),不可用退 percent 多假设 → 不到达即回滚+恢复
+      current。教训三连:① echo/lease 镜像行(0xFE 标记 cell)与活体行
+      静态不可分;② range GET(0x67F31384)读静态 policy info 行,二轮
+      差分(NVML -pl 200)实证控制行 control 槽跟写走而 GET 不动,"GET
+      跟随" oracle 天生失灵;③ percent 语义不定(可能钳 100%),NVML 瓦特
+      才是地面真值(每轮自愈零残留);
       无一跟随全回滚拒写(转差分:NVML 扰动 current 后重 trace)
     → percent 写 current(0xAD95F5ED 安全线;Turing 上 watt SET 0xAFFC2279
       毒,本臂绝不触碰 set_tgp_watt)

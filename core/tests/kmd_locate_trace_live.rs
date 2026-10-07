@@ -274,7 +274,7 @@ fn locate_root_trace_live() {
     }
     for cand in &scan.candidates {
         println!(
-            "候选: 页 0x{:016X}(帧 0x{:X})max@+{:#x} cur@+{:#x} def@+{:#x} min@{:?} 跨度 {}B",
+            "候选: 页 0x{:016X}(帧 0x{:X})max@+{:#x} cur@{:?} def@+{:#x} min@{:?} 跨度 {}B",
             cand.page_va,
             cand.frame,
             cand.hit.max_off,

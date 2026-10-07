@@ -27,12 +27,14 @@ pub struct BoardLiveValues {
     pub min_mw: Option<u32>,
 }
 
-/// 一次同页三元组命中(全部为页内偏移,值满足 {max, current, default}
-/// 逐一对上活体读数且彼此聚拢)。
+/// 一次同页命中(页内偏移):活体控制行 = {max, current, default} 全对上
+/// (cur Some);info 行(静态策略行,无 control 槽)= {max, default(+min)}
+/// 降级匹配(cur None)。写臂先探控制行再探 info 行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardWindowMatch {
     pub max_off: usize,
-    pub cur_off: usize,
+    /// control 槽命中(活体行 Some;info 行 None)。
+    pub cur_off: Option<usize>,
     pub def_off: usize,
     /// min 槽命中(可选;同值槽不与 cur/def 复用同一 dword)。
     pub min_off: Option<usize>,
@@ -68,7 +70,8 @@ pub fn root_object_pages(root_va: u64) -> Vec<u64> {
     (0..ROOT_OBJECT_PAGES).map(|i| base + i * 0x1000).collect()
 }
 
-/// 单页三元组扫查:返回全部命中(多命中 = 歧义素材,由上层判)。
+/// 单页扫查:控制行三元组优先,info 行降级({max, default(+min)},无
+/// control 槽)。返回全部命中(多命中 = 歧义素材,由上层判)。
 ///
 /// 值相撞语义:出厂未扰动时 current 常等于 default,位置集合相同 —— 靠
 /// 「cur/def/min 必须取不同偏移」区分;三元全等时要求三处不同 dword 同聚拢,
@@ -99,6 +102,7 @@ pub fn scan_page_for_window(page: &[u8], live: &BoardLiveValues) -> Vec<BoardWin
     let min_pos = live.min_mw.map(pos);
     let mut out = Vec::new();
     for m in pos(live.max_mw) {
+        // 控制行三元组:{max, current, default} 互异同聚拢
         let mut best: Option<BoardWindowMatch> = None;
         for c in near(&cur_pos, m) {
             for d in near(&def_pos, m) {
@@ -122,7 +126,7 @@ pub fn scan_page_for_window(page: &[u8], live: &BoardLiveValues) -> Vec<BoardWin
                 }
                 let cand = BoardWindowMatch {
                     max_off: m,
-                    cur_off: c,
+                    cur_off: Some(c),
                     def_off: d,
                     min_off,
                     span,
@@ -137,14 +141,57 @@ pub fn scan_page_for_window(page: &[u8], live: &BoardLiveValues) -> Vec<BoardWin
         }
         if let Some(b) = best {
             out.push(b);
+            continue;
+        }
+        // info 行降级:本页无 control 槽邻位,{max, default(+min)} 两/三元。
+        // 三元全等退化态不降级 —— 那时任何两处同值 dword 都会假命中。
+        let degenerate = live.current_mw == live.default_mw && live.default_mw == live.max_mw;
+        let mut best2: Option<BoardWindowMatch> = None;
+        if degenerate {
+            continue;
+        }
+        for d in near(&def_pos, m) {
+            if d == m {
+                continue;
+            }
+            let min_off = min_pos.as_ref().and_then(|list| {
+                near(list, m)
+                    .into_iter()
+                    .filter(|o| *o != m && *o != d)
+                    .min_by_key(|o| o.abs_diff(m))
+            });
+            let mut offs = vec![m, d];
+            offs.extend(min_off);
+            let lo = *offs.iter().min().expect("非空");
+            let hi = *offs.iter().max().expect("非空");
+            let span = hi - lo;
+            if span > MATCH_SPAN {
+                continue;
+            }
+            let cand = BoardWindowMatch {
+                max_off: m,
+                cur_off: None,
+                def_off: d,
+                min_off,
+                span,
+            };
+            if best2
+                .as_ref()
+                .is_none_or(|b: &BoardWindowMatch| cand.span < b.span)
+            {
+                best2 = Some(cand);
+            }
+        }
+        if let Some(b) = best2 {
+            out.push(b);
         }
     }
     // 同簇去重:全等三元组/值相撞时,同一字段集会以 (m,c,d) 的不同指派产生
     // 多条等价命中 —— 按排序字段集收敛为一条,真实的第二簇(不同字段集)保留。
-    let mut seen: HashSet<Vec<usize>> = HashSet::new();
+    let mut seen: HashSet<Vec<Option<usize>>> = HashSet::new();
     out.retain(|hit| {
-        let mut key = vec![hit.max_off, hit.cur_off, hit.def_off];
-        key.extend(hit.min_off);
+        let mut key: Vec<Option<usize>> = vec![Some(hit.max_off), hit.cur_off, Some(hit.def_off)];
+        key.extend(hit.min_off.map(Some));
         key.sort_unstable();
         seen.insert(key)
     });
@@ -428,7 +475,7 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let hit = &hits[0];
         assert_eq!(hit.max_off, 0x108);
-        assert_eq!(hit.cur_off, 0x104);
+        assert_eq!(hit.cur_off, Some(0x104));
         assert_eq!(hit.def_off, 0x100);
         assert_eq!(hit.min_off, Some(0xFC));
         assert_eq!(hit.span, 12);
@@ -446,7 +493,7 @@ mod tests {
         let hits = scan_page_for_window(&page, &vals);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].max_off, 0x38);
-        assert_ne!(hits[0].cur_off, hits[0].def_off);
+        assert_ne!(hits[0].cur_off, Some(hits[0].def_off));
         assert_eq!(hits[0].min_off, Some(0x2C));
     }
 
@@ -476,6 +523,20 @@ mod tests {
         put_dwords(&mut page, 0x104, &[90_000]);
         put_dwords(&mut page, 0x108, &[140_000]);
         assert!(scan_page_for_window(&page, &live()).is_empty());
+    }
+
+    #[test]
+    fn scan_page_matches_info_row_without_control_slot() {
+        // info 行(静态策略行):只有 {min, default, max},页上没有 current 值
+        // —— 降级匹配(cur None),这是除控制行之外的第二类候选
+        let mut page = [0u8; 4096];
+        put_dwords(&mut page, 0xFC, &[50_000, 100_000, 140_000]);
+        let hits = scan_page_for_window(&page, &live());
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].cur_off, None);
+        assert_eq!(hits[0].max_off, 0x104);
+        assert_eq!(hits[0].def_off, 0x100);
+        assert_eq!(hits[0].min_off, Some(0xFC));
     }
 
     #[test]

@@ -213,13 +213,16 @@ board 选择器解析失败时静默 return)→ root UPPER 桌面零观察者,�
 → Board 控制表扫查:root 对象 8 页 + 内核指针一跳 + 候选页池邻域 ±64 页
   (总预算 ≤1288 页),同页 {current,default,max} 值签名(跨度 ≤0x20;
   值相撞要求互异 dword,全等三元组要求三处)
-→ 逐候选探测(≤8):写窗 max(读回)→ percent 到达验证(多假设
-  100%/按窗顶/按 default)→ 不到达即回滚+恢复 current。
-  实测教训两连(2070):① 首轮写中的是 echo/lease cell(0xFE 标记行),
+→ 逐候选探测(≤8,控制行优先):写窗 max(读回)→ 到达验证 ——
+  nvidia-smi -pl 瓦特地面真值优先(拒绝时 stderr 的范围读数直接指认钳源),
+  不可用退 percent 多假设 → 不到达即回滚+恢复 current。
+  实测教训三连(2070):① 首轮写中的是 echo/lease cell(0xFE 标记行),
   三元组同样成立 —— 镜像与活体行静态不可分;② 二轮差分(NVML -pl 200)
   实证控制行 control 槽(+0x600)跟写走而 range GET 不动 —— range GET
-  读静态 policy info 行,"GET 跟随" oracle 失灵,percent 读回 ≥ 目标是
-  唯一可靠判据(每轮自愈零残留)
+  读静态 policy info 行,"GET 跟随" oracle 失灵;③ percent 语义不定
+  (可能钳 100%),NVML 瓦特才是地面真值(每轮自愈零残留)。信息行候选:
+  静态策略行 {min,default,max}(无 control 槽)降级匹配,cur=None,探在
+  控制行之后 —— 钳源若读 info 行由它接手
 → percent 写 current(0xAD95F5ED 安全线;Turing 毒 SET 0xAFFC2279 绝不触碰)
 → 租约写 → 复验
 ```

@@ -65,6 +65,11 @@ quick_error! {
         Write(msg: String) {
             display("UPPER 写失败: {msg}")
         }
+        /// 失败现场全量透传:错误 + 完整探测 steps(CLI 错误通道原样展示 ——
+        /// 探测细节是判读的一手证据,不允许只报结论)。
+        Failed(msg: String) {
+            display("{msg}")
+        }
     }
 }
 
@@ -163,9 +168,10 @@ pub struct BoardWindowOutcome {
     /// 三元组所在页(页对齐 VA)与物理帧。
     pub page_va: u64,
     pub frame: u64,
-    /// 页内偏移:max=写目标槽,cur/def/min=活体锚。
+    /// 页内偏移:max=写目标槽,cur/def/min=活体锚(cur=None = info 行,
+    /// 页上无 control 槽)。
     pub max_off: usize,
-    pub cur_off: usize,
+    pub cur_off: Option<usize>,
     pub def_off: usize,
     pub min_off: Option<usize>,
     /// 写前活体窗(GET 面)。
@@ -663,13 +669,14 @@ fn write_u32_phys(
 }
 
 /// Board 窗臂:root 未武装(桌面形态)时的破解路径 —— 目标是 Board 控制表
-/// 滑条窗 max(percent/NVML 写路径的窗钳源头)。活体窗三元组定位(扫查含
-/// 候选页池邻域)→ **逐候选探测**:写 max(读回)→ **percent 到达验证**
-/// (多假设 100%/按窗顶/按 default;2070 二轮差分实证 range GET 读静态
-/// info 行,"GET 跟随" oracle 失灵,percent 读回 ≥ 目标是唯一可靠判据)
-/// → 不到达即回滚 max + 恢复 current(每轮自愈)→ 胜出行保持抬升
-/// (percent 安全面 0xAD95F5ED;Turing 上 watt SET 0xAFFC2279 毒,**本臂
-/// 绝不触碰 set_tgp_watt**)。返回(结果现场, 墙字段 VA 供终验)。
+/// 滑条窗 max(percent/NVML 写路径的窗钳源头)。活体窗定位(扫查含候选页池
+/// 邻域;控制行三元组优先,info 行 {max,default,min} 降级匹配殿后)→
+/// **逐候选探测**:写 max(读回)→ **到达验证** —— nvidia-smi -pl 瓦特
+/// 地面真值优先(拒绝时 stderr 的范围读数直接指认钳源),不可用退 percent
+/// 多假设(2070 三轮实证:range GET 读静态 info 行,"GET 跟随"失灵)→
+/// 不到达即回滚 max + 恢复 current(每轮自愈)→ 胜出行保持抬升(Turing 上
+/// watt SET 0xAFFC2279 毒,**本臂绝不触碰 set_tgp_watt**)。返回(结果
+/// 现场, 墙字段 VA 供终验)。
 fn board_arm(
     phys: &CachedPhys,
     walk_root: u64,
@@ -760,20 +767,21 @@ fn board_arm(
             "全部候选读回/帧校验不过 — 拒(用 locate-trace 打印候选邻域人工判读)".into(),
         ));
     }
-    // 逐候选探测:写 max → **percent 到达验证**。2070 第二轮差分实证
-    // (NVML -pl 200 扰动):控制行的 control 槽跟写走,但 range GET
-    // (0x67F31384)读的是静态 policy info 行 —— "GET 跟随" oracle 在桌面
-    // 天生失灵;percent 读回 ≥ 目标是唯一可靠判据(percent = 安全面
-    // 0xAD95F5ED,watt SET 毒绝不触碰)。echo/lease 镜像行与活体行静态不可
-    // 分,"写-percent 验-回滚+恢复"逐候选自愈消歧。
-    let mut success: Option<(&board::BoardWindowCandidate, u32, Option<u32>)> = None;
+    // 控制行(cur Some)优先,info 行(静态策略行,无 control 槽)殿后
+    valid.sort_by_key(|c| c.hit.cur_off.is_none());
+    // 逐候选探测:写 max → **到达验证**。oracle 优先级:nvidia-smi -pl 瓦特
+    // 地面真值(接受 = 窗真抬了,current 同时落位;拒绝时 stderr 的范围读数
+    // 直接指认钳源)→ percent 多假设(安全面)。2070 三轮实证链:控制行
+    // control 槽跟 NVML 写走、range GET 读静态 info 行、"GET 跟随"失灵 ——
+    // 到达类 oracle 是唯一可靠判据;失败轮回滚 max + 恢复 current,零残留。
+    let mut success: Option<(&board::BoardWindowCandidate, String, Option<u32>)> = None;
     for (round, cand) in valid.iter().enumerate() {
         if success.is_some() {
             break;
         }
         let max_va = cand.page_va + cand.hit.max_off as u64;
         steps.push(format!(
-            "探测 {}/{}: 页 {:#x}(帧 {:#x})max@+{:#x} cur@+{:#x} def@+{:#x} min@{:?} 跨度 {}B",
+            "探测 {}/{}: 页 {:#x}(帧 {:#x})max@+{:#x} cur@{:?} def@+{:#x} min@{:?} 跨度 {}B",
             round + 1,
             valid.len(),
             cand.page_va,
@@ -796,14 +804,14 @@ fn board_arm(
             steps.push(format!("  → 写入失败,跳过该候选({e})"));
             continue;
         }
-        let (reached, ok_writes) = percent_reach_probe(gpu, wall_mw, &live, steps);
-        if let Some((p, rb)) = reached {
+        let (reached, ok_writes) = window_reach_probe(gpu, wall_mw, &live, steps);
+        if let Some((how, rb)) = reached {
             steps.push(format!(
-                "  → 窗跟验证 ✓(percent {p}% 读回到达 {wall_mw} mW)— 保持抬升"
+                "  → 窗跟验证 ✓({how} 读回到达 {wall_mw} mW)— 保持抬升"
             ));
-            success = Some((cand, p, rb));
+            success = Some((cand, how, rb));
         } else {
-            steps.push("  → percent 各假设读回均 < 目标(镜像/窗未跟)— 回滚 max".into());
+            steps.push("  → 各 oracle 读回均 < 目标(镜像/窗未跟)— 回滚 max".into());
             write_u32_phys(
                 phys,
                 walk_root,
@@ -814,21 +822,20 @@ fn board_arm(
                 steps,
             )?;
             if ok_writes > 0 {
-                percent_restore(gpu, &live, steps);
+                current_restore(gpu, &live, steps);
             }
         }
     }
-    let Some((primary, percent_used, readback)) = success else {
+    let Some((primary, how, readback)) = success else {
         return Err(KmdPowerError::Write(
-            "全部候选探测后无一让 percent 到达目标 — 已全部回滚。percent 写全数报错时先提权重试;\
-             否则跑差分: nvidia-smi -pl <窗内非默认值> 扰动 current 后重跑 locate-trace \
-             (control 槽跟动的那行是活体行)"
+            "全部候选探测后无一让窗跟 oracle 到达目标 — 已全部回滚。把失败输出里的 \
+             nvidia-smi 拒绝行(范围读数)与 locate-trace 差分(control 槽跟动行)发回判读"
                 .into(),
         ));
     };
     let max_va = primary.page_va + primary.hit.max_off as u64;
     steps.push(format!(
-        "Board 臂收束: 页 {:#x}(帧 {:#x})max@+{:#x} 抬至 {wall_mw} ✓,percent {percent_used}% 已把 current 顶到 {readback:?}",
+        "Board 臂收束: 页 {:#x}(帧 {:#x})max@+{:#x} 抬至 {wall_mw} ✓,current 经 {how} 顶到 {readback:?}",
         primary.page_va, primary.frame, primary.hit.max_off
     ));
     Ok((
@@ -847,7 +854,7 @@ fn board_arm(
             max_after_mw: wall_mw,
             window_followed: true,
             followers: 1,
-            percent_written: Some(percent_used),
+            percent_written: None,
             current_readback_mw: readback,
             candidates_seen: scan.candidates.len(),
         },
@@ -872,8 +879,8 @@ fn percent_probe_percents(wall_mw: u32, live: &board::BoardLiveValues) -> Vec<u3
     vals
 }
 
-/// percent 到达探测:逐假设写 → 读回 current,≥ 目标即成功。
-/// 返回 (Some((percent, 读回)) = 到达; 成功写入次数 —— 恢复判断用)。
+/// percent 到达探测(percent_reach 候补通道):逐假设写 → 读回 current,
+/// ≥ 目标即成功。返回 (Some((percent, 读回)) = 到达; 成功写入次数)。
 fn percent_reach_probe(
     gpu: &nvapi::hi::Gpu,
     wall_mw: u32,
@@ -901,6 +908,77 @@ fn percent_reach_probe(
         }
     }
     (None, ok_writes)
+}
+
+/// 窗跟 oracle + current 写:NVIDIA-smi -pl(NVML 瓦特,**地面真值** ——
+/// 接受即窗真的抬了,拒绝时 stderr 的范围读数直接指认钳源;成功时 current
+/// 同时落位)→ 不可用时退 percent 多假设(安全面)。current 写成功次数
+/// 供失败恢复判断。
+fn window_reach_probe(
+    gpu: &nvapi::hi::Gpu,
+    wall_mw: u32,
+    live: &board::BoardLiveValues,
+    steps: &mut Vec<String>,
+) -> (Option<(String, Option<u32>)>, usize) {
+    let wall_w = (wall_mw / 1000).to_string();
+    match std::process::Command::new("nvidia-smi")
+        .args(["-pl", &wall_w])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let rb = gpu
+                .tgp_watt_status()
+                .ok()
+                .flatten()
+                .and_then(|s| s.current_mw);
+            steps.push(format!(
+                "  nvidia-smi -pl {wall_w} ✓ → current 读回 {rb:?}(目标 {wall_mw})"
+            ));
+            if rb.is_some_and(|c| c >= wall_mw) {
+                return (Some((format!("nvidia-smi -pl {wall_w}"), rb)), 1);
+            }
+        }
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let err = err.trim();
+            if err.is_empty() {
+                steps.push("  nvidia-smi -pl 被拒(stderr 空)".into());
+            } else {
+                steps.push(format!(
+                    "  nvidia-smi -pl 被拒:{err}(这一行是钳源窗口的直接读数,失败也有判读价值)"
+                ));
+            }
+        }
+        Err(e) => steps.push(format!("  nvidia-smi 无法执行({e})— 退 percent 多假设")),
+    }
+    let (reached, ok_writes) = percent_reach_probe(gpu, wall_mw, live, steps);
+    (
+        reached.map(|(p, rb)| (format!("percent {p}%"), rb)),
+        ok_writes,
+    )
+}
+
+/// 失败候选的 current 恢复:nvidia-smi -pl 探测前瓦特 → 失败再走 percent
+/// 双假设(percent-of-max 折算;current == default 时补 100%);读回 ±2W
+/// 内算命中。
+fn current_restore(gpu: &nvapi::hi::Gpu, live: &board::BoardLiveValues, steps: &mut Vec<String>) {
+    let w = (live.current_mw / 1000).to_string();
+    let pl_ok = std::process::Command::new("nvidia-smi")
+        .args(["-pl", &w])
+        .output()
+        .is_ok_and(|out| out.status.success());
+    if pl_ok {
+        let rb = gpu
+            .tgp_watt_status()
+            .ok()
+            .flatten()
+            .and_then(|s| s.current_mw);
+        if rb.is_some_and(|c| c.abs_diff(live.current_mw) <= 2_000) {
+            steps.push(format!("  current 恢复 {rb:?}(nvidia-smi -pl {w})"));
+            return;
+        }
+    }
+    percent_restore(gpu, live, steps);
 }
 
 /// 失败候选的 current 恢复:按 percent-of-max 折算探针写回,current ==
@@ -978,10 +1056,16 @@ pub fn set_power_wall_kmd(
         }
     }
 
-    result.map(|mut o| {
-        o.steps = steps;
-        o
-    })
+    match result {
+        Ok(mut o) => {
+            o.steps = steps;
+            Ok(o)
+        }
+        Err(e) => Err(KmdPowerError::Failed(format!(
+            "{e}\n失败步骤留档(判读的一手证据):{}",
+            steps.iter().map(|s| format!("\n  {s}")).collect::<String>()
+        ))),
+    }
 }
 
 fn set_power_wall_inner(
