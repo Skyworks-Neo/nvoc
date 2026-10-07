@@ -2248,6 +2248,7 @@ fn set_tgp_watt(
             SetNvapiTgpWatt {
                 watts,
                 policy_index,
+                force: false,
             },
         )
         .map_err(to_py_err)?;

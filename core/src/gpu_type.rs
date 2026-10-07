@@ -668,6 +668,46 @@ impl GpuType {
         )
     }
 
+    /// 是否为 Ampere（30 系）之前的世代：消费 20/16/10/9 系 + Kepler/Fermi、
+    /// Turing/Pascal 工作站、Volta/Pascal/TuringTesla/Kepler/Fermi 服务器。
+    /// Unknown 一并归入（保守拒绝）。
+    ///
+    /// 0xAFFC2279 毒族 power-channel SET（ClientTgpWattSetStatus / compact
+    /// 写核心）在这些世代上触发驱动故障：nvlddmkm 事件 14/153 错误波，
+    /// 值先落地随后整张控制表回默认（2026-10-07 四机抓包 + 事件日志对齐：
+    /// TU106 r610 桌面、GP100 r582 TCC 均复现；Ampere GA106 r590 返回 Ok
+    /// 零故障）。set-pwr-cur-limit 的 NVAPI 路径默认按此拒绝，--force 放行
+    /// 调试。本判定按名字/codename 推导；持有 nvapi-rs `Architecture` 的
+    /// 调用方可用更权威的 `Architecture::is_pre_ampere`（按 GetArchInfo
+    /// 架构 ID 判定）。
+    pub fn is_pre_ampere(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile20Series
+                | GpuType::Desktop20Series
+                | GpuType::Mobile16Series
+                | GpuType::Desktop16Series
+                | GpuType::Mobile10Series
+                | GpuType::Desktop10Series
+                | GpuType::Mobile9Series
+                | GpuType::Desktop9Series
+                | GpuType::MobileKepler
+                | GpuType::DesktopKepler
+                | GpuType::MobileFermi
+                | GpuType::DesktopFermi
+                | GpuType::WorkstationTuring
+                | GpuType::WorkstationPascal
+                | GpuType::WorkstationKepler
+                | GpuType::WorkstationFermi
+                | GpuType::ServerVolta
+                | GpuType::ServerPascal
+                | GpuType::ServerTuringTesla
+                | GpuType::ServerKepler
+                | GpuType::ServerFermi
+                | GpuType::Unknown
+        )
+    }
+
     /// 是否为 Ada Lovelace 世代（消费 40 系 / 工作站）。
     ///
     /// 注意：本判定**不再**参与任何 fabric 补偿或命名——谁随谁动由驱动
@@ -940,6 +980,31 @@ mod tests {
         // 非 legacy 对照：Pascal 工作站 / 消费 10 系
         assert!(!GpuType::WorkstationPascal.is_legacy_voltage());
         assert!(!GpuType::Desktop10Series.is_legacy_voltage());
+    }
+
+    /// set-pwr-cur-limit 的 pre-Ampere 拒绝门（2026-10-07 定案：0xAFFC2279
+    /// SET 在 30 系之前触发 nvlddmkm 14/153 故障波、值先落地后整表回默认；
+    /// Ampere+ 返回 Ok 零故障）。四台实测机各占一行；Unknown 保守拒绝。
+    #[test]
+    fn pre_ampere_refusal_classification() {
+        // 实测故障机：Turing 桌面（TU106）+ Pascal TCC（GP100）
+        assert!(detect_gpu_type("NVIDIA GeForce RTX 2070", "TU106").is_pre_ampere());
+        assert!(detect_gpu_type("Tesla P100-PCIE-16GB", "GP100").is_pre_ampere());
+        // Ampere+ 对照：GA106 3060、AD107 4060 Laptop 不拒
+        assert!(!detect_gpu_type("NVIDIA GeForce RTX 3060", "GA106").is_pre_ampere());
+        assert!(!detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPU", "AD107").is_pre_ampere());
+        // 代际覆盖：20/16/10/9 系拒，30/40/50 系不拒；Unknown 保守拒
+        assert!(GpuType::Desktop20Series.is_pre_ampere());
+        assert!(GpuType::Mobile16Series.is_pre_ampere());
+        assert!(GpuType::Mobile9Series.is_pre_ampere());
+        assert!(GpuType::WorkstationTuring.is_pre_ampere());
+        assert!(GpuType::ServerVolta.is_pre_ampere());
+        assert!(!GpuType::Desktop30Series.is_pre_ampere());
+        assert!(!GpuType::Mobile40Series.is_pre_ampere());
+        assert!(!GpuType::Desktop50Series.is_pre_ampere());
+        assert!(!GpuType::WorkstationAmpere.is_pre_ampere());
+        assert!(!GpuType::ServerHopper.is_pre_ampere());
+        assert!(GpuType::Unknown.is_pre_ampere());
     }
 }
 

@@ -1792,17 +1792,59 @@ impl GpuOperation for SetNvapiDynamicBoost {
     }
 }
 
+/// Pre-Ampere poison-write gate for the 0xAFFC2279 power-channel SET paths
+/// ([`SetNvapiTgpWatt`] / [`SetNvapiPowerChannelValue`]): on pre-Ampere
+/// (pre-RTX-30) stacks the SET faults the driver — nvlddmkm event 14/153
+/// bursts, the value applies and the control table then reverts to defaults
+/// (Turing TU106 r610 desktop + Pascal GP100 r582 TCC, probe captures +
+/// event-log correlation 2026-10-07) — so every write there is an honest
+/// applied-then-reverted failure. Ampere+ answers Ok cleanly. Generation
+/// classification reuses the project-canonical [`super::gpu_type::GpuType`]
+/// (`fetch_gpu_type` off the standard [`QueryGpuInfo`] output; see
+/// `GpuType::is_pre_ampere`). Refuse by default; `force` (CLI `--force`) is
+/// the debugging escape hatch. The NVML `nvidia-smi -pl` path never hits
+/// this gate.
+fn poison_write_gate(target: &GpuTarget<'_>, force: bool) -> Result<(), Error> {
+    if force {
+        return Ok(());
+    }
+    let gpu_type = match QueryGpuInfo.run(target) {
+        Ok(info) => fetch_gpu_type(&info),
+        Err(e) => {
+            return Err(Error::Custom(format!(
+                "refused: cannot determine GPU generation ({e}) — the 0xAFFC2279 \
+                 power-channel SET faults pre-Ampere (pre-RTX-30) drivers; \
+                 re-run with --force to attempt anyway (debugging)"
+            )));
+        }
+    }
+    .unwrap_or(super::gpu_type::GpuType::Unknown);
+    if gpu_type.is_pre_ampere() {
+        Err(Error::Custom(format!(
+            "refused: {:?} is pre-Ampere (pre-RTX-30) — the 0xAFFC2279 power-channel \
+             SET faults these drivers (nvlddmkm 14/153 error burst; the value applies, then \
+             the control table reverts to defaults). Re-run with --force to attempt anyway \
+             (debugging); the NVML path (nvidia-smi -pl) is unaffected",
+            gpu_type
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 /// Set the GPU TGP in watts (notebook watts-form TGP slider; the range that
 /// appears under the PPAB/Dynamic-Boost enable). Writes the shared power-channel
 /// control table through the compact core (NDA GET 0x8B3E7343 / SET 0xAFFC2279,
 /// stamp 0x0001_0A4C): mask-scoped RMW (mask = 1<<index, so OCP rows are never
 /// touched), clamp to the driver window, readback, rollback. `policy_index`
 /// selects the entry (use [`QueryNvapiTgpWattRange`]); if None, defaults to
-/// index 2 like the ref tool.
+/// index 2 like the ref tool. Pre-Ampere GPUs are refused unless `force` is
+/// set (see [`poison_write_gate`]).
 #[derive(Clone, Debug)]
 pub struct SetNvapiTgpWatt {
     pub watts: u32,
     pub policy_index: Option<usize>,
+    pub force: bool,
 }
 
 impl GpuOperation for SetNvapiTgpWatt {
@@ -1813,6 +1855,7 @@ impl GpuOperation for SetNvapiTgpWatt {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        poison_write_gate(target, self.force)?;
         let idx = self.policy_index.unwrap_or(2);
         target
             .nvapi()?
@@ -2469,12 +2512,14 @@ impl GpuOperation for QueryNvapiThermalChannels {
 /// rollback recipe. HIGH RISK: raising an OCP ceiling disables a safety
 /// net. Every generation shares the xOCD compact control geometry
 /// (stamp v1|2636, feature-detected at runtime); the old pre-50 -9
-/// "fail-closed" was a stamp typo, not a generation gate.
+/// "fail-closed" was a stamp typo, not a generation gate. Pre-Ampere GPUs
+/// are refused unless `force` is set (see [`poison_write_gate`]).
 #[derive(Clone, Copy, Debug)]
 pub struct SetNvapiPowerChannelValue {
     pub policy_id: u32,
     pub subtype: u32,
     pub value_raw: u32,
+    pub force: bool,
 }
 
 impl GpuOperation for SetNvapiPowerChannelValue {
@@ -2485,6 +2530,7 @@ impl GpuOperation for SetNvapiPowerChannelValue {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        poison_write_gate(target, self.force)?;
         target
             .nvapi()?
             .set_power_channel_value(self.policy_id, self.subtype, self.value_raw)
