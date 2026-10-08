@@ -1,0 +1,37 @@
+3060 / 591.86 regtab 判决轮探针输出(2026-10-08,REGTAB_DENSE=1,current=150 保持)
+原文来自 3060 机器实跑,未改动。要点:回调 [0xcc00,0xcc18] 精读静默(读到无值),
+深采样至 0xff0000 预算尽,chan0 shadow 全可达域零命中;第二副本页
+0xFFFFDD0B967E1000 cur@+0x900/0x904 = 150000(跟动),min×4@+0x7dc..0x7f4。
+
+running 1 test
+nvlddmkm: 基址 0xFFFFF8014DFB0000, 磁盘 C:\Windows\System32\DriverStore\FileRepository\nv_dispig.inf_amd64_f4c7a2fd13e0f763\nvlddmkm.sys
+走查根: 0x00000000001AE000
+链: state=0xFFFFDD0B92A5ED30 table=0xFFFFDD0B92C78000 major=0xFFFFDD0B971C6000 root=0xFFFFDD0B974CC000
+活体窗: range=Some(TgpWattRange { policy_index: 2, min_mw: Some(100000), default_mw: Some(170000), max_mw: Some(212000) }) status=Some(TgpWattStatus { policy_index: 2, current_mw: Some(150000) })
+目标值: min=Some(100000) def=170000 max=212000 cur=150000
+A. 宽表发现轮(root 一跳域,253 页)…
+A. 共现 1 页
+  页 0xFFFFDD0B9674C000: 100000@[0x8f0,0x8f4,0x8fc]  150000@[0xa6c,0xa78]  170000@[0x93c,0x940,0x948,0xa70]  212000@[0x988,0x98c,0x994]
+B. 扩展域:锚 17 页 + 一跳 437 页,双判扫描…
+  共现: 页 0xFFFFDD0B9674C000: 100000@[0x8f0,0x8f4,0x8fc]  150000@[0xa6c,0xa78]  170000@[0x93c,0x940,0x948,0xa70]  212000@[0x988,0x98c,0x994]
+  fifoctx 候选(自指): 槽 0xFFFFDD0B971C7F00 +0xf00 → fifoctx 0xFFFFDD0B971C6000
+  共现: 页 0xFFFFDD0B967E1000: 100000@[0x7dc,0x7e4,0x7ec,0x7f4]  150000@[0x900,0x904]
+B. 扫描 440 页(不可读 14);扩展域共现 2 页,fifoctx 候选 1
+---- fifoctx 0xFFFFDD0B971C6000 ----
+  fast-path flag [+8AB] = Some(0)(1=backend vtable 直写生效)
+  backend [+20E0] = Some(18446705640585830400)  wrapper[+3B50 链尾 +50] 见静态链
+  backend 首页 0xFFFFDD0B97502000 TGP 命中: 无
+  chan 0: 0xFFFFDD0B971C6DB8 (=内联 chan0)
+       [深采样预算尽 @ 0xff0000]
+       cb@0xFFFFDD0B9786F900: w8=b chan=0 sub=0 addr=[0xcc00,0xcc18] fn="RVA 0xb28890"
+       cb@0xFFFFDD0B9786FB80: w8=b chan=0 sub=0 addr=[0x1018300,0x11befff] fn="RVA 0xb28890"
+       cb@0xFFFFDD0B97870260: w8=b chan=0 sub=0 addr=[0x400000,0x5fffff] fn="RVA 0xb28890"
+       cb@0xFFFFDD0B9786F9F0: w8=b chan=0 sub=0 addr=[0x244000,0x27bfff] fn="RVA 0xb28890"
+       cb@0xFFFFDD0B97870800: w8=b chan=0 sub=0 addr=[0x132800,0x1ff1ff] fn="RVA 0xb28890"
+       cb@0xFFFFDD0B9786FF40: w8=b chan=0 sub=0 addr=[0x120800,0x127fff] fn="RVA 0xb28890"
+       cb@0xFFFFDD0B9786FC70: w8=b chan=0 sub=0 addr=[0x10c000,0x10e0ff] fn="RVA 0xb28890"
+  [dump 预算尽,停]
+总计读页: 发现轮 ≤768 + 扩展 440 + dump 280(预算 1856)
+test regtab_probe_live ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.02s

@@ -35,6 +35,16 @@
 7. **(2026-10-06)传输层代际**:PMXDRV(老服务/PAIPTAC 重建款)被驱动
    安全策略拦;**PMXDRV_NEW(Intel2019,B1A8EE…)可用**——本机实测多轮。
    kmd 通道一律连 PMXDRV_NEW。SET 须提权(非提权 -137,与既有台账一致)。
+8. **(2026-10-08)30 系(Ampere)内存写路线判死,宽表破解是 pre-Ampere
+   代际特性**:三机收官模型定稿 —— P100/582.41 与 2070/610.47 宽表抬窗
+   有效(`-q` Max 读数行为级验收),因为 Pascal/Turing 的窗钳读源落在
+   宽通道表;Ampere(3060/591.86)把 range 值读源迁入 regtab 寄存器抽象/
+   通道 FIFO(fifoctx = Major+0x0,region 表 @+0x1F00,shadow slot =
+   region+regaddr),窗顶 max 在 regtab shadow 全可达域零命中 —— 内存写
+   (宽表/regtab/NVML/percent/watt SET)全部打不到读源。3060 残局出路 =
+   用户裁定的 **PCI MMIO 卡侧寄存器伪造**(PMXDRV MAP_PHYS 可直达 BAR,
+   PCI_CFG IOCTL 未接线)。公式链、差分证据、判决详见
+   `regtab-fifoctx-verdict-591-86.md`(3060/591.86 判决档案)。
 
 ## 1. L0 环境准备
 
