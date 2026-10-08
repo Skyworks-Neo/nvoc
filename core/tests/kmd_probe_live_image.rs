@@ -39,21 +39,21 @@ fn probe_live_image_diagnose() {
         r"C:\WINDOWS\system32\DriverStore\FileRepository\nv_dispi.inf_amd64_c8bc842500fab35b\nvlddmkm.sys".into()
     });
     if !Path::new(&path).exists() {
-        println!("skip(镜像不在位): {path}");
+        println!("skip (image not present): {path}");
         return;
     }
-    let img = std::fs::read(&path).unwrap_or_else(|e| panic!("读 {path} 失败: {e}"));
-    let layout = probe(&img).unwrap_or_else(|e| panic!("probe 失败(fail-closed 生效): {e:?}"));
-    println!("=== 在役镜像 {path} ===");
+    let img = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+    let layout = probe(&img).unwrap_or_else(|e| panic!("probe failed (fail-closed active): {e:?}"));
+    println!("=== in-service image {path} ===");
     println!(
         "timestamp={:#x} size_of_image={:#x} image_base={:#x}",
         layout.timestamp, layout.size_of_image, layout.image_base
     );
-    println!("--- 锚点 trail ---");
+    println!("--- anchor trail ---");
     for a in &layout.anchors {
         println!("  {a}");
     }
-    println!("--- 推导布局 ---");
+    println!("--- derived layout ---");
     println!("global_slot_rva = {:#x}", layout.global_slot_rva);
     println!("state_table_off = {:#x}", layout.state_table_off);
     println!("table_count_off = {:#x}", layout.table_count_off);
@@ -138,10 +138,10 @@ fn probe_live_image_diagnose() {
         ),
     ];
     let mut bad = Vec::new();
-    println!("--- 与 610.47 地面真值对照(推导 vs idalib)---");
+    println!("--- ground-truth comparison vs 610.47 (derived vs idalib) ---");
     for (name, ok, got, want) in &checks {
         println!(
-            "  [{}] {name}: {got} (期望 {want})",
+            "  [{}] {name}: {got} (expected {want})",
             if *ok { "✓" } else { "✗" }
         );
         if !ok {
@@ -150,6 +150,6 @@ fn probe_live_image_diagnose() {
     }
     assert!(
         bad.is_empty(),
-        "layout_probe 与 idalib 地面真值失配的字段: {bad:?}"
+        "fields mismatching idalib ground truth: {bad:?}"
     );
 }

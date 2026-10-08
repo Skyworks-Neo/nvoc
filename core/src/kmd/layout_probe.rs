@@ -252,7 +252,11 @@ fn anchor_generator(
     if f7_sites.is_empty() {
         return Err(ProbeError::F7SignatureNotFound);
     }
-    trail.push(format!("F7 签名 {} 处 @ {:#x?}", f7_sites.len(), f7_sites));
+    trail.push(format!(
+        "F7 signature {} sites @ {:#x?}",
+        f7_sites.len(),
+        f7_sites
+    ));
 
     use capstone::arch::DetailsArchInsn;
     use capstone::arch::x86::X86OperandType;
@@ -357,7 +361,7 @@ fn anchor_generator(
         };
         let m = major_root.ok_or(ProbeError::GeneratorBoundaryNotFound)?;
         trail.push(format!(
-            "生成器 @ {fn_rva:#x}: root 字段 init={init:#x} M={m:#x}(间距分类过)"
+            "generator @ {fn_rva:#x}: root fields init={init:#x} M={m:#x} (spacing classified)"
         ));
         return Ok((fields, m, fn_rva, trail));
     }
@@ -655,19 +659,19 @@ pub fn probe(img: &[u8]) -> Result<NvlddmkmLayout, ProbeError> {
         if m2 != major_root {
             return Err(ProbeError::MajorRootMismatch(major_root, m2));
         }
-        anchors.push(format!("SetAmount 族互证 M={m2:#x} ✓"));
+        anchors.push(format!("SetAmount family cross-check M={m2:#x} ✓"));
     } else {
-        anchors.push("SetAmount 族未命中(非致命)".into());
+        anchors.push("SetAmount family miss (non-fatal)".into());
     }
     // 锚 3:语义扫描 → 槽 + 表链
     let scan = scan_chains(&pe, &cs)?;
     anchors.push(format!(
-        "语义扫描:热对 top3 {:?}",
+        "semantic scan: hot pairs top3 {:?}",
         scan.pairs.iter().take(3).collect::<Vec<_>>()
     ));
     let (slot, state_d, count_off, major_off, id_off) = pick_table_chain(&scan)?;
     anchors.push(format!(
-        "GPU 表链:槽={slot:#x} state+{state_d:#x} count=+{count_off:#x} Major=+{major_off:#x} id=+{id_off:#x}"
+        "GPU table chain: slot={slot:#x} state+{state_d:#x} count=+{count_off:#x} Major=+{major_off:#x} id=+{id_off:#x}"
     ));
     // 锚 4:RM 命令(可选)。cmd 立即数会在 .text(代码引用)与 .rdata(分派表)
     // 各出现一次;只认「+0x10 处为镜像内指针」的分派表命中。
@@ -696,13 +700,13 @@ pub fn probe(img: &[u8]) -> Result<NvlddmkmLayout, ProbeError> {
             let gh = dispatch_handler(g);
             let sh = dispatch_handler(rm_set.unwrap());
             anchors.push(format!(
-                "RM 命令 GET={g:#x} SET={:?} handler=({gh:?},{sh:?})",
+                "RM commands GET={g:#x} SET={:?} handler=({gh:?},{sh:?})",
                 rm_set
             ));
             (gh, sh)
         }
         _ => {
-            anchors.push("RM 命令未命中(非致命)".into());
+            anchors.push("RM commands miss (non-fatal)".into());
             (None, None)
         }
     };
@@ -776,6 +780,6 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(init, Some(0x3CE0), "x 本身=init,x+1=elig");
+        assert_eq!(init, Some(0x3CE0), "x itself=init, x+1=elig");
     }
 }

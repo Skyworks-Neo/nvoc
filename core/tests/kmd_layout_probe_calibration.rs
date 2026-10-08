@@ -78,12 +78,16 @@ const CASES: &[GroundTruth] = &[
 fn probe_matches_ground_truth() {
     for case in CASES {
         if !Path::new(case.path).exists() {
-            println!("skip(镜像不在位): {}", case.path);
+            println!("skip (image not present): {}", case.path);
             continue;
         }
-        let img = std::fs::read(case.path).unwrap_or_else(|e| panic!("读 {} 失败: {e}", case.path));
+        let img = std::fs::read(case.path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", case.path));
         let layout = probe(&img).unwrap_or_else(|e| {
-            panic!("probe {:#x} 失败: {e:?}(fail-closed 生效)", case.timestamp)
+            panic!(
+                "probe {:#x} failed: {e:?} (fail-closed active)",
+                case.timestamp
+            )
         });
         println!("=== {:#x} anchors ===", case.timestamp);
         for a in &layout.anchors {
@@ -93,13 +97,13 @@ fn probe_matches_ground_truth() {
         assert_eq!(layout.size_of_image, case.size_of_image, "size_of_image");
         assert_eq!(
             layout.global_slot_rva, case.slot,
-            "{:#x} state 槽",
+            "{:#x} state slot",
             case.timestamp
         );
-        assert_eq!(layout.state_table_off, case.state_d, "state→表");
-        assert_eq!(layout.table_count_off, case.count, "表 count");
-        assert_eq!(layout.entry_major_off, case.major, "表 Major");
-        assert_eq!(layout.entry_id_off, case.major + 8, "表 GPU-ID");
+        assert_eq!(layout.state_table_off, case.state_d, "state→table");
+        assert_eq!(layout.table_count_off, case.count, "table count");
+        assert_eq!(layout.entry_major_off, case.major, "table Major");
+        assert_eq!(layout.entry_id_off, case.major + 8, "table GPU-ID");
         assert_eq!(layout.entry_stride, 0x10);
         assert_eq!(layout.major_root_off, case.major_root, "Major→root");
         assert_eq!(layout.root_init_off, case.init, "root init");

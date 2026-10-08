@@ -24,16 +24,18 @@ use std::path::Path;
 fn probe_pmxdrv_transport_maps_low_memory() {
     let drv = match PmxDrv::connect() {
         Ok(drv) => drv,
-        Err(err) => panic!("PMxDrv 打开失败: {err}"),
+        Err(err) => panic!("PMxDrv open failed: {err}"),
     };
     // IVT/BIOS 数据区(0x1000..0x2000)是恒在 RAM,任何 x64 机器可读。
-    let va = drv.map_physical(0x1000, 1).expect("映射物理 0x1000 失败");
-    println!("映射成功: 物理页 0x1000 -> 用户 VA 0x{va:016X}");
+    let va = drv
+        .map_physical(0x1000, 1)
+        .expect("failed to map physical 0x1000");
+    println!("mapped: physical page 0x1000 -> user VA 0x{va:016X}");
     let window = unsafe { std::slice::from_raw_parts(va as *const u8, 4096) };
     let nonzero = window.iter().filter(|&&b| b != 0).count();
-    println!("页内容非零字节数: {nonzero}/4096");
-    drv.unmap_physical(va).expect("反映射失败");
-    println!("反映射成功: 传输层 map/read/unmap 全通");
+    println!("non-zero bytes in page: {nonzero}/4096");
+    drv.unmap_physical(va).expect("unmap failed");
+    println!("unmapped: transport map/read/unmap all pass");
 }
 
 /// 阶段二:完整走查 —— 定位 nvlddmkm → low-stub 扫描 → 页表走查 →
@@ -41,19 +43,25 @@ fn probe_pmxdrv_transport_maps_low_memory() {
 #[test]
 #[ignore = "requires pmxdrv.sys service + elevated shell"]
 fn probe_kernel_walk_reads_nvlddmkm_header() {
-    let module = find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys 不在系统模块列表");
+    let module =
+        find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys not in system module list");
     println!(
-        "nvlddmkm: 基址 0x{:016X}, 磁盘 {}, SeDebugPrivilege={}",
+        "nvlddmkm: base 0x{:016X}, image {}, SeDebugPrivilege={}",
         module.base,
         module.path.display(),
         module.debug_privilege
     );
 
-    let disk_head = read_file_head(&module.path, 4096)
-        .unwrap_or_else(|err| panic!("读磁盘映像头 {} 失败: {err}", module.path.display()));
-    let fingerprint = PeFingerprint::from_image(&disk_head).expect("磁盘映像头不是有效 PE32+");
+    let disk_head = read_file_head(&module.path, 4096).unwrap_or_else(|err| {
+        panic!(
+            "failed to read disk image header {}: {err}",
+            module.path.display()
+        )
+    });
+    let fingerprint =
+        PeFingerprint::from_image(&disk_head).expect("disk image header is not a valid PE32+");
     println!(
-        "磁盘指纹: timestamp=0x{:08X}, SizeOfImage=0x{:X}, 头前缀 {} 字节",
+        "disk fingerprint: timestamp=0x{:08X}, SizeOfImage=0x{:X}, {}-byte header prefix",
         fingerprint.timestamp,
         fingerprint.size_of_image,
         fingerprint.header_prefix.len()
@@ -61,7 +69,7 @@ fn probe_kernel_walk_reads_nvlddmkm_header() {
 
     let drv = match PmxDrv::connect() {
         Ok(drv) => drv,
-        Err(err) => panic!("PMxDrv 打开失败(先 sc start PMXDRV,elevated): {err}"),
+        Err(err) => panic!("PMxDrv open failed (run sc start PMXDRV first, elevated): {err}"),
     };
     let physical = PmxDrvPhysMem::new(&drv);
     let discovery = discover_root(&physical, module.base, &fingerprint);
@@ -69,7 +77,7 @@ fn probe_kernel_walk_reads_nvlddmkm_header() {
         println!("  {event}");
     }
     println!(
-        "发现统计: low-stub {} 页 / 可读 {}/{} / 候选 {} / 根 {} 个",
+        "discovery stats: low-stub {} pages / readable {}/{} / candidates {} / {} roots",
         discovery.low_stubs.len(),
         discovery.readable_pages,
         discovery.scanned_pages,
@@ -78,17 +86,21 @@ fn probe_kernel_walk_reads_nvlddmkm_header() {
     );
     let root = discovery
         .unique_root()
-        .expect("根不唯一,走查中止(见上方事件)");
+        .expect("root not unique, walk aborted (see events above)");
 
-    let check =
-        verify_live_header(&physical, root, module.base, &fingerprint).expect("活体映像头读回失败");
-    println!("活体校验(root=0x{root:016X}): {check:?}");
-    assert!(check.all(), "活体映像头与磁盘不一致: {check:?}");
+    let check = verify_live_header(&physical, root, module.base, &fingerprint)
+        .expect("failed to read back live image header");
+    println!("live verification (root=0x{root:016X}): {check:?}");
+    assert!(
+        check.all(),
+        "live image header disagrees with disk: {check:?}"
+    );
 
-    let live = read_virtual(&physical, root, module.base, 64).expect("读活体映像头失败");
-    assert_eq!(&live[..2], b"MZ", "活体镜像缺 MZ");
+    let live =
+        read_virtual(&physical, root, module.base, 64).expect("failed to read live image header");
+    assert_eq!(&live[..2], b"MZ", "live image missing MZ");
     println!(
-        "活体头 64 字节: {}",
+        "live header 64 bytes: {}",
         live.iter().map(|b| format!("{b:02X}")).collect::<String>()
     );
 }

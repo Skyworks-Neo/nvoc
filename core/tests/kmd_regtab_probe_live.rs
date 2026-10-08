@@ -42,20 +42,22 @@ fn is_kernel_va(v: u64) -> bool {
 #[test]
 #[ignore = "requires PMXDRV transport + elevated shell; read-only"]
 fn regtab_probe_live() {
-    let module = find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys 不在系统模块列表");
+    let module =
+        find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys not in system module list");
     println!(
-        "nvlddmkm: 基址 0x{:016X}, 磁盘 {}",
+        "nvlddmkm: base 0x{:016X}, image {}",
         module.base,
         module.path.display()
     );
-    let img = std::fs::read(&module.path).expect("读在役镜像失败");
-    let layout = probe_layout(&img).expect("布局推导失败");
-    let fingerprint = PeFingerprint::from_image(&img).expect("在役镜像 PE 头无效");
-    let drv = PmxDrv::connect().expect("PMXDRV 连接失败(服务须运行)");
+    let img = std::fs::read(&module.path).expect("failed to read in-service image");
+    let layout = probe_layout(&img).expect("layout derivation failed");
+    let fingerprint =
+        PeFingerprint::from_image(&img).expect("in-service image has invalid PE header");
+    let drv = PmxDrv::connect().expect("PMXDRV connect failed (service must be running)");
     let pm = PmxDrvPhysMem::new(&drv);
     let discovery = discover_root(&pm, module.base, &fingerprint);
-    let walk_root = discovery.unique_root().expect("页表根不唯一");
-    println!("走查根: 0x{walk_root:016X}");
+    let walk_root = discovery.unique_root().expect("page-table root not unique");
+    println!("walk root: 0x{walk_root:016X}");
 
     let rd =
         |va: u64, len: usize| -> Option<Vec<u8>> { read_virtual(&pm, walk_root, va, len).ok() };
@@ -66,29 +68,29 @@ fn regtab_probe_live() {
     // ---- 链:slot → state → table → entry0.major → root
     let Some(state) = rd_u64(module.base + layout.global_slot_rva).filter(|v| is_kernel_va(*v))
     else {
-        println!("✗ 全局槽非内核指针 — 中止");
+        println!("✗ global slot is not a kernel pointer — aborting");
         return;
     };
     let Some(table) =
         rd_u64(state + u64::from(layout.state_table_off)).filter(|v| is_kernel_va(*v))
     else {
-        println!("✗ state 表指针非内核指针 — 中止");
+        println!("✗ state table pointer is not a kernel pointer — aborting");
         return;
     };
     let Some(major) =
         rd_u64(table + u64::from(layout.entry_major_off)).filter(|v| is_kernel_va(*v))
     else {
-        println!("✗ Major 槽非内核指针 — 中止");
+        println!("✗ Major slot is not a kernel pointer — aborting");
         return;
     };
     let Some(root_va) =
         rd_u64(major + u64::from(layout.major_root_off)).filter(|v| is_kernel_va(*v))
     else {
-        println!("✗ root 指针非内核指针 — 中止");
+        println!("✗ root pointer is not a kernel pointer — aborting");
         return;
     };
     println!(
-        "链: state=0x{state:016X} table=0x{table:016X} major=0x{major:016X} root=0x{root_va:016X}"
+        "chain: state=0x{state:016X} table=0x{table:016X} major=0x{major:016X} root=0x{root_va:016X}"
     );
 
     // ---- 活体窗
@@ -97,14 +99,14 @@ fn regtab_probe_live() {
         .and_then(|g| g.into_iter().next())
         .map(nvapi::hi::Gpu::new)
     else {
-        println!("NVAPI GPU 不可达 — 中止");
+        println!("NVAPI GPU unreachable — aborting");
         return;
     };
     let range = gpu.tgp_watt_range().ok().flatten();
     let status = gpu.tgp_watt_status().ok().flatten();
-    println!("活体窗: range={range:?} status={status:?}");
+    println!("live window: range={range:?} status={status:?}");
     let Some(default_mw) = range.as_ref().and_then(|r| r.default_mw) else {
-        println!("窗 default 缺失 — 中止");
+        println!("window default missing — aborting");
         return;
     };
     let live = BoardLiveValues {
@@ -114,7 +116,7 @@ fn regtab_probe_live() {
         min_mw: range.and_then(|r| r.min_mw),
     };
     println!(
-        "目标值: min={:?} def={} max={} cur={}",
+        "target values: min={:?} def={} max={} cur={}",
         live.min_mw, live.default_mw, live.max_mw, live.current_mw
     );
 
@@ -123,9 +125,12 @@ fn regtab_probe_live() {
     for n in &notes {
         println!("  [note] {n}");
     }
-    println!("A. 宽表发现轮(root 一跳域,{} 页)…", root_worklist.len());
+    println!(
+        "A. wide-table discovery round (root one-hop domain, {} pages)…",
+        root_worklist.len()
+    );
     let co = board::value_cooccurrence_scan(&pm, walk_root, &root_worklist, &live, 768);
-    println!("A. 共现 {} 页", co.len());
+    println!("A. co-occurrence on {} pages", co.len());
     for hit in &co {
         println!("  {}", fmt_hit(hit));
     }
@@ -165,13 +170,13 @@ fn regtab_probe_live() {
     });
     if targets.len() > EXTEND_CAP {
         println!(
-            "B. 一跳目标 {} 截断到 {EXTEND_CAP}(同池距离优先)",
+            "B. one-hop targets {} truncated to {EXTEND_CAP} (same-pool distance first)",
             targets.len()
         );
         targets.truncate(EXTEND_CAP);
     }
     println!(
-        "B. 扩展域:锚 {} 页 + 一跳 {} 页,双判扫描…",
+        "B. extended domain: {} anchor pages + {} one-hop pages, dual-check scan…",
         anchor_pages.len(),
         targets.len()
     );
@@ -208,7 +213,7 @@ fn regtab_probe_live() {
                 {
                     let fifo = v - CHAN_INLINE_OFF;
                     println!(
-                        "  fifoctx 候选(自指): 槽 0x{:016X} +{:#x} → fifoctx 0x{fifo:016X}",
+                        "  fifoctx candidate (self-ref): slot 0x{:016X} +{:#x} → fifoctx 0x{fifo:016X}",
                         pg + (i as u64) * 8,
                         i as u64 * 8
                     );
@@ -217,13 +222,13 @@ fn regtab_probe_live() {
             }
             // 判 2:值共现
             if let Some(hit) = page_hit(pg, &page, &live) {
-                println!("  共现: {}", fmt_hit(&hit));
+                println!("  co-occurrence: {}", fmt_hit(&hit));
                 co_ext.push(hit);
             }
         }
     }
     println!(
-        "B. 扫描 {scanned} 页(不可读 {unreadable});扩展域共现 {} 页,fifoctx 候选 {}",
+        "B. scanned {scanned} pages ({unreadable} unreadable); extended-domain co-occurrence on {} pages, {} fifoctx candidates",
         co_ext.len(),
         fifo_candidates.len()
     );
@@ -238,11 +243,11 @@ fn regtab_probe_live() {
     for &fc in &fifo_candidates {
         println!("---- fifoctx 0x{fc:016X} ----");
         println!(
-            "  fast-path flag [+8AB] = {:?}(1=backend vtable 直写生效)",
+            "  fast-path flag [+8AB] = {:?} (1 = backend vtable direct write active)",
             rd(fc + 0x8AB, 1).map(|b| b[0])
         );
         println!(
-            "  backend [+20E0] = {:?}  wrapper[+3B50 链尾 +50] 见静态链",
+            "  backend [+20E0] = {:?}  wrapper[+3B50 tail +50] see static chain",
             rd_u64(fc + 0x20E0)
         );
         // backend 对象首页值共现(fifoctx-0x400 邻域;若 TGP 值在此,深采样转向 backend)
@@ -251,38 +256,38 @@ fn regtab_probe_live() {
             if let Some(page) = rd(be, 4096) {
                 let hits = page_tgp_hits(&page, &live);
                 println!(
-                    "  backend 首页 0x{be:016X} TGP 命中: {}",
+                    "  backend first page 0x{be:016X} TGP hits: {}",
                     if hits.is_empty() {
-                        "无".into()
+                        "none".into()
                     } else {
                         hits.join("  ")
                     }
                 );
             } else {
-                println!("  backend 首页不可读");
+                println!("  backend first page unreadable");
             }
         }
         for i in 0..CHAN_COUNT {
             let Some(rp) = rd_u64(fc + CHAN_TABLE_OFF + (i as u64) * 8) else {
-                println!("  chan{i:2}: 读失败");
+                println!("  chan{i:2}: read failed");
                 continue;
             };
             dump_reads += 1;
             if rp == 0 {
-                println!("  chan{i:2}: 0(未建)");
+                println!("  chan{i:2}: 0 (not built)");
                 continue;
             }
             let inline = rp == fc + CHAN_INLINE_OFF;
             println!(
                 "  chan{i:2}: 0x{rp:016X}{}",
-                if inline { " (=内联 chan0)" } else { "" }
+                if inline { " (=inline chan0)" } else { "" }
             );
             if dump_reads >= DUMP_BUDGET {
-                println!("  [dump 预算尽,停]");
+                println!("  [dump budget exhausted, stopping]");
                 break;
             }
             let Some(page) = rd(rp, 4096) else {
-                println!("       region 首页不可读");
+                println!("       region first page unreadable");
                 dump_reads += 1;
                 continue;
             };
@@ -313,7 +318,9 @@ fn regtab_probe_live() {
                 .flatten()
                 .any(|t| t == v);
                 if tgp {
-                    println!("       shadow+{base:#x}(页内 +{off:#x}) = {v}  ← regaddr≈{base:#x}");
+                    println!(
+                        "       shadow+{base:#x} (in-page +{off:#x}) = {v}  ← regaddr≈{base:#x}"
+                    );
                     *found += 1;
                 }
                 tgp
@@ -336,7 +343,7 @@ fn regtab_probe_live() {
                     continue;
                 }
                 let Some(seg) = rd(rp + lo as u64, (hi - lo + 1) as usize) else {
-                    println!("       cb 范围 [{lo:#x},{hi:#x}] 精读失败");
+                    println!("       cb range [{lo:#x},{hi:#x}] precision read failed");
                     dump_reads += 1;
                     continue;
                 };
@@ -384,7 +391,10 @@ fn regtab_probe_live() {
                 // ④ 16MB 采样
                 for k in 1..steps {
                     if dump_reads >= DUMP_BUDGET {
-                        println!("       [深采样预算尽 @ {:#x}]", k * stride);
+                        println!(
+                            "       [deep-sampling budget exhausted @ {:#x}]",
+                            k * stride
+                        );
                         break;
                     }
                     let va = rp + k * stride;
@@ -423,15 +433,17 @@ fn regtab_probe_live() {
                 );
             }
             if dump_reads >= DUMP_BUDGET {
-                println!("  [dump 预算尽,停]");
+                println!("  [dump budget exhausted, stopping]");
                 break;
             }
         }
     }
-    println!("总计读页: 发现轮 ≤768 + 扩展 {scanned} + dump {dump_reads}(预算 {TOTAL_BUDGET})");
+    println!(
+        "total page reads: discovery ≤768 + extended {scanned} + dump {dump_reads} (budget {TOTAL_BUDGET})"
+    );
     if co_ext.is_empty() && fifo_candidates.is_empty() {
         println!(
-            "双判全空:region/fifoctx 不在锚一跳域。下一轮:对 B 轮命中邻域外扩 ±64 页,或把宽表页 VA 以 env 传入作第四锚。"
+            "both checks empty: region/fifoctx not in anchor one-hop domain. Next round: extend B-round hit neighborhoods ±64 pages, or pass the wide-table page VA via env as a fourth anchor."
         );
     }
 }
@@ -496,5 +508,5 @@ fn fmt_hit(hit: &board::CooccurrenceHit) -> String {
         })
         .collect::<Vec<_>>()
         .join("  ");
-    format!("页 {:#016X}: {}", hit.page_va, vals)
+    format!("page {:#016X}: {}", hit.page_va, vals)
 }

@@ -33,16 +33,17 @@ fn is_kernel_va(v: u64) -> bool {
 #[ignore = "requires PMXDRV transport + elevated shell; read-only"]
 fn locate_root_trace_live() {
     // ---- 与 connect_lane 相同的前置:模块 → 在役镜像 → probe → 走查根
-    let module = find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys 不在系统模块列表");
+    let module =
+        find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys not in system module list");
     println!(
-        "nvlddmkm: 基址 0x{:016X}, 磁盘 {}",
+        "nvlddmkm: base 0x{:016X}, image {}",
         module.base,
         module.path.display()
     );
-    let img = std::fs::read(&module.path).expect("读在役镜像失败");
-    let layout = probe_layout(&img).expect("布局推导失败");
+    let img = std::fs::read(&module.path).expect("failed to read in-service image");
+    let layout = probe_layout(&img).expect("layout derivation failed");
     println!(
-        "布局: 槽={:#x} state+{:#x} count=+{:#x} Major=+{:#x} M→root={:#x} init={:#x} key={:#x} LOWER={:#x} UPPER={:#x}",
+        "layout: slot={:#x} state+{:#x} count=+{:#x} Major=+{:#x} M→root={:#x} init={:#x} key={:#x} LOWER={:#x} UPPER={:#x}",
         layout.global_slot_rva,
         layout.state_table_off,
         layout.table_count_off,
@@ -53,15 +54,16 @@ fn locate_root_trace_live() {
         layout.root_lower_off,
         layout.root_upper_off
     );
-    let fingerprint = PeFingerprint::from_image(&img).expect("在役镜像 PE 头无效");
-    let drv = PmxDrv::connect().expect("PMXDRV 连接失败(服务须运行)");
+    let fingerprint =
+        PeFingerprint::from_image(&img).expect("in-service image has invalid PE header");
+    let drv = PmxDrv::connect().expect("PMXDRV connect failed (service must be running)");
     let pm = PmxDrvPhysMem::new(&drv);
     let discovery = discover_root(&pm, module.base, &fingerprint);
     for event in &discovery.events {
         println!("  {event}");
     }
-    let walk_root = discovery.unique_root().expect("页表根不唯一");
-    println!("走查根: 0x{walk_root:016X}");
+    let walk_root = discovery.unique_root().expect("page-table root not unique");
+    println!("walk root: 0x{walk_root:016X}");
 
     // ---- 链路逐节读出(不过滤,全打印)
     let rd =
@@ -75,40 +77,42 @@ fn locate_root_trace_live() {
 
     let slot_va = module.base + layout.global_slot_rva;
     let raw_slot = rd_u64(slot_va);
-    println!("① 全局槽 @{slot_va:016X} 原值 = {raw_slot:?}");
+    println!("① global slot @{slot_va:016X} raw = {raw_slot:?}");
     let state = raw_slot.filter(|v| is_kernel_va(*v));
     println!(
         "   → state = {}",
         match state {
             Some(v) => format!("0x{v:016X}"),
-            None => "✗ 非内核指针".into(),
+            None => "✗ not a kernel pointer".into(),
         }
     );
     let Some(state) = state else { return };
 
     let table_raw = rd_u64(state + u64::from(layout.state_table_off));
-    println!("② state+{:x} 原值 = {table_raw:?}", layout.state_table_off);
+    println!("② state+{:x} raw = {table_raw:?}", layout.state_table_off);
     let table = table_raw.filter(|v| is_kernel_va(*v));
     println!(
-        "   → GPU 表 = {}",
+        "   → GPU table = {}",
         match table {
             Some(v) => format!("0x{v:016X}"),
-            None => "✗ 非内核指针".into(),
+            None => "✗ not a kernel pointer".into(),
         }
     );
     let Some(table) = table else { return };
 
     let count = rd_u32(table + u64::from(layout.table_count_off));
-    println!("③ 表+{:x} count = {count:?}", layout.table_count_off);
+    println!("③ table+{:x} count = {count:?}", layout.table_count_off);
     let Some(count) = count else { return };
     if count == 0 || count > 32 {
-        println!("   ✗ count 异常(locate_root 会在此报“GPU 表 count 异常”)");
+        println!(
+            "   ✗ count abnormal (locate_root would fail here with \"GPU table count abnormal\")"
+        );
         return;
     }
 
     // 表头邻域留证:count 前后各一条 + entry0 槽位原值
     println!(
-        "   表内 ID[0] @+{:x} = {:?}(dword)",
+        "   table ID[0] @+{:x} = {:?} (dword)",
         layout.entry_id_off,
         rd_u32(table + u64::from(layout.entry_id_off))
     );
@@ -121,17 +125,17 @@ fn locate_root_trace_live() {
             + u64::from(i) * u64::from(layout.entry_stride);
         let major = rd_u64(major_va);
         println!(
-            "  Major 槽 @{major_va:016X} = {}",
+            "  Major slot @{major_va:016X} = {}",
             match major {
                 Some(v) => format!(
                     "0x{v:016X}{}",
                     if is_kernel_va(v) {
                         ""
                     } else {
-                        "  ✗ 非内核指针"
+                        "  ✗ not a kernel pointer"
                     }
                 ),
-                None => "✗ 读失败".into(),
+                None => "✗ read failed".into(),
             }
         );
         let Some(major) = major.filter(|v| is_kernel_va(*v)) else {
@@ -149,10 +153,10 @@ fn locate_root_trace_live() {
                     if is_kernel_va(v) {
                         ""
                     } else {
-                        "  ✗ 非内核指针"
+                        "  ✗ not a kernel pointer"
                     }
                 ),
-                None => "✗ 读失败".into(),
+                None => "✗ read failed".into(),
             }
         );
         let Some(root_va) = root_va.filter(|v| is_kernel_va(*v)) else {
@@ -181,15 +185,15 @@ fn locate_root_trace_live() {
         let g3 = upper.is_some_and(|u| (10_000..=500_000).contains(&u));
         let g4 = lower.is_none_or(|l| l <= upper.unwrap_or(u32::MAX));
         println!(
-            "  身份门: init==1 {} | key<0x40 {} | UPPER∈[10W,500W] {} | LOWER≤UPPER {} → {}",
+            "  identity gate: init==1 {} | key<0x40 {} | UPPER∈[10W,500W] {} | LOWER≤UPPER {} → {}",
             mark(g1),
             mark(g2),
             mark(g3),
             mark(g4),
             if g1 && g2 && g3 && g4 {
-                "通过 ✓"
+                "pass ✓"
             } else {
-                "未过 ✗"
+                "fail ✗"
             }
         );
         let fr = translate(&pm, walk_root, root_va)
@@ -198,30 +202,30 @@ fn locate_root_trace_live() {
         let fru = translate(&pm, walk_root, root_va + u64::from(layout.root_upper_off))
             .map(|pa| pa & !0xFFF)
             .ok();
-        println!("  帧: root=0x{:?} upper=0x{:?}", fr, fru);
+        println!("  frames: root=0x{:?} upper=0x{:?}", fr, fru);
 
         // ---- board 链固定偏移 dump(610 家族诊断;root 臂 0x1C90 应为表指针,
         //      台式实测 0x2D000001 = 板注册表从未被构造期填充的活体证据)
         let o = |off: u64| root_va + off;
         println!(
-            "  board 链: [root+1C90]={:?}(u64) [root+1CC8]={:?}(lookup fn{}) [root+2508]={:?}",
+            "  board chain: [root+1C90]={:?} (u64) [root+1CC8]={:?} (lookup fn{}) [root+2508]={:?}",
             rd_u64(o(0x1C90)),
             rd_u64(o(0x1CC8)),
             match rd_u64(o(0x1CC8)) {
                 Some(p)
                     if (module.base..module.base + u64::from(fingerprint.size_of_image))
                         .contains(&p) =>
-                    format!("(镜像内 RVA {:#x})", p - module.base),
+                    format!("(image RVA {:#x})", p - module.base),
                 _ => String::new(),
             },
             rd_u64(o(0x2508)),
         );
         if let Some(bytes) = rd(o(0x1CA0), 16) {
-            println!("  位图 [1CA0..1CB0]: {}", hex(&bytes));
+            println!("  bitmap [1CA0..1CB0]: {}", hex(&bytes));
         }
         if let Some(bytes) = rd(o(0x268C), 48) {
             println!(
-                "  selector 映射 [268C..26BC]: {}(构造期选择器字节 [268F]={:?} [2694]={:?})",
+                "  selector map [268C..26BC]: {} (construction-time selector bytes [268F]={:?} [2694]={:?})",
                 hex(&bytes),
                 rd(o(0x268F), 1).map(|b| b[0]),
                 rd(o(0x2694), 1).map(|b| b[0]),
@@ -231,7 +235,7 @@ fn locate_root_trace_live() {
 
     // ---- 活体窗三元组(GET 面,全安全)+ Board 窗扫查(与写臂同实现)
     let Some(root_va) = first_root_va else {
-        println!("无有效 root — 跳过 board 扫查");
+        println!("no valid root — skipping board scan");
         return;
     };
     let Some(gpu) = nvapi::PhysicalGpu::enumerate()
@@ -239,17 +243,17 @@ fn locate_root_trace_live() {
         .and_then(|g| g.into_iter().next())
         .map(nvapi::hi::Gpu::new)
     else {
-        println!("NVAPI GPU 不可达 — 跳过 board 扫查");
+        println!("NVAPI GPU unreachable — skipping board scan");
         return;
     };
     let range = gpu.tgp_watt_range().ok().flatten();
     let status = gpu.tgp_watt_status().ok().flatten();
-    println!("活体窗: range={range:?} status={status:?}");
+    println!("live window: range={range:?} status={status:?}");
     let (Some(default_mw), Some(max_mw)) = (
         range.as_ref().and_then(|r| r.default_mw),
         range.as_ref().and_then(|r| r.max_mw),
     ) else {
-        println!("tgp 窗不完整(default/max 缺失)— 跳过 board 扫查");
+        println!("tgp window incomplete (default/max missing) — skipping board scan");
         return;
     };
     let live = board::BoardLiveValues {
@@ -259,12 +263,12 @@ fn locate_root_trace_live() {
         min_mw: range.and_then(|r| r.min_mw),
     };
     println!(
-        "Board 窗扫查(root 对象 8 页 + 指针一跳,预算 {} 页)…",
+        "Board window scan (root object 8 pages + pointer one-hop, budget {} pages)…",
         board::PAGE_BUDGET
     );
     let scan = board::locate_board_window_candidates(&pm, walk_root, root_va, &live);
     println!(
-        "扫查: 可读 {} 页 / 跳过 {} 页 / 候选 {}",
+        "scan: {} pages readable / {} skipped / {} candidates",
         scan.pages_scanned,
         scan.pages_unreadable,
         scan.candidates.len()
@@ -274,7 +278,7 @@ fn locate_root_trace_live() {
     }
     for cand in &scan.candidates {
         println!(
-            "候选: 页 0x{:016X}(帧 0x{:X})max@+{:#x} cur@{:?} def@+{:#x} min@{:?} 跨度 {}B",
+            "candidate: page 0x{:016X} (frame 0x{:X}) max@+{:#x} cur@{:?} def@+{:#x} min@{:?} span {}B",
             cand.page_va,
             cand.frame,
             cand.hit.max_off,
@@ -286,7 +290,7 @@ fn locate_root_trace_live() {
         // max 槽邻域 hexdump(±0x20,人工判读结构用)
         let lo = cand.page_va + cand.hit.max_off.saturating_sub(0x20) as u64;
         if let Some(bytes) = rd(lo, 0x50) {
-            println!("  max 邻域 [{lo:#x}..+{:#x}]:", bytes.len());
+            println!("  max neighborhood [{lo:#x}..+{:#x}]:", bytes.len());
             for (row, chunk) in bytes.chunks(16).enumerate() {
                 println!(
                     "    +{:04x}: {}",
@@ -299,7 +303,10 @@ fn locate_root_trace_live() {
     // ---- 值共现地图(宽记录行 >MATCH_SPAN 的定位手段;基本域 = root + 指针一跳)
     let (worklist, _domain_notes) = board::scan_domain_pages(&pm, walk_root, root_va);
     let co = board::value_cooccurrence_scan(&pm, walk_root, &worklist, &live, board::PAGE_BUDGET);
-    println!("值共现: {} 页含 ≥2 种活体值(前 12)", co.len());
+    println!(
+        "value co-occurrence: {} pages with ≥2 live values (first 12)",
+        co.len()
+    );
     for hit in co.iter().take(12) {
         let vals = hit
             .values
@@ -314,10 +321,13 @@ fn locate_root_trace_live() {
             })
             .collect::<Vec<_>>()
             .join("  ");
-        println!("  页 {:#016X}: {}", hit.page_va, vals);
+        println!("  page {:#016X}: {}", hit.page_va, vals);
     }
     if co.len() > 12 {
-        println!("  …(+{} 页略,需要更窄判据)", co.len() - 12);
+        println!(
+            "  …(+{} pages omitted, needs a narrower criterion)",
+            co.len() - 12
+        );
     }
     // ---- 单位变体(µW = ×1000):FIFO 寄存器族的常见存储单位,值签名全家桶
     let mut live_uw = live.clone();
@@ -327,7 +337,7 @@ fn locate_root_trace_live() {
     live_uw.min_mw = live.min_mw.map(|v| v.saturating_mul(1000));
     let co_uw =
         board::value_cooccurrence_scan(&pm, walk_root, &worklist, &live_uw, board::PAGE_BUDGET);
-    println!("µW 变体共现: {} 页(前 8)", co_uw.len());
+    println!("µW variant co-occurrence: {} pages (first 8)", co_uw.len());
     for hit in co_uw.iter().take(8) {
         let vals = hit
             .values
@@ -342,7 +352,7 @@ fn locate_root_trace_live() {
             })
             .collect::<Vec<_>>()
             .join("  ");
-        println!("  页 {:#016X}: {}", hit.page_va, vals);
+        println!("  page {:#016X}: {}", hit.page_va, vals);
     }
 
     // ---- 仅含 max 值的页(钳表可能只有窗顶无邻位;排除共现已报页)
@@ -355,22 +365,25 @@ fn locate_root_trace_live() {
         board::PAGE_BUDGET,
         &co_pages,
     );
-    println!("仅含 max 的页: {} 页(前 8,排除共现页)", max_only.len());
+    println!(
+        "max-only pages: {} (first 8, co-occurrence pages excluded)",
+        max_only.len()
+    );
     for (pg, offs) in max_only.iter().take(8) {
         let os = offs
             .iter()
             .map(|o| format!("{o:#x}"))
             .collect::<Vec<_>>()
             .join(",");
-        println!("  页 {pg:#016X}: max@[{os}]");
+        println!("  page {pg:#016X}: max@[{os}]");
     }
     match scan.candidates.len() {
-        1 => println!("唯一候选 ✓"),
+        1 => println!("unique candidate ✓"),
         0 => println!(
-            "无候选(跑差分: nvidia-smi -pl <窗内非默认值> 扰动 current 后重扫,活体行的 current 会跟动)"
+            "no candidates (run a diff: nvidia-smi -pl <in-window non-default> to perturb current and rescan — the live row's current will follow)"
         ),
         n => println!(
-            "{n} 个候选(echo/镜像与活体行静态不可分 —— 写臂会逐个探测 GET 跟随,跟随者胜出;上面邻域 dump 供人工判读)"
+            "{n} candidates (echo/mirror indistinguishable from the live row statically — the write arm probes GET-follow one by one, follower wins; neighborhood dumps above for manual triage)"
         ),
     }
 }

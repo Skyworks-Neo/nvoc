@@ -51,19 +51,19 @@ quick_error! {
     #[derive(Debug, Clone)]
     pub enum KmdPowerError {
         Service(msg: String) {
-            display("服务管理失败: {msg}")
+            display("service management failure: {msg}")
         }
         Walk(err: WalkError) {
-            display("内核走查失败: {err}")
+            display("kernel walk failure: {err}")
         }
         Layout(msg: String) {
-            display("布局推导失败: {msg}")
+            display("layout derivation failure: {msg}")
         }
         Locate(msg: String) {
-            display("PowerRoot 定位失败: {msg}")
+            display("PowerRoot locate failure: {msg}")
         }
         Write(msg: String) {
-            display("UPPER 写失败: {msg}")
+            display("UPPER write failure: {msg}")
         }
         /// 失败现场全量透传:错误 + 完整探测 steps(CLI 错误通道原样展示 ——
         /// 探测细节是判读的一手证据,不允许只报结论)。
@@ -247,7 +247,7 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
         binary_path.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|e| KmdPowerError::Service(format!("cwd 解析失败: {e}")))?
+            .map_err(|e| KmdPowerError::Service(format!("cwd resolution failed: {e}")))?
             .join(binary_path)
     };
     let path_w = wide(&format!(r"\??\{}", abs.to_string_lossy()));
@@ -261,7 +261,7 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
     };
     if mgr.is_null() {
         return Err(KmdPowerError::Service(format!(
-            "OpenSCManager 失败(需管理员): win32 {}",
+            "OpenSCManager failed (admin required): win32 {}",
             unsafe { GetLastError() }
         )));
     }
@@ -295,7 +295,7 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
         let err = unsafe { GetLastError() };
         unsafe { CloseServiceHandle(mgr) };
         return Err(KmdPowerError::Service(format!(
-            "CreateService 失败: win32 {err}"
+            "CreateService failed: win32 {err}"
         )));
     }
     if unsafe { StartServiceW(svc, 0, std::ptr::null()) } == 0 {
@@ -340,12 +340,12 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
                 }
             }
             return Err(KmdPowerError::Service(format!(
-                "StartService 失败(System32 回退后仍败): win32 {err}"
+                "StartService failed (still failing after System32 fallback): win32 {err}"
             )));
         }
         unsafe { CloseServiceHandle(mgr) };
         return Err(KmdPowerError::Service(format!(
-            "StartService 失败(驱动装载被拒?): win32 {err}"
+            "StartService failed (driver load refused?): win32 {err}"
         )));
     }
     unsafe {
@@ -361,10 +361,10 @@ fn fallback_copy(binary_path: &Path) -> Result<PathBuf, KmdPowerError> {
     let dst = Path::new(&windir).join(r"System32\drivers").join(
         binary_path
             .file_name()
-            .ok_or_else(|| KmdPowerError::Service("驱动路径无文件名".into()))?,
+            .ok_or_else(|| KmdPowerError::Service("driver path has no file name".into()))?,
     );
     std::fs::copy(binary_path, &dst)
-        .map_err(|e| KmdPowerError::Service(format!("System32 回退复制失败: {e}")))?;
+        .map_err(|e| KmdPowerError::Service(format!("System32 fallback copy failed: {e}")))?;
     Ok(dst)
 }
 
@@ -440,21 +440,28 @@ fn service_exists() -> bool {
 /// 连接通道:模块定位 → 布局探测(对本机在役镜像)→ 页表根。
 fn connect_lane() -> Result<(LoadedModule, CachedPhys, u64, NvlddmkmLayout), KmdPowerError> {
     let module = find_loaded_module("nvlddmkm.sys")
-        .map_err(|e| KmdPowerError::Locate(format!("nvlddmkm 不在系统模块列表: {e}")))?;
+        .map_err(|e| KmdPowerError::Locate(format!("nvlddmkm not in system module list: {e}")))?;
     let img = std::fs::read(&module.path).map_err(|e| {
-        KmdPowerError::Layout(format!("读在役镜像 {} 失败: {e}", module.path.display()))
+        KmdPowerError::Layout(format!(
+            "failed to read in-service image {}: {e}",
+            module.path.display()
+        ))
     })?;
     let layout =
         probe_layout(&img).map_err(|e| KmdPowerError::Layout(format!("fail-closed: {e:?}")))?;
-    let fingerprint = PeFingerprint::from_image(&img)
-        .map_err(|e| KmdPowerError::Layout(format!("在役镜像 PE 头无效: {e:?}")))?;
-    let drv = PmxDrv::connect()
-        .map_err(|e| KmdPowerError::Locate(format!("PMXDRV 设备打开失败(服务须运行): {e}")))?;
+    let fingerprint = PeFingerprint::from_image(&img).map_err(|e| {
+        KmdPowerError::Layout(format!("in-service image has invalid PE header: {e:?}"))
+    })?;
+    let drv = PmxDrv::connect().map_err(|e| {
+        KmdPowerError::Locate(format!(
+            "failed to open PMXDRV device (service must be running): {e}"
+        ))
+    })?;
     let phys = CachedPhys::new(drv);
     let discovery = discover_root(&phys, module.base, &fingerprint);
     let walk_root = discovery
         .unique_root()
-        .map_err(|e| KmdPowerError::Locate(format!("走查根不唯一: {e}")))?;
+        .map_err(|e| KmdPowerError::Locate(format!("walk root not unique: {e}")))?;
     Ok((module, phys, walk_root, layout))
 }
 
@@ -491,13 +498,15 @@ fn walk_gpu_chain(
 ) -> Result<Vec<ChainEntry>, KmdPowerError> {
     let state = rd_u64(phys, walk_root, module_base + layout.global_slot_rva)
         .filter(|v| is_kernel_va(*v))
-        .ok_or_else(|| KmdPowerError::Locate("全局槽不是内核指针".into()))?;
+        .ok_or_else(|| KmdPowerError::Locate("global slot is not a kernel pointer".into()))?;
     let table = rd_u64(phys, walk_root, state + u64::from(layout.state_table_off))
         .filter(|v| is_kernel_va(*v))
-        .ok_or_else(|| KmdPowerError::Locate("GPU 表指针无效".into()))?;
+        .ok_or_else(|| KmdPowerError::Locate("GPU table pointer invalid".into()))?;
     let count = rd_u32(phys, walk_root, table + u64::from(layout.table_count_off)).unwrap_or(0);
     if count == 0 || count > 32 {
-        return Err(KmdPowerError::Locate(format!("GPU 表 count 异常: {count}")));
+        return Err(KmdPowerError::Locate(format!(
+            "GPU table count abnormal: {count}"
+        )));
     }
     let mut entries = Vec::new();
     for i in 0..count {
@@ -616,7 +625,7 @@ fn locate_root(
         let exact: Vec<_> = candidates.iter().filter(|c| c.upper == live).collect();
         if let Some(&c) = exact.first() {
             steps.push(format!(
-                "活体墙 {live} mW 精确匹配 entry{}(候选 {} 个)",
+                "live wall {live} mW exact-matches entry{} ({} candidates)",
                 c.entry_index,
                 candidates.len()
             ));
@@ -624,11 +633,11 @@ fn locate_root(
         }
     }
     if candidates.len() == 1 {
-        steps.push("唯一身份门候选(无活体参照)".into());
+        steps.push("unique identity-gate candidate (no live reference)".into());
         return Ok(candidates.remove(0));
     }
     Err(RootLocateFail::Fatal(KmdPowerError::Locate(format!(
-        "{} 个候选歧义且活体墙无精确匹配(live={live_wall_mw:?})— 拒写",
+        "{} ambiguous candidates and live wall has no exact match (live={live_wall_mw:?}) — refusing write",
         candidates.len()
     ))))
 }
@@ -650,13 +659,13 @@ fn write_u32_phys(
     let mapped = phys
         .drv
         .map_physical(frame, 1)
-        .map_err(|e| KmdPowerError::Write(format!("{label} 帧映射失败: {e}")))?;
+        .map_err(|e| KmdPowerError::Write(format!("{label} frame map failed: {e}")))?;
     unsafe {
         ((mapped + off_in_page as u64) as *mut u32).write_volatile(value);
     }
     phys.drv
         .unmap_physical(mapped)
-        .map_err(|e| KmdPowerError::Write(format!("{label} 反映射失败: {e}")))?;
+        .map_err(|e| KmdPowerError::Write(format!("{label} unmap failed: {e}")))?;
     if rd_u32(phys, walk_root, va) != Some(value) {
         if let Ok(m2) = phys.drv.map_physical(frame, 1) {
             unsafe {
@@ -665,10 +674,10 @@ fn write_u32_phys(
             let _ = phys.drv.unmap_physical(m2);
         }
         return Err(KmdPowerError::Write(format!(
-            "{label} 读回不符 — 已回滚到 {restore}"
+            "{label} readback mismatch — rolled back to {restore}"
         )));
     }
-    steps.push(format!("{label} {restore} → {value} ✓ 读回一致"));
+    steps.push(format!("{label} {restore} → {value} ✓ readback match"));
     Ok(())
 }
 
@@ -690,23 +699,23 @@ fn board_arm(
     steps: &mut Vec<String>,
 ) -> Result<(BoardWindowOutcome, u64), KmdPowerError> {
     steps.push(
-        "root 臂身份门全拒(PowerRoot 未武装 = 桌面形态预期:构造期无 board 配置对象,init 永不置位)→ 切 Board 窗臂"
+        "root arm identity gate rejected all (PowerRoot unarmed = expected on desktop form factor: no board config object at construction, init never set) → switching to Board window arm"
             .into(),
     );
     let Some(gpu) = gpu else {
         return Err(KmdPowerError::Locate(
-            "Board 臂需要活体窗 GET(0x67F31384/0x8B3E7343):NVAPI GPU 不可达".into(),
+            "Board arm needs live window GET (0x67F31384/0x8B3E7343): NVAPI GPU unreachable".into(),
         ));
     };
     let range = gpu
         .tgp_watt_range()
-        .map_err(|e| KmdPowerError::Locate(format!("tgp 窗 GET 失败: {e}")))?
+        .map_err(|e| KmdPowerError::Locate(format!("tgp window GET failed: {e}")))?
         .ok_or_else(|| {
-            KmdPowerError::Locate("驱动不暴露 tgp 窗(range=None)— Board 臂缺活体锚,拒".into())
+            KmdPowerError::Locate("driver does not expose tgp window (range=None) — Board arm lacks a live anchor, refusing".into())
         })?;
     let (Some(default_mw), Some(max_mw)) = (range.default_mw, range.max_mw) else {
         return Err(KmdPowerError::Locate(format!(
-            "活体窗不完整(default={:?} max={:?})— Board 臂拒",
+            "live window incomplete (default={:?} max={:?}) — Board arm refusing",
             range.default_mw, range.max_mw
         )));
     };
@@ -723,27 +732,27 @@ fn board_arm(
         min_mw: range.min_mw,
     };
     steps.push(format!(
-        "活体窗: current={current_mw} default={default_mw} max={max_mw} min={:?}(GET 安全面)",
+        "live window: current={current_mw} default={default_mw} max={max_mw} min={:?} (GET safe-side)",
         live.min_mw
     ));
     if !(10_000..=ABSOLUTE_WALL_CAP_MW).contains(&max_mw) {
         return Err(KmdPowerError::Locate(format!(
-            "活体窗顶 {max_mw} 超硬域 [10W,500W] — 不像 Board 窗,拒"
+            "live window max {max_mw} outside hard range [10W,500W] — does not look like a Board window, refusing"
         )));
     }
     if wall_mw <= max_mw {
         return Err(KmdPowerError::Locate(format!(
-            "目标 {wall_mw} ≤ 活体窗顶 {max_mw}:窗内目标不需要内核写,直接 set-public-tgp-percent / NVML"
+            "target {wall_mw} ≤ live window max {max_mw}: in-window target needs no kernel write, use set-public-tgp-percent / NVML directly"
         )));
     }
     let Some(root_va) = chain.first().map(|e| e.root_va) else {
         return Err(KmdPowerError::Locate(
-            "GPU 链为空 — Board 臂无 root 锚".into(),
+            "GPU chain empty — Board arm has no root anchor".into(),
         ));
     };
     let scan = board::locate_board_window_candidates(phys, walk_root, root_va, &live);
     steps.push(format!(
-        "Board 窗扫查: 可读 {} 页 / 跳过 {} 页 / 候选 {}",
+        "Board window scan: {} pages readable / {} skipped / {} candidates",
         scan.pages_scanned,
         scan.pages_unreadable,
         scan.candidates.len()
@@ -765,7 +774,7 @@ fn board_arm(
                     valid.push(cand.clone());
                 } else {
                     steps.push(format!(
-                        "候选剔除: 页 {:#x} max@+{:#x}(读回/帧校验不过)",
+                        "candidate dropped: page {:#x} max@+{:#x} (readback/frame check failed)",
                         cand.page_va, cand.hit.max_off
                     ));
                 }
@@ -773,7 +782,9 @@ fn board_arm(
             valid.sort_by_key(|c| c.hit.cur_off.is_none());
             targets.extend(valid.into_iter().map(ProbeTarget::Row));
         }
-        Err(msg) => steps.push(format!("[scan] {msg} — 直接进宽页探测")),
+        Err(msg) => steps.push(format!(
+            "[scan] {msg} — proceeding straight to wide-page probing"
+        )),
     }
 
     // 宽记录页候选(行候选之后):2070/3060 共现实证 —— 功率通道控制表的
@@ -814,7 +825,7 @@ fn board_arm(
             wide_added += 1;
         }
         steps.push(format!(
-            "宽行候选: 共现 {} 页(≥2 活体值),纳入探测 {wide_added} 页(排在行候选之后)",
+            "wide-row candidates: {} co-occurrence pages (≥2 live values), probing {wide_added} added pages (after row candidates)",
             co.len()
         ));
     }
@@ -829,7 +840,7 @@ fn board_arm(
             break;
         }
         steps.push(format!(
-            "探测 {}/{}: {}",
+            "probe {}/{}: {}",
             round + 1,
             targets.len(),
             target.label()
@@ -862,21 +873,21 @@ fn board_arm(
                     *va,
                     live.max_mw,
                     wall_mw,
-                    "Board max 回滚",
+                    "Board max rollback",
                     steps,
                 );
             }
-            steps.push(format!("  → 写入失败,跳过该目标({e})"));
+            steps.push(format!("  → write failed, skipping target ({e})"));
             continue;
         }
         let (reached, ok_writes) = window_reach_probe(gpu, wall_mw, &live, steps);
         if let Some((how, rb)) = reached {
             steps.push(format!(
-                "  → 窗跟验证 ✓({how} 读回到达 {wall_mw} mW)— 保持抬升"
+                "  → window-follow verified ✓ ({how} reached {wall_mw} mW) — keeping raise"
             ));
             success = Some((target.clone(), how, rb));
         } else {
-            steps.push("  → 各 oracle 读回均 < 目标(镜像/窗未跟)— 回滚 max".into());
+            steps.push("  → all oracle readbacks below target (mirror/window did not follow) — rolling back max".into());
             for va in &slots {
                 write_u32_phys(
                     phys,
@@ -884,7 +895,7 @@ fn board_arm(
                     *va,
                     live.max_mw,
                     wall_mw,
-                    "Board max 回滚",
+                    "Board max rollback",
                     steps,
                 )?;
             }
@@ -902,7 +913,7 @@ fn board_arm(
     };
     let max_va = primary.max_slots()[0];
     steps.push(format!(
-        "Board 臂收束: {} 抬至 {wall_mw} ✓,current 经 {how} 顶到 {readback:?}",
+        "Board arm settled: {} raised to {wall_mw} ✓, current pushed to {readback:?} via {how}",
         primary.label()
     ));
     Ok((
@@ -971,7 +982,7 @@ impl ProbeTarget {
     fn label(&self) -> String {
         match self {
             Self::Row(c) => format!(
-                "[行] 页 {:#x}(帧 {:#x})max@+{:#x} cur@{:?} def@+{:#x} min@{:?} 跨度 {}B",
+                "[row] page {:#x} (frame {:#x}) max@+{:#x} cur@{:?} def@+{:#x} min@{:?} span {}B",
                 c.page_va,
                 c.frame,
                 c.hit.max_off,
@@ -985,7 +996,7 @@ impl ProbeTarget {
                 frame,
                 max_offs,
             } => format!(
-                "[宽页] 页 {:#x}(帧 {:#x})max 槽 {} 个 @{:?}(镜像同抬)",
+                "[wide] page {:#x} (frame {:#x}) {} max slots @{:?} (mirrors raised together)",
                 page_va,
                 frame,
                 max_offs.len(),
@@ -1074,13 +1085,13 @@ fn percent_reach_probe(
                     .flatten()
                     .and_then(|s| s.current_mw);
                 steps.push(format!(
-                    "  percent {p}% → current 读回 {rb:?}(目标 {wall_mw})"
+                    "  percent {p}% → current readback {rb:?} (target {wall_mw})"
                 ));
                 if rb.is_some_and(|c| c >= wall_mw) {
                     return (Some((p, rb)), ok_writes);
                 }
             }
-            Err(e) => steps.push(format!("  percent {p}% 写失败:{e}")),
+            Err(e) => steps.push(format!("  percent {p}% write failed: {e}")),
         }
     }
     (None, ok_writes)
@@ -1108,7 +1119,7 @@ fn window_reach_probe(
                 .flatten()
                 .and_then(|s| s.current_mw);
             steps.push(format!(
-                "  nvidia-smi -pl {wall_w} ✓ → current 读回 {rb:?}(目标 {wall_mw})"
+                "  nvidia-smi -pl {wall_w} ✓ → current readback {rb:?} (target {wall_mw})"
             ));
             if rb.is_some_and(|c| c >= wall_mw) {
                 return (Some((format!("nvidia-smi -pl {wall_w}"), rb)), 1);
@@ -1122,16 +1133,18 @@ fn window_reach_probe(
             let msg = format!("{}{}", err.trim(), sout.trim());
             if msg.is_empty() {
                 steps.push(format!(
-                    "  nvidia-smi -pl 被拒(exit {:?},stdout/stderr 全空)",
+                    "  nvidia-smi -pl refused (exit {:?}, stdout/stderr empty)",
                     out.status.code()
                 ));
             } else {
                 steps.push(format!(
-                    "  nvidia-smi -pl 被拒:{msg}(这一行是钳源窗口的直接读数,失败也有判读价值)"
+                    "  nvidia-smi -pl refused: {msg} (this line is the clamp source's own range readout — valuable even on failure)"
                 ));
             }
         }
-        Err(e) => steps.push(format!("  nvidia-smi 无法执行({e})— 退 percent 多假设")),
+        Err(e) => steps.push(format!(
+            "  nvidia-smi failed to run ({e}) — falling back to percent multi-hypothesis"
+        )),
     }
     let (reached, ok_writes) = percent_reach_probe(gpu, wall_mw, live, steps);
     (
@@ -1156,7 +1169,7 @@ fn current_restore(gpu: &nvapi::hi::Gpu, live: &board::BoardLiveValues, steps: &
             .flatten()
             .and_then(|s| s.current_mw);
         if rb.is_some_and(|c| c.abs_diff(live.current_mw) <= 2_000) {
-            steps.push(format!("  current 恢复 {rb:?}(nvidia-smi -pl {w})"));
+            steps.push(format!("  current restored {rb:?} (nvidia-smi -pl {w})"));
             return;
         }
     }
@@ -1179,12 +1192,12 @@ fn percent_restore(gpu: &nvapi::hi::Gpu, live: &board::BoardLiveValues, steps: &
                 .flatten()
                 .and_then(|s| s.current_mw);
             if rb.is_some_and(|c| c.abs_diff(live.current_mw) <= 2_000) {
-                steps.push(format!("  current 恢复 {rb:?}(percent {p}%)"));
+                steps.push(format!("  current restored {rb:?} (percent {p}%)"));
                 return;
             }
         }
     }
-    steps.push("  current 恢复未精确命中(读回 ≠ 探测前值)— 手动 nvidia-smi -pl 校正".into());
+    steps.push("  current restore not exact (readback ≠ pre-probe value) — correct manually with nvidia-smi -pl".into());
 }
 
 // ---------------------------------------------------------------- 公开入口
@@ -1203,12 +1216,12 @@ pub fn set_power_wall_kmd(
 ) -> Result<KmdSetWallOutcome, KmdPowerError> {
     if wall_mw > ABSOLUTE_WALL_CAP_MW {
         return Err(KmdPowerError::Write(format!(
-            "目标 {wall_mw} mW 超绝对上限 {ABSOLUTE_WALL_CAP_MW}(硬拒,无旗标可过)"
+            "target {wall_mw} mW exceeds absolute cap {ABSOLUTE_WALL_CAP_MW} (hard refuse, no flag overrides)"
         )));
     }
     if !pmxdrv_path.is_file() {
         return Err(KmdPowerError::Service(format!(
-            "驱动二进制不存在: {}",
+            "driver binary not found: {}",
             pmxdrv_path.display()
         )));
     }
@@ -1218,11 +1231,11 @@ pub fn set_power_wall_kmd(
     //    否则注册+启动瞬时服务(残留自清)。
     let mut steps: Vec<String> = Vec::new();
     let registered = if PmxDrv::connect().is_ok() {
-        steps.push("设备 \\\\.\\PMXDRV 已在位 - 复用运行中的实例".into());
+        steps.push("device \\\\.\\PMXDRV already present - reusing running instance".into());
         service_exists() // 残留认领
     } else {
         service_register_and_start(pmxdrv_path)?;
-        steps.push(format!("服务 {SERVICE_NAME} 注册+启动 ✓"));
+        steps.push(format!("service {SERVICE_NAME} registered+started ✓"));
         true
     };
 
@@ -1230,10 +1243,10 @@ pub fn set_power_wall_kmd(
     let result = set_power_wall_inner(wall_mw, &mut steps);
     if registered {
         if service_stop_and_delete() {
-            steps.push(format!("服务 {SERVICE_NAME} 停止+注销 ✓"));
+            steps.push(format!("service {SERVICE_NAME} stopped+deleted ✓"));
         } else {
             steps.push(format!(
-                "服务 {SERVICE_NAME} 已标记删除,但驱动仍在运行(拒绝卸载)—— sc stop {SERVICE_NAME} 或重启清理;设备本身仍可复用"
+                "service {SERVICE_NAME} marked for deletion but driver still running (unload refused) — sc stop {SERVICE_NAME} or reboot to clean up; device itself remains reusable"
             ));
         }
     }
@@ -1244,7 +1257,7 @@ pub fn set_power_wall_kmd(
             Ok(o)
         }
         Err(e) => Err(KmdPowerError::Failed(format!(
-            "{e}\n失败步骤留档(判读的一手证据):{}",
+            "{e}\nfailed steps preserved (first-hand evidence for triage):{}",
             steps.iter().map(|s| format!("\n  {s}")).collect::<String>()
         ))),
     }
@@ -1257,7 +1270,7 @@ fn set_power_wall_inner(
     // 2) 走查+布局探测
     let (module, phys, walk_root, layout) = connect_lane()?;
     steps.push(format!(
-        "布局自动探测: 槽={:#x} state+{:#x} count=+{:#x} M→root={:#x} root_init={:#x}",
+        "layout auto-probe: slot={:#x} state+{:#x} count=+{:#x} M→root={:#x} root_init={:#x}",
         layout.global_slot_rva,
         layout.state_table_off,
         layout.table_count_off,
@@ -1265,7 +1278,7 @@ fn set_power_wall_inner(
         layout.root_init_off
     ));
     steps.push(format!(
-        "走查根 {walk_root:#x}(nvlddmkm @{:#x})",
+        "walk root {walk_root:#x} (nvlddmkm @{:#x})",
         module.base
     ));
 
@@ -1276,7 +1289,7 @@ fn set_power_wall_inner(
         .and_then(|g| g.tgp_watt_status().ok())
         .flatten()
         .and_then(|st| st.current_mw);
-    steps.push(format!("活体墙(tgp control current)= {live_wall:?}"));
+    steps.push(format!("live wall (tgp control current) = {live_wall:?}"));
 
     let chain = walk_gpu_chain(&phys, walk_root, &layout, module.base)?;
 
@@ -1301,7 +1314,9 @@ fn set_power_wall_inner(
                         &phys, walk_root, upper_va, wall_mw, root.upper, "UPPER", steps,
                     )?;
                 } else {
-                    steps.push(format!("UPPER 已是 {wall_mw}(幂等写跳过)"));
+                    steps.push(format!(
+                        "UPPER already {wall_mw} (idempotent write skipped)"
+                    ));
                 }
                 let (tgp_written, tgp_note) = root_arm_tgp_write(gpu.as_ref(), wall_mw, steps);
                 (
@@ -1322,7 +1337,8 @@ fn set_power_wall_inner(
                     Some(outcome),
                     field_va,
                     0,
-                    "board 臂:current 走 percent 安全写(毒 SET 0xAFFC2279 不触碰)".into(),
+                    "board arm: current via percent safe write (poison SET 0xAFFC2279 untouched)"
+                        .into(),
                 )
             }
             Err(RootLocateFail::Fatal(e)) => return Err(e),
@@ -1333,17 +1349,17 @@ fn set_power_wall_inner(
         Some(gpu) => match gpu.set_power_command_checked(0, 0xFE, wall_mw) {
             Ok(report) => (
                 Some(wall_mw),
-                format!("租约 channel0 = {} mW ✓(checked 写)", report.applied),
+                format!("lease channel0 = {} mW ✓ (checked write)", report.applied),
             ),
             Err(_) => match gpu.set_power_command(0, 0xFE, wall_mw) {
                 Ok(()) => (
                     Some(wall_mw),
-                    "租约 channel0 直写 ✓(checked 拒绝,越过其包络)".into(),
+                    "lease channel0 direct write ✓ (checked write refused, target outside its envelope)".into(),
                 ),
-                Err(e) => (None, format!("租约写失败(回显面仍旧值,可手动补): {e}")),
+                Err(e) => (None, format!("lease write failed (echo surface still shows old value, can be set manually): {e}")),
             },
         },
-        None => (None, "租约写跳过:GPU 0 不可达".into()),
+        None => (None, "lease write skipped: GPU 0 unreachable".into()),
     };
     steps.push(lease_note.clone());
 
@@ -1351,15 +1367,15 @@ fn set_power_wall_inner(
     let final_field = rd_u32(&phys, walk_root, field_va);
     if final_field != Some(wall_mw) {
         return Err(KmdPowerError::Write(format!(
-            "复验失败:墙字段={final_field:?} ≠ {wall_mw}(被外部改写?)"
+            "recheck failed: wall field={final_field:?} ≠ {wall_mw} (overwritten externally?)"
         )));
     }
-    steps.push(format!("复验墙字段={} ✓", final_field.unwrap()));
+    steps.push(format!("recheck wall field={} ✓", final_field.unwrap()));
 
     let wall_before_mw = match (&root_info, &board_outcome) {
         (Some(root), _) => root.upper,
         (_, Some(board)) => board.max_before_mw,
-        (None, None) => unreachable!("两臂必有其一场"),
+        (None, None) => unreachable!("one of the two arms must have fired"),
     };
     Ok(KmdSetWallOutcome {
         arm,
@@ -1395,24 +1411,29 @@ fn root_arm_tgp_write(
     let (written, note) = match live_control {
         Some(cur) if cur >= wall_mw => (
             0,
-            format!("tgp 控制已 {cur} mW ≥ 目标 {wall_mw} —— 跳过写(防窗钳压低)"),
+            format!(
+                "tgp control already {cur} mW ≥ target {wall_mw} — skipping write (window clamp could lower it)"
+            ),
         ),
         Some(_) => match gpu.map(|g| g.set_tgp_watt(tgp_w, 2)) {
             Some(Ok(applied_mw)) if applied_mw >= wall_mw => (
                 tgp_w,
-                format!("tgp {tgp_w} W 写入 ✓(读回 {} W)", applied_mw / 1000),
+                format!("tgp {tgp_w} W write ✓ (readback {} W)", applied_mw / 1000),
             ),
             Some(Ok(applied_mw)) => (
                 0,
                 format!(
-                    "tgp 写被窗钳回 {} W(< 目标)—— 窗未跟 UPPER,用 set-pwr-cur-limit 复查",
+                    "tgp write clamped back to {} W (< target) — window did not follow UPPER, recheck with set-pwr-cur-limit",
                     applied_mw / 1000
                 ),
             ),
-            Some(Err(e)) => (0, format!("tgp 写失败(UPPER 已生效,可手动补): {e}")),
-            None => (0, "tgp 写跳过:GPU 0 不可达".into()),
+            Some(Err(e)) => (
+                0,
+                format!("tgp write failed (UPPER already in effect, can be set manually): {e}"),
+            ),
+            None => (0, "tgp write skipped: GPU 0 unreachable".into()),
         },
-        None => (0, "tgp 写跳过:控制值不可读".into()),
+        None => (0, "tgp write skipped: control value unreadable".into()),
     };
     steps.push(note.clone());
     (written, note)

@@ -80,7 +80,7 @@ pub fn scan_page_for_window(page: &[u8], live: &BoardLiveValues) -> Vec<BoardWin
     let lim = page.len() / 4 * 4;
     let words: Vec<u32> = (0..lim)
         .step_by(4)
-        .map(|o| u32::from_le_bytes(page[o..o + 4].try_into().expect("步长 4 对齐")))
+        .map(|o| u32::from_le_bytes(page[o..o + 4].try_into().expect("4-byte step alignment")))
         .collect();
     let pos = |v: u32| -> Vec<usize> {
         words
@@ -118,8 +118,8 @@ pub fn scan_page_for_window(page: &[u8], live: &BoardLiveValues) -> Vec<BoardWin
                 });
                 let mut offs = vec![m, c, d];
                 offs.extend(min_off);
-                let lo = *offs.iter().min().expect("非空");
-                let hi = *offs.iter().max().expect("非空");
+                let lo = *offs.iter().min().expect("non-empty");
+                let hi = *offs.iter().max().expect("non-empty");
                 let span = hi - lo;
                 if span > MATCH_SPAN {
                     continue; // 全体字段必须聚拢,不接受两端拉伸
@@ -162,8 +162,8 @@ pub fn scan_page_for_window(page: &[u8], live: &BoardLiveValues) -> Vec<BoardWin
             });
             let mut offs = vec![m, d];
             offs.extend(min_off);
-            let lo = *offs.iter().min().expect("非空");
-            let hi = *offs.iter().max().expect("非空");
+            let lo = *offs.iter().min().expect("non-empty");
+            let hi = *offs.iter().max().expect("non-empty");
             let span = hi - lo;
             if span > MATCH_SPAN {
                 continue;
@@ -201,7 +201,7 @@ pub fn scan_page_for_window(page: &[u8], live: &BoardLiveValues) -> Vec<BoardWin
 /// 页内 8 字节对齐内核指针收集(指针展开用)。
 pub fn collect_kernel_pointers(page: &[u8]) -> Vec<u64> {
     page.chunks_exact(8)
-        .map(|c| u64::from_le_bytes(c.try_into().expect("8 对齐")))
+        .map(|c| u64::from_le_bytes(c.try_into().expect("8-byte alignment")))
         .filter(|v| is_kernel_pointer(*v))
         .collect()
 }
@@ -236,8 +236,10 @@ pub fn scan_pages<P: PhysicalMemory>(
     let mut scan = BoardWindowScan::default();
     for &page_va in pages {
         if scan.pages_scanned >= budget {
-            scan.notes
-                .push(format!("页预算 {budget} 耗尽,余 {} 页未扫", pages.len()));
+            scan.notes.push(format!(
+                "page budget {budget} exhausted, {} pages left unscanned",
+                pages.len()
+            ));
             break;
         }
         if !seen.insert(page_va) {
@@ -260,7 +262,8 @@ pub fn scan_pages<P: PhysicalMemory>(
             Err(e) => {
                 scan.pages_unreadable += 1;
                 if scan.notes.len() < 16 {
-                    scan.notes.push(format!("页 {page_va:#x} 不可读({e}),跳过"));
+                    scan.notes
+                        .push(format!("page {page_va:#x} unreadable ({e}), skipping"));
                 }
             }
         }
@@ -294,7 +297,7 @@ pub fn scan_domain_pages<P: PhysicalMemory>(
     targets.dedup();
     if targets.len() > POINTER_TARGET_CAP {
         notes.push(format!(
-            "指针目标 {} 超 CAP {POINTER_TARGET_CAP},截断(只扫前 {})",
+            "pointer targets {} exceed CAP {POINTER_TARGET_CAP}, truncated (scanning first {})",
             targets.len(),
             POINTER_TARGET_CAP
         ));
@@ -367,7 +370,9 @@ pub fn value_cooccurrence_scan<P: PhysicalMemory>(
                 let offs: Vec<usize> = page
                     .chunks_exact(4)
                     .enumerate()
-                    .filter(|(_, c)| u32::from_le_bytes((*c).try_into().expect("4 对齐")) == v)
+                    .filter(|(_, c)| {
+                        u32::from_le_bytes((*c).try_into().expect("4-byte alignment")) == v
+                    })
                     .map(|(i, _)| i * 4)
                     .collect();
                 if !offs.is_empty() {
@@ -416,7 +421,9 @@ pub fn max_only_scan<P: PhysicalMemory>(
         let offs: Vec<usize> = page
             .chunks_exact(4)
             .enumerate()
-            .filter(|(_, c)| u32::from_le_bytes((*c).try_into().expect("4 对齐")) == live.max_mw)
+            .filter(|(_, c)| {
+                u32::from_le_bytes((*c).try_into().expect("4-byte alignment")) == live.max_mw
+            })
             .map(|(i, _)| i * 4)
             .collect();
         if !offs.is_empty() {
@@ -464,7 +471,7 @@ pub fn locate_board_window_candidates<P: PhysicalMemory>(
         sweep.sort_unstable();
         sweep.dedup();
         scan.notes.push(format!(
-            "邻域扫查: {} 个候选页 ±{} 页(sweep 预算 {SWEEP_BUDGET})",
+            "neighborhood sweep: {} candidate pages ±{} pages (sweep budget {SWEEP_BUDGET})",
             hit_pages.len(),
             NEIGHBORHOOD_PAGES
         ));
@@ -496,7 +503,7 @@ pub fn probeable_candidates(
                 .into(),
         ),
         n if n > cap => Err(format!(
-            "{n} 个三元组候选超过探测上限 {cap} — 拒(用 locate-trace 打印各候选邻域后人工判读)"
+            "{n} triple candidates exceed probe cap {cap} — refusing (use locate-trace to print candidate neighborhoods for manual triage)"
         )),
         n => Ok(&scan.candidates[..n]),
     }
@@ -562,7 +569,7 @@ mod tests {
                     u64::from_le_bytes(
                         p[(index * 8) as usize..(index * 8 + 8) as usize]
                             .try_into()
-                            .expect("8 对齐"),
+                            .expect("8-byte alignment"),
                     )
                 })
                 .unwrap_or(0);
@@ -699,7 +706,8 @@ mod tests {
         let phys = MockPhysical { pages };
         let scan = locate_board_window_candidates(&phys, WALK_ROOT, ROOT_VA, &live());
         assert_eq!(scan.candidates.len(), 1, "scan = {scan:?}");
-        let cands = probeable_candidates(&scan, PROBE_CAP).expect("恰一候选应放行");
+        let cands =
+            probeable_candidates(&scan, PROBE_CAP).expect("exactly one candidate should pass");
         assert_eq!(cands[0].page_va, BOARD_VA);
         assert_eq!(cands[0].frame, 0x40_000);
         assert_eq!(cands[0].hit.max_off, 0x108);
@@ -738,7 +746,7 @@ mod tests {
         let scan = locate_board_window_candidates(&phys, WALK_ROOT, ROOT_VA, &live());
         assert!(
             scan.candidates.iter().any(|c| c.page_va == live_va),
-            "邻页活体行必须被 sweep 捞出: {scan:?}"
+            "adjacent-page live row must be caught by sweep: {scan:?}"
         );
         assert_eq!(scan.candidates.len(), 2);
         assert!(probeable_candidates(&scan, PROBE_CAP).is_ok());
@@ -774,7 +782,10 @@ mod tests {
         let phys = MockPhysical { pages };
         let scan = locate_board_window_candidates(&phys, WALK_ROOT, ROOT_VA, &live());
         assert_eq!(scan.candidates.len(), 2);
-        assert!(probeable_candidates(&scan, 1).is_err(), "超探测上限必须拒");
+        assert!(
+            probeable_candidates(&scan, 1).is_err(),
+            "over probe cap must refuse"
+        );
     }
 
     #[test]
@@ -840,8 +851,11 @@ mod tests {
             1,
             &mut seen,
         );
-        assert_eq!(scan.pages_scanned, 1, "预算 1 只扫一页");
-        assert_eq!(scan.pages_unreadable, 0, "预算耗尽在不可读页之前");
+        assert_eq!(scan.pages_scanned, 1, "budget 1 scans exactly one page");
+        assert_eq!(
+            scan.pages_unreadable, 0,
+            "budget exhausted before unreadable page"
+        );
         let mut seen2: HashSet<u64> = HashSet::new();
         let scan2 = scan_pages(
             &phys,

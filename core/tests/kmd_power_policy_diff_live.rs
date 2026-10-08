@@ -89,7 +89,9 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     let status =
         unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, path_w.as_ptr(), 0, KEY_READ, &mut hkey) };
     if status != 0 {
-        println!("  警告: 打开 Physical Memory 键失败 status=0x{status:X},RAM 白名单降级为不过滤");
+        println!(
+            "  warning: failed to open Physical Memory key status=0x{status:X}, RAM whitelist degraded to no-filter"
+        );
         return Vec::new();
     }
     let status = unsafe {
@@ -104,7 +106,9 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     };
     unsafe { RegCloseKey(hkey) };
     if status != 0 {
-        println!("  警告: 读 .Translated 失败 status=0x{status:X},RAM 白名单降级为不过滤");
+        println!(
+            "  warning: failed to read .Translated status=0x{status:X}, RAM whitelist degraded to no-filter"
+        );
         return Vec::new();
     }
     buf.truncate(size as usize);
@@ -127,7 +131,7 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     }
     let count = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
     println!(
-        "  RAM 表原始头 64B: {}",
+        "  RAM table raw header 64B: {}",
         buf[..buf.len().min(64)]
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -171,7 +175,7 @@ fn ram_ranges() -> Vec<(u64, u64)> {
         let total: u64 = rs.iter().map(|(s, e)| e - s).sum();
         let covers_low = rs.iter().any(|(s, e)| 0x20000 >= *s && 0x20000 < *e);
         println!(
-            "  RAM 表布局 {label}: {} 段, 总 {:.2} GiB, 覆盖低内存={covers_low}, 截断={bad}",
+            "  RAM table layout {label}: {} segments, total {:.2} GiB, covers low memory={covers_low}, truncated={bad}",
             rs.len(),
             total as f64 / (1 << 30) as f64
         );
@@ -187,10 +191,12 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     }
     match best {
         Some((rs, label)) => {
-            println!("  RAM 表采用布局 {label}");
+            println!("  RAM table using layout {label}");
             ranges = rs;
         }
-        None => println!("  警告: 两种布局都不能覆盖低内存,RAM 白名单降级为不过滤"),
+        None => println!(
+            "  warning: neither layout covers low memory, RAM whitelist degraded to no-filter"
+        ),
     }
     ranges
 }
@@ -200,11 +206,11 @@ impl<'a> CachedPhys<'a> {
         let ram = ram_ranges();
         let total: u64 = ram.iter().map(|(s, e)| e - s).sum();
         println!(
-            "RAM 白名单: {} 段, 共 {:.1} GiB{}",
+            "RAM whitelist: {} segments, {:.1} GiB total{}",
             ram.len(),
             total as f64 / (1 << 30) as f64,
             if ram.is_empty() {
-                "(降级:不过滤)"
+                "(degraded: no filter)"
             } else {
                 ""
             }
@@ -283,10 +289,12 @@ fn out_dir() -> PathBuf {
 /// 未设置时返回 None(相位回退到硬编码 610.74 常量)。
 fn load_layout() -> Option<NvlddmkmLayout> {
     let path = env::var("NVOC_POWER_LAYOUT_IMG").ok()?;
-    let img = std::fs::read(&path).unwrap_or_else(|e| panic!("读布局镜像 {path} 失败: {e}"));
-    let layout = probe_layout(&img).unwrap_or_else(|e| panic!("布局推导失败(fail-closed): {e:?}"));
+    let img =
+        std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read layout image {path}: {e}"));
+    let layout = probe_layout(&img)
+        .unwrap_or_else(|e| panic!("layout derivation failed (fail-closed): {e:?}"));
     println!(
-        "布局: 槽={:#x} state+{:#x} count=+{:#x} Major=+{:#x} M→root={:#x} init={:#x} UPPER={:#x}",
+        "layout: slot={:#x} state+{:#x} count=+{:#x} Major=+{:#x} M→root={:#x} init={:#x} UPPER={:#x}",
         layout.global_slot_rva,
         layout.state_table_off,
         layout.table_count_off,
@@ -306,16 +314,19 @@ fn connect_walk() -> (
 ) {
     // 返回值生命周期走借用会牵扯 PmxDrv 存活期;这里泄漏连接对象,
     // 测试进程退出即回收(单次批处理工具,不做运行时清理)。
-    let module = find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys 不在系统模块列表");
+    let module =
+        find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys not in system module list");
     println!(
-        "nvlddmkm: 基址 0x{:016X}, 磁盘 {}",
+        "nvlddmkm: base 0x{:016X}, image {}",
         module.base,
         module.path.display()
     );
-    let disk_head = std::fs::read(&module.path).unwrap_or_else(|e| panic!("读磁盘镜像失败: {e}"));
-    let fingerprint = PeFingerprint::from_image(&disk_head).expect("磁盘镜像不是有效 PE32+");
+    let disk_head =
+        std::fs::read(&module.path).unwrap_or_else(|e| panic!("failed to read disk image: {e}"));
+    let fingerprint =
+        PeFingerprint::from_image(&disk_head).expect("disk image is not a valid PE32+");
     let drv: &'static PmxDrv = Box::leak(Box::new(
-        PmxDrv::connect().expect("PMXDRV 连接失败(服务须运行)"),
+        PmxDrv::connect().expect("PMXDRV connect failed (service must be running)"),
     ));
     let pm: &'static PmxDrvPhysMem<'static> = Box::leak(Box::new(PmxDrvPhysMem::new(drv)));
     let phys = CachedPhys::new(pm);
@@ -323,8 +334,10 @@ fn connect_walk() -> (
     for event in &discovery.events {
         println!("  {event}");
     }
-    let root = discovery.unique_root().expect("页表根不唯一,中止(见事件)");
-    println!("页表根: 0x{root:016X}");
+    let root = discovery
+        .unique_root()
+        .expect("page-table root not unique, aborting (see events)");
+    println!("page-table root: 0x{root:016X}");
     (module, phys, root, drv)
 }
 
@@ -424,7 +437,7 @@ fn l2_power_policy_diff() {
     let tag = env::var("NVOC_POWER_DIFF_TAG").unwrap_or_else(|_| "a".into());
     let dir = out_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    println!("相位 {phase},标签 {tag},输出目录 {}", dir.display());
+    println!("phase {phase}, tag {tag}, output dir {}", dir.display());
 
     match phase.as_str() {
         "snapshot" => snapshot(&tag, &dir),
@@ -440,7 +453,7 @@ fn l2_power_policy_diff() {
         "statewalk" => statewalk(&dir),
         "write" => write_upper(&dir),
         other => panic!(
-            "未知相位 {other}(snapshot|diff|read|near|hub|region|trace|graphwalk|marker|chain|statewalk|write)"
+            "unknown phase {other} (snapshot|diff|read|near|hub|region|trace|graphwalk|marker|chain|statewalk|write)"
         ),
     }
 }
@@ -451,18 +464,18 @@ fn l2_power_policy_diff() {
 ///       NVOC_POWER_WRITE_EXPECT_UPPER(默认 140000)、NVOC_POWER_WRITE_ARM=YES。
 fn write_upper(_dir: &Path) {
     if env::var("NVOC_POWER_WRITE_ARM").as_deref() != Ok("YES") {
-        panic!("写臂未武装(需 NVOC_POWER_WRITE_ARM=YES)");
+        panic!("write arm not armed (set NVOC_POWER_WRITE_ARM=YES)");
     }
     let root_va = u64::from_str_radix(
         env::var("NVOC_POWER_WRITE_ROOT")
-            .expect("write 需 NVOC_POWER_WRITE_ROOT")
+            .expect("write phase needs NVOC_POWER_WRITE_ROOT")
             .trim_start_matches("0x"),
         16,
     )
     .unwrap();
     // mW 十进制
     let new_upper: u32 = env::var("NVOC_POWER_WRITE_UPPER")
-        .expect("write 需 NVOC_POWER_WRITE_UPPER")
+        .expect("write phase needs NVOC_POWER_WRITE_UPPER")
         .trim()
         .parse()
         .unwrap();
@@ -496,40 +509,47 @@ fn write_upper(_dir: &Path) {
     let key = rd4(root_va + key_off).map(|v| v & 0xFF);
     let upper = rd4(root_va + upper_off);
     println!(
-        "身份: init={init:?} key={key:?} UPPER={upper:?}(期望 init=1 key=2 UPPER={expect_upper})"
+        "identity: init={init:?} key={key:?} UPPER={upper:?} (expected init=1 key=2 UPPER={expect_upper})"
     );
     if init != Some(1) || key != Some(2) || upper != Some(expect_upper) {
-        panic!("身份门不过 — 拒写(对象可能漂移,先重走 L2 链)");
+        panic!(
+            "identity gate failed — refusing write (object may have drifted, redo the L2 chain first)"
+        );
     }
     // 经物理帧写单 u32
     let upper_va = root_va + upper_off;
-    let pa = translate(&phys, root, upper_va).expect("UPPER 槽 VA 翻译失败");
+    let pa = translate(&phys, root, upper_va).expect("UPPER slot VA translation failed");
     let frame = pa & !0xFFF;
     let off_in_page = (upper_va & 0xFFF) as usize;
     println!(
-        "写 UPPER: 0x{upper_va:016X} 帧 0x{frame:X} 页内 +0x{off_in_page:X}:{expect_upper} → {new_upper}"
+        "write UPPER: 0x{upper_va:016X} frame 0x{frame:X} in-page +0x{off_in_page:X}: {expect_upper} → {new_upper}"
     );
-    let mapped = drv.map_physical(frame, 1).expect("帧映射失败(写)");
+    let mapped = drv
+        .map_physical(frame, 1)
+        .expect("frame map failed (write)");
     let dst = (mapped + off_in_page as u64) as *mut u32;
     unsafe {
         dst.write_volatile(new_upper);
         // 三级诊断 1:同一映射窗口立即读
         let w = dst.read_volatile();
-        println!("诊断① 同窗口读回 = {w}(期望 {new_upper})");
+        println!("diagnostic ① same-mapping readback = {w} (expected {new_upper})");
     }
-    drv.unmap_physical(mapped).expect("反映射失败(写)");
+    drv.unmap_physical(mapped).expect("unmap failed (write)");
     // 三级诊断 2:同一帧重新映射读
-    let mapped2 = drv.map_physical(frame, 1).expect("帧映射失败(读回2)");
+    let mapped2 = drv
+        .map_physical(frame, 1)
+        .expect("frame map failed (readback 2)");
     let w2 = unsafe { ((mapped2 + off_in_page as u64) as *const u32).read_volatile() };
-    println!("诊断② 新映射读回 = {w2}");
-    drv.unmap_physical(mapped2).expect("反映射失败(读回2)");
+    println!("diagnostic ② fresh-mapping readback = {w2}");
+    drv.unmap_physical(mapped2)
+        .expect("unmap failed (readback 2)");
     // 三级诊断 3:页表路径读
     let after = rd4(upper_va);
-    println!("读回 UPPER = {after:?}(期望 {new_upper})");
+    println!("readback UPPER = {after:?} (expected {new_upper})");
     if after != Some(new_upper) {
-        panic!("写后读回不符 — 恢复失败,立即检查");
+        panic!("post-write readback mismatch — restore failed, inspect immediately");
     }
-    println!("UPPER 写入成功并读回一致");
+    println!("UPPER written and readback matches");
 }
 
 /// statewalk:全局槽 0x13AAD58 → state 页全部指针 P,对每个 P 探两种形态:
@@ -542,7 +562,10 @@ fn statewalk(dir: &Path) {
         let mut h = Vec::new();
         let b = read_range(&phys, root, module.base + slot_rva, 8, &mut h);
         let v = u64::from_le_bytes(b[0..8].try_into().unwrap());
-        assert!(h.is_empty() && v >= 0xFFFF_8000_0000_0000, "state 指针无效");
+        assert!(
+            h.is_empty() && v >= 0xFFFF_8000_0000_0000,
+            "state pointer invalid"
+        );
         v
     };
     println!("state = 0x{state:016X}");
@@ -564,7 +587,10 @@ fn statewalk(dir: &Path) {
             }
         }
     }
-    println!("state 指针 {} 个(span 0x{state_span:X})", state_ptrs.len());
+    println!(
+        "{} state pointers (span 0x{state_span:X})",
+        state_ptrs.len()
+    );
     let expect_uppers: Vec<u32> = env::var("NVOC_POWER_EXPECT_UPPER")
         .unwrap_or_else(|_| "100000,140000,150000,135000".into())
         .split(',')
@@ -650,7 +676,7 @@ fn statewalk(dir: &Path) {
                         rec["aux2@3CFC"]
                     );
                     println!(
-                        "   帧: root=0x{:016X} upper=0x{:016X}",
+                        "   frames: root=0x{:016X} upper=0x{:016X}",
                         fr.unwrap_or(0),
                         fru.unwrap_or(0)
                     );
@@ -673,7 +699,7 @@ fn statewalk(dir: &Path) {
         if !hp.is_empty() {
             continue;
         }
-        println!("  大分配候选 state+0x{o:X} = 0x{p:016X}(+0x48000 可读)");
+        println!("  large-allocation candidate state+0x{o:X} = 0x{p:016X} (+0x48000 readable)");
         for off in (0x40000u64..0x50000).step_by(0x1000) {
             let Some(va) = p.checked_add(off) else {
                 continue;
@@ -728,10 +754,10 @@ fn statewalk(dir: &Path) {
                                 .map(|pa| pa & !0xFFF)
                                 .ok();
                             println!(
-                                "★★ root@0x{root_va:016X} via GPU 表(state+0x{o:X},entry@+0x{off:X}+0x{po:X}) init={init} key={key} UPPER={upper}"
+                                "★★ root@0x{root_va:016X} via GPU table (state+0x{o:X}, entry@+0x{off:X}+0x{po:X}) init={init} key={key} UPPER={upper}"
                             );
                             println!(
-                                "   帧: root=0x{:016X} upper=0x{:016X}",
+                                "   frames: root=0x{:016X} upper=0x{:016X}",
                                 fr.unwrap_or(0),
                                 fru.unwrap_or(0)
                             );
@@ -749,7 +775,7 @@ fn statewalk(dir: &Path) {
     let path = dir.join("statewalk_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "statewalk 完成: 读 {spent} 页, root 命中 {} → {}",
+        "statewalk done: {spent} pages read, {} root hits → {}",
         roots.len(),
         path.display()
     );
@@ -797,12 +823,12 @@ fn chain(dir: &Path) {
     };
     let global_state = rd_q(module.base + slot_rva).filter(|v| *v >= 0xFFFF_8000_0000_0000);
     println!(
-        "全局槽 @镜像+0x{slot_rva:X} → state = 0x{:016X?}",
+        "global slot @image+0x{slot_rva:X} → state = 0x{:016X?}",
         global_state
     );
-    let state = global_state.expect("全局槽不是内核指针");
+    let state = global_state.expect("global slot is not a kernel pointer");
     let table = rd_q(state + table_off).filter(|v| *v >= 0xFFFF_8000_0000_0000);
-    println!("state+0x{table_off:X} → GPU 表 = 0x{:016X?}", table);
+    println!("state+0x{table_off:X} → GPU table = 0x{:016X?}", table);
     // 侦察:转储 state 页 0x0-0x400 的全部内核指针(表指针若不在 0x208,离线挑)
     let mut h = Vec::new();
     let state_page = read_range(&phys, root, state, 4096, &mut h);
@@ -826,7 +852,10 @@ fn chain(dir: &Path) {
                 .unwrap(),
             )
             .unwrap();
-            panic!("GPU 表指针无效;state 页指针已转储 {}", path.display());
+            panic!(
+                "GPU table pointer invalid; state page pointers dumped to {}",
+                path.display()
+            );
         }
     };
 
@@ -854,7 +883,11 @@ fn chain(dir: &Path) {
             }
         }
     }
-    println!("表域 {} 页,Major 候选目标 {} 个", spent, targets.len());
+    println!(
+        "table domain {} pages, {} Major candidate targets",
+        spent,
+        targets.len()
+    );
     // 表域 hex 留档(离线定表项布局)
     let mut table_hex = Vec::new();
     for off in (0..span).step_by(0x1000) {
@@ -869,7 +902,7 @@ fn chain(dir: &Path) {
     let mut checked = 0usize;
     for &major in &targets {
         if spent >= budget || checked >= 1200 {
-            println!("  达到预算,截断(已检 {checked} 候选)");
+            println!("  budget reached, truncating ({checked} candidates checked)");
             break;
         }
         // [Major+0x2510] → root 指针
@@ -884,7 +917,7 @@ fn chain(dir: &Path) {
             continue;
         }
         let root_va = u64::from_le_bytes(b[0..8].try_into().unwrap());
-        println!("  候选 Major 0x{major:016X} → [x+0x2510] = 0x{root_va:016X}");
+        println!("  candidate Major 0x{major:016X} → [x+0x2510] = 0x{root_va:016X}");
         if !(0xFFFF_8000_0000_0000..=0xFFFF_F7FF_FFFF_F000).contains(&root_va) {
             continue;
         }
@@ -962,7 +995,7 @@ fn chain(dir: &Path) {
                 rec["aux2@3CFC"]
             );
             println!(
-                "    帧: root=0x{:016X} base=0x{:016X} upper=0x{:016X}",
+                "    frames: root=0x{:016X} base=0x{:016X} upper=0x{:016X}",
                 fr.unwrap_or(0),
                 frb.unwrap_or(0),
                 fru.unwrap_or(0)
@@ -976,7 +1009,7 @@ fn chain(dir: &Path) {
     let path = dir.join("chain_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "chain 完成: 读 {spent} 页, root 命中 {} → {}",
+        "chain done: {spent} pages read, {} root hits → {}",
         roots.len(),
         path.display()
     );
@@ -992,7 +1025,7 @@ fn marker(dir: &Path) {
     let (module, phys, root, _drv) = connect_walk();
     let image_end = module.base + 0x7370_0000u64;
     let lookup_marker = module.base + 0xCF1EA0;
-    println!("lookup 指针活体值 = 0x{lookup_marker:016X}(module.base + 0xCF1EA0)");
+    println!("lookup pointer live value = 0x{lookup_marker:016X} (module.base + 0xCF1EA0)");
 
     let mut queue: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
     // 种子:.data 等节的指针一跳目标
@@ -1028,7 +1061,10 @@ fn marker(dir: &Path) {
     let mut roots = Vec::new();
     while let Some(page) = queue.pop_front() {
         if spent >= budget {
-            println!("  达到预算 {budget},停止(队列 {})", queue.len());
+            println!(
+                "  budget {budget} reached, stopping (queue {})",
+                queue.len()
+            );
             break;
         }
         if !visited.insert(page) || (page >= module.base && page < image_end) {
@@ -1047,7 +1083,7 @@ fn marker(dir: &Path) {
             }
             let root_va = page + o as u64 - 0x1CC8;
             println!(
-                "  ★ lookup 指针命中 page 0x{page:016X} +0x{o:X} → root_va = 0x{root_va:016X}"
+                "  ★ lookup pointer hit page 0x{page:016X} +0x{o:X} → root_va = 0x{root_va:016X}"
             );
             // 解析 root 全字段(root 可能跨页,逐字段读)
             let f = |roff: u64| -> Option<u32> {
@@ -1117,7 +1153,7 @@ fn marker(dir: &Path) {
     let path = dir.join("marker_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "marker 完成: 读 {spent} 页, lookup 命中 {} → {}",
+        "marker done: {spent} pages read, {} lookup hits → {}",
         roots.len(),
         path.display()
     );
@@ -1149,7 +1185,10 @@ fn graphwalk(tag: &str, dir: &Path) {
     let mut hits = Vec::new();
     while let Some(page) = queue.pop_front() {
         if spent >= budget {
-            println!("  达到预算 {budget},停止(队列 {})", queue.len());
+            println!(
+                "  budget {budget} reached, stopping (queue {})",
+                queue.len()
+            );
             break;
         }
         if !visited.insert(page) || (page >= module.base && page < image_end) {
@@ -1203,7 +1242,7 @@ fn graphwalk(tag: &str, dir: &Path) {
     let path = dir.join(format!("graphwalk_{tag}.json"));
     std::fs::write(&path, serde_json::to_string(&report).unwrap()).unwrap();
     println!(
-        "graphwalk 完成: 读 {spent} 页, 信号页 {} → {}",
+        "graphwalk done: {spent} pages read, {} signal pages → {}",
         hits.len(),
         path.display()
     );
@@ -1243,7 +1282,7 @@ fn trace(dir: &Path) {
     };
     frontier.sort_unstable();
     frontier.dedup();
-    println!("一跳目标 {} 页(预算 {budget})", frontier.len());
+    println!("one-hop targets {} pages (budget {budget})", frontier.len());
 
     // GPU-ID 标记:vender:device 打包 dword 与 subsystem 设备 id
     const GPU_ID: u32 = 0x28E0_10DE;
@@ -1272,7 +1311,7 @@ fn trace(dir: &Path) {
         if n_id == 0 {
             continue;
         }
-        println!("  GPU-ID 页 0x{page:016X}(标记 ×{n_id})");
+        println!("  GPU-ID page 0x{page:016X} (markers ×{n_id})");
         registry_pages.push(*page);
         // 提取 {内核指针, GPU-ID} 相邻对(指针在前,8 字节对齐)
         for o in (0..4080).step_by(8) {
@@ -1288,12 +1327,12 @@ fn trace(dir: &Path) {
                 && !majors.contains(&(q & !0xFFF))
             {
                 majors.push(q & !0xFFF);
-                println!("    Major 候选 0x{:016X}(pair @+0x{o:X})", q & !0xFFF);
+                println!("    Major candidate 0x{:016X} (pair @+0x{o:X})", q & !0xFFF);
             }
         }
     }
     println!(
-        "注册表页 {}, Major 候选 {}",
+        "registry pages {}, Major candidates {}",
         registry_pages.len(),
         majors.len()
     );
@@ -1312,13 +1351,13 @@ fn trace(dir: &Path) {
     }
     for &major in majors.iter().take(16) {
         if spent >= budget {
-            println!("  达到预算 {budget},Major 走查截断");
+            println!("  budget {budget} reached, Major walk truncated");
             break;
         }
         let mut hole = Vec::new();
         let buf = read_range(&phys, root, major, 4096, &mut hole);
         if !hole.is_empty() {
-            println!("  Major 0x{major:016X} 不可读");
+            println!("  Major 0x{major:016X} unreadable");
             continue;
         }
         spent += 1;
@@ -1331,7 +1370,7 @@ fn trace(dir: &Path) {
         targets.sort_unstable();
         targets.dedup();
         println!(
-            "  Major 0x{major:016X}: +0x2510 处 = 0x{:016X}, 指针目标 {}",
+            "  Major 0x{major:016X}: +0x2510 holds 0x{:016X}, {} pointer targets",
             u64::from_le_bytes(buf[0x2510..0x2518].try_into().unwrap()),
             targets.len()
         );
@@ -1341,7 +1380,7 @@ fn trace(dir: &Path) {
     candidates.dedup();
     for page in &candidates {
         if spent >= budget {
-            println!("  达到预算 {budget},root 检查截断");
+            println!("  budget {budget} reached, root checks truncated");
             break;
         }
         let mut hole = Vec::new();
@@ -1376,11 +1415,11 @@ fn trace(dir: &Path) {
                     "lower@3CF0": f(OFF_LOWER), "upper@3CF4": f(OFF_UPPER),
                     "aux1@3CF8": f(OFF_UPPER + 4), "aux2@3CFC": f(OFF_UPPER + 8),
                 }));
-                println!("  ★ root 指纹命中 page 0x{page:016X} UPPER@+0x{o:X}");
+                println!("  ★ root fingerprint hit page 0x{page:016X} UPPER@+0x{o:X}");
             }
         } else if !scan.value_hits.is_empty() {
             println!(
-                "  值页 page 0x{page:016X} vals={:?}",
+                "  value page 0x{page:016X} vals={:?}",
                 scan.value_hits
                     .iter()
                     .map(|(k, v)| (k, v.len()))
@@ -1394,7 +1433,7 @@ fn trace(dir: &Path) {
     let path = dir.join("trace_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "trace 完成: 读 {spent} 页, root 命中 {} → {}",
+        "trace done: {spent} pages read, {} root hits → {}",
         roots.len(),
         path.display()
     );
@@ -1421,7 +1460,7 @@ fn trace(dir: &Path) {
 fn region(tag: &str, dir: &Path) {
     let base = u64::from_str_radix(
         env::var("NVOC_POWER_REGION_BASE")
-            .expect("region 相位需 NVOC_POWER_REGION_BASE")
+            .expect("region phase needs NVOC_POWER_REGION_BASE")
             .trim_start_matches("0x"),
         16,
     )
@@ -1433,7 +1472,7 @@ fn region(tag: &str, dir: &Path) {
         .unwrap_or(0x20_0000);
     let (_module, phys, root, _drv) = connect_walk();
     println!(
-        "region 0x{base:016X}..0x{:016X}({} 页)",
+        "region 0x{base:016X}..0x{:016X} ({} pages)",
         base + span as u64,
         span / 0x1000
     );
@@ -1449,7 +1488,7 @@ fn region(tag: &str, dir: &Path) {
             let scan = scan_page(&buf);
             if !scan.fingerprint.is_empty() || !scan.value_hits.is_empty() {
                 println!(
-                    "  值页 0x{va:016X} fp={:?} vals={:?} f7={}",
+                    "  value page 0x{va:016X} fp={:?} vals={:?} f7={}",
                     scan.fingerprint,
                     scan.value_hits
                         .iter()
@@ -1468,7 +1507,7 @@ fn region(tag: &str, dir: &Path) {
     let path = dir.join(format!("region_{tag}.json"));
     std::fs::write(&path, serde_json::to_string(&report).unwrap()).unwrap();
     println!(
-        "region 完成: 可读 {ok}/{} 页 → {}",
+        "region done: {ok}/{} pages readable → {}",
         span / 0x1000,
         path.display()
     );
@@ -1480,7 +1519,7 @@ fn region(tag: &str, dir: &Path) {
 fn hub(dir: &Path) {
     let va_src = env::var("NVOC_POWER_HUB_VA")
         .or_else(|_| env::var("NVOC_POWER_READ_VA"))
-        .expect("hub 相位需 NVOC_POWER_HUB_VA");
+        .expect("hub phase needs NVOC_POWER_HUB_VA");
     let anchor = u64::from_str_radix(va_src.trim_start_matches("0x"), 16).unwrap() & !0xFFF;
     let cap = env::var("NVOC_POWER_HUB_CAP")
         .ok()
@@ -1492,7 +1531,7 @@ fn hub(dir: &Path) {
     let (_module, phys, root, _drv) = connect_walk();
     let mut hole = Vec::new();
     let anchor_buf = read_range(&phys, root, anchor, 4096, &mut hole);
-    assert!(hole.is_empty(), "锚页不可读");
+    assert!(hole.is_empty(), "anchor page unreadable");
     let mut targets: Vec<u64> = (0..4088)
         .step_by(8)
         .map(|o| u64::from_le_bytes(anchor_buf[o..o + 8].try_into().unwrap()))
@@ -1503,7 +1542,10 @@ fn hub(dir: &Path) {
     targets.sort_unstable();
     targets.dedup();
     targets.truncate(cap);
-    println!("锚 0x{anchor:016X} 指针目标页 {} 个", targets.len());
+    println!(
+        "anchor 0x{anchor:016X} has {} pointer-target pages",
+        targets.len()
+    );
 
     let mut queue = targets.clone();
     if hop2 {
@@ -1535,7 +1577,10 @@ fn hub(dir: &Path) {
         }
         extra.sort_unstable();
         extra.dedup();
-        println!("二跳补充目标 {} 个(预算内截断)", extra.len().min(cap));
+        println!(
+            "{} second-hop extra targets (truncated to budget)",
+            extra.len().min(cap)
+        );
         extra.truncate(cap);
         queue.extend(extra);
         queue.sort_unstable();
@@ -1584,7 +1629,7 @@ fn hub(dir: &Path) {
                 }));
             }
             println!(
-                "  指纹命中 page 0x{page:016X} fp={:?} values={:?}",
+                "  fingerprint hit page 0x{page:016X} fp={:?} values={:?}",
                 scan.fingerprint,
                 scan.value_hits
                     .iter()
@@ -1593,7 +1638,7 @@ fn hub(dir: &Path) {
             );
         } else if scan.value_hits.contains_key(&90000) || scan.value_hits.contains_key(&95000) {
             println!(
-                "  差分值页 page 0x{page:016X} values={:?}",
+                "  diff value page 0x{page:016X} values={:?}",
                 scan.value_hits
                     .iter()
                     .map(|(k, v)| (k, v.len()))
@@ -1605,7 +1650,7 @@ fn hub(dir: &Path) {
     let path = dir.join("hub_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "hub 完成: 扫 {scanned} 页, root 命中 {} → {}",
+        "hub done: {scanned} pages scanned, {} root hits → {}",
         roots.len(),
         path.display()
     );
@@ -1634,7 +1679,7 @@ fn hub(dir: &Path) {
 fn near(dir: &Path) {
     let va_src = env::var("NVOC_POWER_NEAR_VA")
         .or_else(|_| env::var("NVOC_POWER_READ_VA"))
-        .expect("near 相位需 NVOC_POWER_NEAR_VA(或 NVOC_POWER_READ_VA)");
+        .expect("near phase needs NVOC_POWER_NEAR_VA (or NVOC_POWER_READ_VA)");
     let anchor = u64::from_str_radix(va_src.trim_start_matches("0x"), 16).unwrap() & !0xFFF;
     let before = env::var("NVOC_POWER_NEAR_BEFORE")
         .ok()
@@ -1648,7 +1693,7 @@ fn near(dir: &Path) {
     let start = anchor.saturating_sub(before);
     let end = anchor + after;
     println!(
-        "邻域扫描 0x{start:016X}..0x{end:016X}(锚 0x{anchor:016X}),共 {} 页",
+        "neighborhood scan 0x{start:016X}..0x{end:016X} (anchor 0x{anchor:016X}), {} pages total",
         (end - start) / 0x1000
     );
     let mut hits = Vec::new();
@@ -1671,7 +1716,7 @@ fn near(dir: &Path) {
                 || !scan.value_hits.is_empty()
             {
                 println!(
-                    "  页 0x{page:016X} fp={:?} values={:?} f7n={} ptrs={n_ptrs}",
+                    "  page 0x{page:016X} fp={:?} values={:?} f7n={} ptrs={n_ptrs}",
                     scan.fingerprint,
                     scan.value_hits
                         .iter()
@@ -1742,7 +1787,7 @@ fn near(dir: &Path) {
     let path = dir.join("near_report.json");
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "near 完成: 命中 {} 页,root 解析 {} → {}",
+        "near done: {} pages hit, {} roots resolved → {}",
         hits.len(),
         roots.len(),
         path.display()
@@ -1763,7 +1808,7 @@ fn near(dir: &Path) {
             r["aux2@3CFC"]
         );
         println!(
-            "    anchor 页帧: 0x{:X}",
+            "    anchor page frame: 0x{:X}",
             r["anchor_frame"].as_u64().unwrap_or(0)
         );
     }
@@ -1810,10 +1855,10 @@ fn snapshot(tag: &str, dir: &Path) {
                 value_only_pages.insert(page_va, scan);
             }
         }
-        println!("  节 {name}: 指针 {ptrs},洞 {}", holes.len());
+        println!("  section {name}: {ptrs} pointers, {} holes", holes.len());
         section_stats.push(json!({"name": name, "rva": rva, "size": size, "holes": holes.len()}));
     }
-    println!("镜像指针(去重目标页): {}", pointers.len());
+    println!("image pointers (deduped target pages): {}", pointers.len());
 
     // 2) 传递式 BFS 走查:镜像指针的池目标页继续取指针,直到队列枯竭或上限。
     //    PowerRoot 离镜像指针 2-3 跳(Major+0x2510 在池内),一跳走查够不着。
@@ -1834,7 +1879,7 @@ fn snapshot(tag: &str, dir: &Path) {
     while let Some(page_va) = frontier.pop() {
         if scanned >= max_pages {
             println!(
-                "  达到安全预算 {max_pages} 页,停止走查(剩余队列 {})",
+                "  safety budget {max_pages} pages reached, walk stopped ({} queued)",
                 frontier.len()
             );
             break;
@@ -1875,14 +1920,17 @@ fn snapshot(tag: &str, dir: &Path) {
         }
         if scanned.is_multiple_of(8192) {
             println!(
-                "  已扫 {scanned} 页,队列 {},候选 {},值页 {}",
+                "  scanned {scanned} pages, queue {}, candidates {}, value pages {}",
                 frontier.len(),
                 candidate_bytes.len(),
                 value_only_pages.len()
             );
         }
     }
-    println!("BFS 完成: 扫描 {scanned} 页,visited {}", visited.len());
+    println!(
+        "BFS done: {scanned} pages scanned, visited {}",
+        visited.len()
+    );
 
     // 3) 候选页的来源指针边(后续回溯 Major/DriverGlobal 用)
     let cand_vas: HashSet<u64> = candidate_bytes.keys().copied().collect();
@@ -1942,7 +1990,7 @@ fn snapshot(tag: &str, dir: &Path) {
     let path = dir.join(format!("{tag}.snapshot.json"));
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "快照完成: 候选页 {} ,值页 {} ,root 指纹命中 {} → {}",
+        "snapshot done: candidate pages {}, value pages {}, {} root fingerprint hits → {}",
         candidate_bytes.len(),
         value_only_pages.len(),
         report["root_candidates"].as_array().unwrap().len(),
@@ -1953,11 +2001,14 @@ fn snapshot(tag: &str, dir: &Path) {
 fn diff(tag: &str, dir: &Path) {
     let base_tag = env::var("NVOC_POWER_DIFF_BASE").unwrap_or_else(|_| "a".into());
     let base_path = dir.join(format!("{base_tag}.snapshot.json"));
-    let base: Value = serde_json::from_str(
-        &std::fs::read_to_string(&base_path)
-            .unwrap_or_else(|e| panic!("读基线快照 {} 失败: {e}", base_path.display())),
-    )
-    .unwrap();
+    let base: Value =
+        serde_json::from_str(&std::fs::read_to_string(&base_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read baseline snapshot {}: {e}",
+                base_path.display()
+            )
+        }))
+        .unwrap();
     let (_module, phys, root, _drv) = connect_walk();
 
     let mut changed_pages: Vec<Value> = Vec::new();
@@ -2039,13 +2090,13 @@ fn diff(tag: &str, dir: &Path) {
     let path = dir.join(format!("diff_{base_tag}_{tag}.json"));
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "diff 完成: 复检 {pages_checked} 页,变化页 {} → {}",
+        "diff done: {pages_checked} pages rechecked, {} changed → {}",
         changed_pages.len(),
         path.display()
     );
     for page in &changed_pages {
         println!(
-            "  变化: page 0x{:X} [{}] {}",
+            "  change: page 0x{:X} [{}] {}",
             page["page_va"].as_u64().unwrap_or(0),
             page["status"].as_str().unwrap_or("?"),
             page["dword_changes"]
@@ -2068,7 +2119,7 @@ fn diff(tag: &str, dir: &Path) {
 fn read_object(dir: &Path) {
     let va = u64::from_str_radix(
         env::var("NVOC_POWER_READ_VA")
-            .expect("read 相位需 NVOC_POWER_READ_VA")
+            .expect("read phase needs NVOC_POWER_READ_VA")
             .trim_start_matches("0x"),
         16,
     )
@@ -2107,7 +2158,7 @@ fn read_object(dir: &Path) {
     let path = dir.join(format!("read_{va:016X}.json"));
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!(
-        "root 对象 @0x{va:016X}: init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{} → {}",
+        "root object @0x{va:016X}: init={} elig={} amountActive={} base={} amount={} key={} lower={} upper={} aux={}/{} → {}",
         report["init@3CE0"],
         report["elig@3CE1"],
         report["amountActive@3CE2"],
@@ -2122,7 +2173,7 @@ fn read_object(dir: &Path) {
     );
     for f in &frames {
         println!(
-            "  页 0x{:X} → 帧 0x{:X}",
+            "  page 0x{:X} → frame 0x{:X}",
             f["va"].as_u64().unwrap(),
             f["frame"].as_u64().unwrap()
         );
@@ -2156,7 +2207,7 @@ fn scan_page_fingerprint_synthetic() {
     assert_eq!(
         scan.fingerprint,
         vec![0xCF4],
-        "root 指纹应精确命中 UPPER 槽"
+        "root fingerprint should exact-match the UPPER slot"
     );
     assert_eq!(scan.value_hits[&100000], vec![0xCE4, 0xCF4]);
     assert_eq!(scan.value_hits[&90000], vec![0x200]);
@@ -2166,12 +2217,15 @@ fn scan_page_fingerprint_synthetic() {
     // 负例:init≠1 不得误报;base=-1 哨兵(610 出厂可能态)仍应命中
     let mut bad2 = buf.clone();
     bad2[0xCE0] = 0;
-    assert!(scan_page(&bad2).fingerprint.is_empty(), "init=0 不得命中");
+    assert!(
+        scan_page(&bad2).fingerprint.is_empty(),
+        "init=0 must not hit"
+    );
     let mut sentinel = buf.clone();
     put(&mut sentinel, 0xCE4, 0xFFFFFFFF);
     assert_eq!(
         scan_page(&sentinel).fingerprint,
         vec![0xCF4],
-        "base=-1 哨兵不应阻止命中"
+        "base=-1 sentinel must not block the hit"
     );
 }

@@ -7,13 +7,13 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let Some(path) = std::env::args().nth(1) else {
-        eprintln!("用法: probe_image <nvlddmkm.sys 路径>");
+        eprintln!("usage: probe_image <nvlddmkm.sys path>");
         return ExitCode::FAILURE;
     };
     let img = match std::fs::read(&path) {
         Ok(img) => img,
         Err(e) => {
-            eprintln!("读 {path} 失败: {e}");
+            eprintln!("failed to read {path}: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -57,7 +57,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("probe 失败(fail-closed): {e:?}");
+            eprintln!("probe failed (fail-closed): {e:?}");
             ExitCode::FAILURE
         }
     }
