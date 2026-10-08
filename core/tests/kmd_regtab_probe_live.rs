@@ -287,10 +287,23 @@ fn regtab_probe_live() {
                 continue;
             };
             dump_reads += 1;
-            let mut found = 0usize;
-            for (off, win) in page.windows(4).enumerate() {
-                let v = u32::from_le_bytes(win.try_into().unwrap());
-                if [
+            // region+40 回调链(寄存器写拦截;节点 {next, w8, mask+8, chan+12,
+            // sub+16, addrLo+20, addrHi+24, fn+32})—— 先收集,精读和打印共用
+            let mut cbs: Vec<(u64, u64, Vec<u8>)> = Vec::new();
+            if let Some(head) = rd_u64(rp + 40) {
+                let mut node = head;
+                let mut n = 0;
+                while is_kernel_va(node) && n < 8 {
+                    let Some(b) = rd(node, 40) else { break };
+                    dump_reads += 1;
+                    let next = u64::from_le_bytes(b[0..8].try_into().unwrap());
+                    cbs.push((node, next, b));
+                    node = next;
+                    n += 1;
+                }
+            }
+            let report_val = |base: u64, off: usize, v: u32, found: &mut usize| {
+                let tgp = [
                     live.min_mw,
                     Some(live.default_mw),
                     Some(live.max_mw),
@@ -298,13 +311,46 @@ fn regtab_probe_live() {
                 ]
                 .into_iter()
                 .flatten()
-                .any(|t| t == v)
-                {
-                    println!("       +{off:#06x} = {v}(TGP 值命中)");
-                    found += 1;
-                    if found >= 8 {
+                .any(|t| t == v);
+                if tgp {
+                    println!("       shadow+{base:#x}(页内 +{off:#x}) = {v}  ← regaddr≈{base:#x}");
+                    *found += 1;
+                }
+                tgp
+            };
+            let mut found = 0usize;
+            // ① 首页
+            for (off, win) in page.windows(4).enumerate() {
+                let v = u32::from_le_bytes(win.try_into().unwrap());
+                if report_val(off as u64, off * 4, v, &mut found) && found >= 8 {
+                    break;
+                }
+            }
+            // ② 回调小范围精读:591.86 有 [0xcc00,0xcc18] 级的小窗(5 dword,
+            //    正好装 {min,def,max,cur} 行),密采样 k 从 0x10000 起步恰好漏它
+            for &(addr, _next, ref b) in cbs.iter().take(8) {
+                let _ = addr;
+                let d = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+                let (lo, hi) = (d(20), d(24));
+                if hi < lo || hi - lo > 0x1000 {
+                    continue;
+                }
+                let Some(seg) = rd(rp + lo as u64, (hi - lo + 1) as usize) else {
+                    println!("       cb 范围 [{lo:#x},{hi:#x}] 精读失败");
+                    dump_reads += 1;
+                    continue;
+                };
+                dump_reads += 1;
+                for (off, win) in seg.chunks_exact(4).enumerate() {
+                    let v = u32::from_le_bytes((*win).try_into().unwrap());
+                    if report_val(lo as u64 + (off * 4) as u64, off * 4, v, &mut found)
+                        && found >= 16
+                    {
                         break;
                     }
+                }
+                if found >= 16 {
+                    break;
                 }
             }
             // 深采样:shadow slot = region + regaddr(regaddr 量级见回调 addr 范围,
@@ -319,6 +365,23 @@ fn regtab_probe_live() {
             };
             let steps = 0x1_000_000 / stride;
             if inline {
+                // ③ 首 64KB 补扫(4KB..0x10000,15 页;region 首页与首个采样页之间的空档)
+                let mut k4 = 1u64;
+                while k4 * 0x1000 < 0x10000 && dump_reads < DUMP_BUDGET && found < 16 {
+                    if let Some(sp) = rd(rp + k4 * 0x1000, 4096) {
+                        dump_reads += 1;
+                        for (off, win) in sp.chunks_exact(4).enumerate() {
+                            let v = u32::from_le_bytes((*win).try_into().unwrap());
+                            if report_val(k4 * 0x1000 + (off * 4) as u64, off * 4, v, &mut found)
+                                && found >= 16
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    k4 += 1;
+                }
+                // ④ 16MB 采样
                 for k in 1..steps {
                     if dump_reads >= DUMP_BUDGET {
                         println!("       [深采样预算尽 @ {:#x}]", k * stride);
@@ -331,57 +394,33 @@ fn regtab_probe_live() {
                     dump_reads += 1;
                     for (off, win) in sp.chunks_exact(4).enumerate() {
                         let v = u32::from_le_bytes((*win).try_into().unwrap());
-                        if [
-                            live.min_mw,
-                            Some(live.default_mw),
-                            Some(live.max_mw),
-                            Some(live.current_mw),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .any(|t| t == v)
+                        if report_val(k * stride + (off * 4) as u64, off * 4, v, &mut found)
+                            && found >= 16
                         {
-                            println!(
-                                "       shadow+{:#x}(+{:#x} 页内) = {v}(regaddr ≈ {:#x})",
-                                k * stride + (off * 4) as u64,
-                                off * 4,
-                                k * stride + (off * 4) as u64
-                            );
-                            found += 1;
-                            if found >= 12 {
-                                break;
-                            }
+                            break;
                         }
                     }
-                    if found >= 12 {
+                    if found >= 16 {
                         break;
                     }
                 }
             }
-            // region+40 回调链(寄存器写拦截;节点 {next, w8, mask+8, chan+12, sub+16, lo+20, hi+24, fn+32})
-            if let Some(head) = rd_u64(rp + 40) {
-                let mut node = head;
-                let mut n = 0;
-                while is_kernel_va(node) && n < 4 {
-                    let Some(b) = rd(node, 40) else { break };
-                    dump_reads += 1;
-                    let g = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
-                    let d = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
-                    println!(
-                        "       cb@0x{node:016X}: w8={:x} chan={} sub={} addr=[{:#x},{:#x}] fn={:?}",
-                        g(8),
-                        d(12),
-                        d(16),
-                        d(20),
-                        d(24),
-                        g(32)
-                            .checked_sub(module.base)
-                            .map(|r| format!("RVA {r:#x}"))
-                            .unwrap_or_else(|| format!("{:#x}", g(32)))
-                    );
-                    node = g(0);
-                    n += 1;
-                }
+            // 回调链打印
+            for &(addr, _next, ref b) in cbs.iter().take(8) {
+                let g = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+                let d = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+                println!(
+                    "       cb@0x{addr:016X}: w8={:x} chan={} sub={} addr=[{:#x},{:#x}] fn={:?}",
+                    g(8),
+                    d(12),
+                    d(16),
+                    d(20),
+                    d(24),
+                    g(32)
+                        .checked_sub(module.base)
+                        .map(|r| format!("RVA {r:#x}"))
+                        .unwrap_or_else(|| format!("{:#x}", g(32)))
+                );
             }
             if dump_reads >= DUMP_BUDGET {
                 println!("  [dump 预算尽,停]");
