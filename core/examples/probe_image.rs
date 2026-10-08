@@ -24,12 +24,24 @@ fn main() -> ExitCode {
             println!("size_of_image = {:#x}", layout.size_of_image);
             println!("global_slot   = {:#x}", layout.global_slot_rva);
             println!("state->table  = {:#x}", layout.state_table_off);
-            println!("count/major/id= {:#x}/{:#x}/{:#x}", layout.table_count_off, layout.entry_major_off, layout.entry_id_off);
+            println!(
+                "count/major/id= {:#x}/{:#x}/{:#x}",
+                layout.table_count_off, layout.entry_major_off, layout.entry_id_off
+            );
             println!("stride        = {:#x}", layout.entry_stride);
             println!("major->root   = {:#x}", layout.major_root_off);
-            println!("root init/elig/aa = {:#x}/{:#x}/{:#x}", layout.root_init_off, layout.root_elig_off, layout.root_amount_active_off);
-            println!("root base/amount/key = {:#x}/{:#x}/{:#x}", layout.root_base_off, layout.root_amount_off, layout.root_key_off);
-            println!("root lower/upper = {:#x}/{:#x}", layout.root_lower_off, layout.root_upper_off);
+            println!(
+                "root init/elig/aa = {:#x}/{:#x}/{:#x}",
+                layout.root_init_off, layout.root_elig_off, layout.root_amount_active_off
+            );
+            println!(
+                "root base/amount/key = {:#x}/{:#x}/{:#x}",
+                layout.root_base_off, layout.root_amount_off, layout.root_key_off
+            );
+            println!(
+                "root lower/upper = {:#x}/{:#x}",
+                layout.root_lower_off, layout.root_upper_off
+            );
             println!("generator rva = {:#x}", layout.generator_rva);
             println!("rm_get_cmd    = {:?}", layout.rm_get_cmd);
             println!("rm_set_cmd    = {:?}", layout.rm_set_cmd);
@@ -38,7 +50,10 @@ fn main() -> ExitCode {
                 println!("{a}");
             }
             println!("--- json ---");
-            println!("{}", serde_json::to_string_pretty(&layout).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&layout).unwrap_or_default()
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
