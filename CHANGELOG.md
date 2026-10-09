@@ -34,6 +34,11 @@ single source of truth is `[workspace.package].version` in the root
   only graphics load; `--vulkan-only` now always runs it. Nothing in the
   optimizer, profiles (beyond a comment), tests, or workflows referenced the
   removed interface.
+- stressor: `--vulkan-only` is now a pure-Vulkan path handled before any CUDA
+  init — the GPU is selected directly from `--gpu-uuid`/`--pci-bus`/
+  `--gpu-index` (Vulkan-side PCI-sorted index, full mapping printed before
+  selection), so a Vulkan-only run no longer requires a working CUDA driver.
+  Mixed-mode `--vulkan` still aligns the sidecar to the CUDA device by UUID.
 
 ### Fixed
 

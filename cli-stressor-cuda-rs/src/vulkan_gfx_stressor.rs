@@ -7,11 +7,43 @@ use std::ffi::CStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Which physical device the Vulkan sidecar should drive. Mixed mode
+/// (`--vulkan` alongside the CUDA load) fills the UUID/PCI fields from the
+/// CUDA device identity so both APIs land on the same GPU; Vulkan-only mode
+/// builds it straight from the `--gpu-uuid`/`--pci-bus`/`--gpu-index` CLI
+/// hints and needs no CUDA context at all.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VulkanDeviceSelection {
-    pub cuda_uuid: [u8; 16],
-    pub cuda_pci_bus: Option<PciBusAddress>,
+    /// Match the device whose vendor UUID equals this (zero = unset).
+    pub uuid: [u8; 16],
+    /// Standalone or fallback match on the PCIe bus address.
+    pub pci_bus: Option<PciBusAddress>,
+    /// Position in the PCI-sorted device enumeration (pure-Vulkan path,
+    /// same ordering rule as the CUDA `--gpu-index`).
+    pub index: Option<u32>,
+}
+
+impl VulkanDeviceSelection {
+    /// Resolve to a concrete physical device. UUID match wins, then PCI bus,
+    /// then the PCI-sorted index; with no hints the first enumerated device
+    /// is used.
+    pub fn resolve(self, instance: &Instance) -> Result<vk::PhysicalDevice, String> {
+        if !is_zero_uuid(&self.uuid) || self.pci_bus.is_some() {
+            return select_gpu_by_cuda_identity(instance, self.uuid, self.pci_bus);
+        }
+        if let Some(index) = self.index {
+            return select_gpu_by_sorted_index(instance, index);
+        }
+        let pdevices = unsafe {
+            instance
+                .enumerate_physical_devices()
+                .map_err(|err| format!("failed to enumerate Vulkan physical devices: {err}"))?
+        };
+        pdevices
+            .first()
+            .copied()
+            .ok_or_else(|| "no Vulkan physical devices found".to_string())
+    }
 }
 
 /// FurMark-style heavy render parameters. Defined here (rather than in the
@@ -58,7 +90,6 @@ impl VulkanGraphicsEngine {
         }
     }
 
-    #[cfg(feature = "cuda")]
     pub fn with_selection(
         selection: VulkanDeviceSelection,
         render_config: VulkanRenderConfig,
@@ -113,11 +144,72 @@ impl VulkanGraphicsEngine {
     }
 }
 
-pub fn select_gpu_by_cuda_uuid(
+/// Select by position in the PCI-sorted device enumeration, mirroring the
+/// CUDA `--gpu-index` ordering rule (domain/bus/device/function ascending;
+/// devices that do not report a PCI address sort last, in enumeration order).
+pub fn select_gpu_by_sorted_index(
     instance: &Instance,
-    target_cuda_uuid: [u8; 16],
+    index: u32,
 ) -> Result<vk::PhysicalDevice, String> {
-    select_gpu_by_cuda_identity(instance, target_cuda_uuid, None)
+    let pdevices = unsafe {
+        instance
+            .enumerate_physical_devices()
+            .map_err(|err| format!("failed to enumerate Vulkan physical devices: {err}"))?
+    };
+    if pdevices.is_empty() {
+        return Err("no Vulkan physical devices found".to_string());
+    }
+
+    let mut entries: Vec<(Option<PciBusAddress>, vk::PhysicalDevice, String)> = Vec::new();
+    for pdevice in pdevices {
+        let (name, _uuid, uuid_hex, pci) =
+            unsafe { query_vulkan_device_identity(instance, pdevice) }
+                .map_err(|err| format!("failed to query device identity: {err}"))?;
+        entries.push((pci, pdevice, format!("{name} | uuid={uuid_hex}")));
+    }
+
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by(|&a, &b| match (&entries[a].0, &entries[b].0) {
+        (Some(x), Some(y)) => {
+            (x.domain, x.bus, x.device, x.function).cmp(&(y.domain, y.bus, y.device, y.function))
+        }
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.cmp(&b),
+    });
+
+    for (position, &entry_idx) in order.iter().enumerate() {
+        let (pci, _, label) = &entries[entry_idx];
+        println!(
+            "{}",
+            stylize(
+                &format!(
+                    "[VulkanGfx] Vulkan device [{position}]: {} | pci={}",
+                    label,
+                    pci.as_ref()
+                        .map(format_pci_address)
+                        .unwrap_or_else(|| "<none>".to_string())
+                ),
+                false
+            )
+        );
+    }
+
+    let picked = *order.get(index as usize).ok_or_else(|| {
+        format!(
+            "Vulkan device index {index} out of range ({} devices)",
+            entries.len()
+        )
+    })?;
+    let (_, pdevice, label) = &entries[picked];
+    println!(
+        "{}",
+        stylize(
+            &format!("[VulkanGfx] Selected Vulkan device by sorted index {index}: {label}"),
+            false
+        )
+    );
+    Ok(*pdevice)
 }
 
 pub fn select_gpu_by_cuda_identity(

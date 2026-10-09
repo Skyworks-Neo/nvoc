@@ -50,6 +50,7 @@
 - 使用 CPU FP64 参考结果进行周期性校验（INT 精度跳过校验，详见[注意事项](#注意事项)）
 - 多流提交模式：`single` / `dual` / `triple`
 - Vulkan 图形压力侧车：渲染负载 `--vulkan`（默认无头 offscreen，`--vulkan-window` 出窗，仅 Windows）；需 `--features vulkan`
+- `--vulkan-only` 是纯 Vulkan 路径：在 CUDA 初始化之前处理，GPU 直接按 `--gpu-uuid` / `--pci-bus` / `--gpu-index`（Vulkan 侧 PCI 排序索引，选中前打印完整映射表）选择，无需可用 CUDA 驱动。注意 Vulkan 枚举包含非 NVIDIA 设备，精确选择优先用 UUID 或 PCI 地址
 - PCI 总线 / UUID / 排序索引 GPU 选择；`--list-gpus` 枚举设备
 
 ### 支持精度一览
@@ -246,6 +247,7 @@ burst_iters = 64
 - Periodic validation using a CPU FP64 reference result (INT precisions skip validation; see [Notes](#notes-english))
 - Multi-stream submission: `single` / `dual` / `triple`
 - Optional Vulkan graphics stress sidecar: render load `--vulkan` (headless offscreen by default, `--vulkan-window` to present a window, Windows only); requires `--features vulkan`
+- `--vulkan-only` is a pure-Vulkan path handled before any CUDA init: the GPU is selected directly via `--gpu-uuid` / `--pci-bus` / `--gpu-index` (Vulkan-side PCI-sorted index; the full mapping is printed before selection), so no working CUDA driver is required. Note the Vulkan enumeration includes non-NVIDIA devices; prefer UUID or PCI address for exact selection
 - PCI bus / UUID / sorted-index GPU selection; `--list-gpus` to enumerate devices
 
 ### Precision Matrix

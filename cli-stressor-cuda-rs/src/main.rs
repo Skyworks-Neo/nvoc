@@ -40,13 +40,17 @@ use cuda_backend::{
 
 // Stressor Vulkan engine (optional). Only compiled when the crate is built with
 // --features "vulkan" in addition to "cuda".
-#[cfg(all(feature = "cuda", feature = "vulkan"))]
-use cli_stressor_cuda_rs::vulkan_gfx_stressor::VulkanDeviceSelection;
 #[cfg(feature = "vulkan")]
-use cli_stressor_cuda_rs::vulkan_gfx_stressor::{VulkanGraphicsEngine, VulkanRenderConfig};
+use cli_stressor_cuda_rs::vulkan_gfx_stressor::{
+    VulkanDeviceSelection, VulkanGraphicsEngine, VulkanRenderConfig,
+};
 
 #[cfg(feature = "vulkan")]
-fn run_vulkan_for_duration(duration_s: f64, render_config: VulkanRenderConfig) -> i32 {
+fn run_vulkan_for_duration(
+    duration_s: f64,
+    selection: VulkanDeviceSelection,
+    render_config: VulkanRenderConfig,
+) -> i32 {
     println!(
         "{}",
         stylize(
@@ -58,7 +62,7 @@ fn run_vulkan_for_duration(duration_s: f64, render_config: VulkanRenderConfig) -
         )
     );
 
-    let mut eng = VulkanGraphicsEngine::new(render_config);
+    let mut eng = VulkanGraphicsEngine::with_selection(selection, render_config);
     if let Err(e) = eng.start_stress_thread() {
         eprintln!(
             "{}",
@@ -346,6 +350,27 @@ fn build_vulkan_render_config(args: &Args) -> VulkanRenderConfig {
         rotate: args.vulkan_rotate,
         particles: args.vulkan_particles,
     }
+}
+
+/// Pure-Vulkan device selection from the `--gpu-uuid`/`--pci-bus`/
+/// `--gpu-index` CLI hints; no CUDA context involved. Resolution precedence
+/// (in `VulkanDeviceSelection::resolve`): UUID > PCI bus > sorted index,
+/// first enumerated device when no hint is given.
+#[cfg(feature = "vulkan")]
+fn build_vulkan_device_selection(args: &Args) -> Result<VulkanDeviceSelection, String> {
+    let uuid = match &args.gpu_uuid {
+        Some(raw) => parse_uuid_string(raw)?,
+        None => [0u8; 16],
+    };
+    let pci_bus = match &args.pci_bus {
+        Some(raw) => Some(parse_pci_bus_string(raw)?),
+        None => None,
+    };
+    Ok(VulkanDeviceSelection {
+        uuid,
+        pci_bus,
+        index: args.gpu_index,
+    })
 }
 
 #[cfg(feature = "cuda")]
@@ -858,7 +883,7 @@ fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
     resolve_device_index_by_sorted_index(0)
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "vulkan"))]
 fn parse_pci_bus_string(s: &str) -> Result<cli_stressor_cuda_rs::PciBusAddress, String> {
     let s = s.trim();
     let (domain_raw, rest) = s
@@ -888,7 +913,7 @@ fn parse_pci_bus_string(s: &str) -> Result<cli_stressor_cuda_rs::PciBusAddress, 
     })
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "vulkan"))]
 fn parse_uuid_string(s: &str) -> Result<[u8; 16], String> {
     let s = s.trim();
 
@@ -1253,6 +1278,43 @@ pub fn run_from_args() {
         }
     }
 
+    // Vulkan-only mode: pure Vulkan path, handled before any CUDA init. GPU
+    // selection comes straight from the --gpu-index/--pci-bus/--gpu-uuid
+    // hints, so a Vulkan-only run never requires a working CUDA driver.
+    if args.vulkan_only {
+        #[cfg(feature = "vulkan")]
+        {
+            let selection = match build_vulkan_device_selection(&args) {
+                Ok(sel) => sel,
+                Err(err) => {
+                    eprintln!(
+                        "{}",
+                        stylize(&format!("Invalid Vulkan GPU selection: {}", err), true)
+                    );
+                    std::process::exit(2);
+                }
+            };
+            let render_config = build_vulkan_render_config(&args);
+            std::process::exit(run_vulkan_for_duration(
+                args.duration,
+                selection,
+                render_config,
+            ));
+        }
+
+        #[cfg(not(feature = "vulkan"))]
+        {
+            eprintln!(
+                "{}",
+                stylize(
+                    "--vulkan-only requires building with --features vulkan",
+                    true
+                )
+            );
+            std::process::exit(2);
+        }
+    }
+
     let matrix_sizes = match parse_int_list(&args.matrix_sizes) {
         Ok(values) => values,
         Err(err) => {
@@ -1324,6 +1386,10 @@ pub fn run_from_args() {
         backend.enable_verify_slab(25);
     };
 
+    // CUDA device identity for mixed-mode Vulkan alignment (--vulkan): the
+    // render sidecar must land on the same physical GPU as the compute load.
+    // Vulkan-only mode never reaches this point; it selects its GPU directly
+    // from the CLI hints without touching CUDA.
     #[cfg(feature = "vulkan")]
     let cuda_device_identity = match backend.device_identity() {
         Ok(identity) => Some(identity),
@@ -1344,79 +1410,6 @@ pub fn run_from_args() {
             None
         }
     };
-
-    // In Vulkan-only mode, skip CUDA workload but use device identity for GPU selection
-    if args.vulkan_only {
-        #[cfg(feature = "vulkan")]
-        {
-            let render_config = build_vulkan_render_config(&args);
-            let selection = cuda_device_identity.map(|identity| VulkanDeviceSelection {
-                cuda_uuid: identity.uuid,
-                cuda_pci_bus: identity.pci_bus,
-            });
-            let result = if let Some(sel) = selection {
-                let mut eng = VulkanGraphicsEngine::with_selection(sel, render_config);
-                if let Err(e) = eng.start_stress_thread() {
-                    eprintln!(
-                        "{}",
-                        stylize(
-                            &format!("Failed to start VulkanGraphicsEngine: {}", e),
-                            true
-                        )
-                    );
-                    1
-                } else {
-                    let err_flag = eng.get_error_flag_arc();
-                    let started = std::time::Instant::now();
-                    let mut exit_code = 0;
-                    while started.elapsed().as_secs_f64() < args.duration {
-                        if err_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                            eprintln!(
-                                "{}",
-                                stylize("[FATAL] Vulkan engine reported an error; exiting", true)
-                            );
-                            let _ = eng.stop();
-                            exit_code = 1;
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(200));
-                    }
-                    if exit_code == 0
-                        && let Err(e) = eng.stop()
-                    {
-                        eprintln!(
-                            "{}",
-                            stylize(&format!("[FATAL] Vulkan engine stop failed: {}", e), true)
-                        );
-                        exit_code = 1;
-                    }
-                    if exit_code == 0 {
-                        println!(
-                            "{}",
-                            stylize("Vulkan-only run finished with GPU selection.", false)
-                        );
-                    }
-                    exit_code
-                }
-            } else {
-                // Fallback: no CUDA identity available, use first physical device
-                run_vulkan_for_duration(args.duration, render_config)
-            };
-            std::process::exit(result);
-        }
-
-        #[cfg(not(feature = "vulkan"))]
-        {
-            eprintln!(
-                "{}",
-                stylize(
-                    "--vulkan-only requires building with --features vulkan",
-                    true
-                )
-            );
-            std::process::exit(2);
-        }
-    }
 
     let info = backend.device_info();
     print_device_info(&info);
@@ -1765,8 +1758,9 @@ pub fn run_from_args() {
         {
             let render_config = build_vulkan_render_config(&args);
             let selection = VulkanDeviceSelection {
-                cuda_uuid: identity.uuid,
-                cuda_pci_bus: identity.pci_bus,
+                uuid: identity.uuid,
+                pci_bus: identity.pci_bus,
+                index: None,
             };
             let mut eng = VulkanGraphicsEngine::with_selection(selection, render_config);
             match eng.start_stress_thread() {
@@ -1917,8 +1911,22 @@ pub fn run_from_args() {
 pub fn run_from_args() {
     let args = Args::parse();
     if vulkan_stress_enabled(&args) || args.vulkan_only {
+        let selection = match build_vulkan_device_selection(&args) {
+            Ok(sel) => sel,
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("Invalid Vulkan GPU selection: {}", err), true)
+                );
+                std::process::exit(2);
+            }
+        };
         let render_config = build_vulkan_render_config(&args);
-        std::process::exit(run_vulkan_for_duration(args.duration, render_config));
+        std::process::exit(run_vulkan_for_duration(
+            args.duration,
+            selection,
+            render_config,
+        ));
     }
 
     eprintln!(
