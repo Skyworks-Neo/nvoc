@@ -729,6 +729,211 @@ def test_shift_capture_from_button_press_event() -> None:
     assert tab._reset_with_shift is False
 
 
+# ── Per-point write routing: public unless the public point reads Fixed ──
+
+
+class _RoutingNative(_ApplyNative):
+    """_ApplyNative + the private-table writers a routed apply may reach."""
+
+    def __init__(self):
+        super().__init__()
+        self.raise_on_mode0 = False
+
+    def set_vfp_point_private(self, gpu, bank, idx, value, freq_mode):
+        self.calls.append(("set_vfp_point_private", gpu, bank, idx, value, freq_mode))
+        if self.raise_on_mode0:
+            raise RuntimeError("Argument range")
+        return {"applied": True}
+
+    def set_vfp_range_per_point_private(self, gpu, bank, start, end, deltas):
+        self.calls.append((
+            "set_vfp_range_per_point_private",
+            gpu,
+            bank,
+            start,
+            end,
+            list(deltas),
+        ))
+        return {"applied": True}
+
+    def clk_vf_delta_for_target_mhz(self, def_mhz, target_mhz, class_name):
+        self.calls.append((
+            "clk_vf_delta_for_target_mhz",
+            def_mhz,
+            target_mhz,
+            class_name,
+        ))
+        return {"delta": int(target_mhz * 10)}
+
+    def reset_vfp_private(self, gpu, bank, only_mode):
+        self.calls.append(("reset_vfp_private", gpu, bank, only_mode))
+        return {"applied": True, "bank": bank, "points_reset": 160}
+
+
+def _make_routed_tab(public_writable, seg_start=10, write_mode=None) -> VFCurveTab:
+    """A tab whose active GPC curve carries an explicit per-point route."""
+    tab = _make_tab()
+    tab.app = _ApplyApp(tab.app.backend)
+    tab.app._native = _RoutingNative()
+    curve = _CurveData("gpc")
+    curve.source = "hybrid" if public_writable else "private"
+    curve.public_writable = list(public_writable) if public_writable else None
+    curve.has_fixed = any(not w for w in public_writable)
+    curve.write_mode = write_mode or ("public" if any(public_writable) else "private")
+    curve.bank = 0
+    curve.seg_start = seg_start
+    curve.seg_end = seg_start + len(tab._frequencies) - 1
+    curve.voltages = list(tab._voltages)
+    curve.frequencies = list(tab._frequencies)
+    curve.defaults = list(tab._defaults)
+    tab._curves = {"gpc": curve}
+    tab._reset_with_shift = False
+    tab._drag_orig_freqs = None
+    tab._refresh_curve = lambda: None  # the post-apply refresh is out of scope
+    return tab
+
+
+def _set_adj(tab: VFCurveTab, start: int, end: int, delta: int) -> None:
+    def var(value: int):
+        return type("V", (), {"get": lambda self: str(value)})()
+
+    tab.adj_start_var = var(start)
+    tab.adj_end_var = var(end)
+    tab.adj_delta_var = var(delta)
+
+
+def test_apply_all_prog_curve_never_writes_the_private_table() -> None:
+    """Regression (the reported bug): a hybrid GPC curve — private segment +
+    healthy public read — used to keep write_mode="private" from the segment
+    build, so every GPC apply went to the private table. On Ada its offsets
+    STACK on the public ones and never show in the public read, so the curve
+    moved twice as far with no feedback."""
+    tab = _make_routed_tab([True, True, True, True, True])
+    _set_adj(tab, 0, 2, 15)
+
+    tab._apply_adj()
+
+    native = tab.app._native
+    assert native.calls == [("set_vfp_range_delta", "GPU0", 0, 2, 15000)]
+    assert not [c for c in native.calls if "private" in str(c[0])]
+    assert tab.app.actions[0][1] == "Applied 1 VFP delta group(s); 0 failed."
+
+
+def test_apply_fixed_point_splits_the_write() -> None:
+    # A Fixed point inside the selection is written privately — alone, at its
+    # own private index. The public halves keep the grouped public path.
+    tab = _make_routed_tab([True, True, False, True, True])
+    _set_adj(tab, 0, 3, 15)
+
+    tab._apply_adj()
+
+    native = tab.app._native
+    # seg_start 10 offsets visible index 2 onto private point 12.
+    assert native.calls == [
+        ("set_vfp_range_delta", "GPU0", 0, 1, 15000),
+        ("set_vfp_point_private", "GPU0", 0, 12, 15000, True),
+        ("set_vfp_range_delta", "GPU0", 3, 3, 15000),
+    ]
+    _, msg = tab.app.actions[0]
+    assert "1/1 Fixed point(s) written on the private table (mode-0)" in msg
+    assert "Shift+Reset clears them" in msg
+
+
+def test_apply_private_fallback_stays_inside_its_run() -> None:
+    # mode-0 rejected for the Fixed point: only that run falls back to the
+    # raw-converted write; the public runs around it still go out.
+    tab = _make_routed_tab([True, False, True, True, True])
+    tab.app._native.raise_on_mode0 = True
+    _set_adj(tab, 0, 2, 15)
+
+    tab._apply_adj()
+
+    native = tab.app._native
+    assert native.calls == [
+        ("set_vfp_range_delta", "GPU0", 0, 0, 15000),
+        ("set_vfp_point_private", "GPU0", 0, 11, 15000, True),
+        # defaults[1] = 1500 MHz, +15 MHz target, gpc → "graphics" prior.
+        ("clk_vf_delta_for_target_mhz", 1500, 15.0, "graphics"),
+        ("set_vfp_range_per_point_private", "GPU0", 0, 11, 11, [150]),
+        ("set_vfp_range_delta", "GPU0", 2, 2, 15000),
+    ]
+    assert "raw-converted" in tab.app.actions[0][1]
+
+
+def test_apply_curve_without_a_per_point_read_stays_private() -> None:
+    # Legacy private curve (no public read at all): the whole selection takes
+    # the private path exactly as before.
+    tab = _make_routed_tab([])
+    _set_adj(tab, 0, 2, 15)
+
+    tab._apply_adj()
+
+    native = tab.app._native
+    assert native.calls == [
+        ("set_vfp_point_private", "GPU0", 0, 10, 15000, True),
+        ("set_vfp_point_private", "GPU0", 0, 11, 15000, True),
+        ("set_vfp_point_private", "GPU0", 0, 12, 15000, True),
+    ]
+    assert (
+        "Successfully applied private mode-0 offsets to GPC (3 pts)."
+        in tab.app.actions[0][1]
+    )
+
+
+def test_reset_splits_public_and_fixed_points() -> None:
+    # A hybrid GPC curve holds offsets in BOTH tables (they stack): a reset
+    # that clears only one leaves the curve displaced.
+    tab = _make_routed_tab([True, True, False, True, True], seg_start=20)
+
+    tab._reset_vfp()
+
+    native = tab.app._native
+    assert native.calls[:3] == [
+        ("set_vfp_range_delta", "GPU0", 0, 1, 0),
+        ("set_vfp_range_delta", "GPU0", 3, 4, 0),
+        ("set_vfp_point_private", "GPU0", 0, 22, 0, True),
+    ]
+    _, msg = tab.app.actions[0]
+    assert "Successfully reset GPC curve to default (0–4, public)." in msg
+    assert "1 Fixed point(s) cleared on the private table (mode-0, bank 0)" in msg
+    # The domain GLOBAL offset is cleared too (GPC → WRITE bit 0, slots 0+1).
+    assert ("set_clk_domain_offset", "GPU0", 0, 0, 0) in native.calls
+    assert ("set_clk_domain_offset", "GPU0", 0, 0, 1) in native.calls
+
+
+def test_shift_reset_reaches_the_bank_of_a_public_routed_curve() -> None:
+    # Recovery: private GPC offsets written by an OLDER build are invisible in
+    # the public read and keep stacking. After this fix the curve routes
+    # public, so the whole-bank clear must stay reachable — and it zeroes the
+    # curve's public runs as well.
+    tab = _make_routed_tab([True, True, False, True, True], seg_start=20)
+    tab._reset_with_shift = True
+
+    tab._reset_vfp()
+
+    native = tab.app._native
+    assert ("reset_vfp_private", "GPU0", 0, None) in native.calls
+    assert ("set_vfp_range_delta", "GPU0", 0, 1, 0) in native.calls
+    assert ("set_vfp_range_delta", "GPU0", 3, 4, 0) in native.calls
+    assert not any(c[0] == "set_vfp_point_private" for c in native.calls)
+    _, msg = tab.app.actions[0]
+    assert "Public points also zeroed (2/2 run(s))." in msg
+
+
+def test_shift_reset_is_not_offered_for_a_public_only_curve() -> None:
+    # A curve with no private segment has no bank to clear: Shift+Reset falls
+    # through to the ordinary routed reset.
+    tab = _make_routed_tab([True, True, True, True, True])
+    tab._curves["gpc"].source = "public"
+    tab._reset_with_shift = True
+
+    tab._reset_vfp()
+
+    native = tab.app._native
+    assert ("reset_vfp_private", "GPU0", 0, None) not in native.calls
+    assert ("set_vfp_range_delta", "GPU0", 0, 4, 0) in native.calls
+
+
 # ── Rail-aware live crosshair voltage (direct-read poll) ──
 
 

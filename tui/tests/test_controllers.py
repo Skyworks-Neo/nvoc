@@ -1274,6 +1274,118 @@ def test_vfcurve_apply_private_mode0_then_raw_fallback() -> None:
     )
 
 
+def test_vfcurve_apply_all_prog_never_touches_the_private_table() -> None:
+    """Regression: a hybrid GPC curve (private segment + healthy public read)
+    used to keep write_mode="private" from the segment build, so every apply
+    went to the private table — whose offsets STACK on the public ones on Ada
+    and are invisible in the public read, doubling the curve without warning.
+    """
+    app = FakeApp()
+    app.widgets = {
+        "#vf-range-start": SimpleNamespace(value="0"),
+        "#vf-range-end": SimpleNamespace(value="2"),
+        "#vf-delta": SimpleNamespace(value="25"),
+    }
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData(
+            "gpc",
+            source="hybrid",
+            write_mode="public",
+            public_writable=[True, True, True],
+            bank=0,
+            seg_start=0,
+            seg_end=2,
+            frequencies=[1800.0, 1900.0, 2000.0],
+            defaults=[1780.0, 1880.0, 1980.0],
+        )
+    }
+
+    assert controller.handle_button("vf-apply-adj") is True
+
+    assert app.actions == ["apply VFP range delta"]
+    assert app.native.calls == [("set_vfp_range_delta", "0x0000", 0, 2, 25000)]
+    assert not [call for call in app.native.calls if "private" in str(call[0])], (
+        "an all-prog GPC apply must never write the private table"
+    )
+    assert "Successfully applied 25 MHz VFP delta to points 0-2." in app.action_outputs
+
+
+def test_vfcurve_apply_fixed_point_splits_the_range() -> None:
+    # A Fixed point inside the selection is written privately — alone. The
+    # public halves around it keep the grouped public path.
+    app = FakeApp()
+    app.widgets = {
+        "#vf-range-start": SimpleNamespace(value="0"),
+        "#vf-range-end": SimpleNamespace(value="3"),
+        "#vf-delta": SimpleNamespace(value="50"),
+    }
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData(
+            "gpc",
+            source="hybrid",
+            write_mode="public",
+            public_writable=[True, True, False, True],
+            bank=0,
+            seg_start=10,
+            seg_end=13,
+            frequencies=[1800.0, 1900.0, 2000.0, 2100.0],
+            defaults=[1780.0, 1880.0, 1980.0, 2080.0],
+        )
+    }
+
+    assert controller.handle_button("vf-apply-adj") is True
+
+    assert app.actions == ["apply VFP point deltas"]
+    # seg_start offsets the visible index onto the private table (10 + 2).
+    assert app.native.calls == [
+        ("set_vfp_range_delta", "0x0000", 0, 1, 50000),
+        ("set_vfp_point_private", "0x0000", 0, 12, 50000, True),
+        ("set_vfp_range_delta", "0x0000", 3, 3, 50000),
+    ]
+    output = "\n".join(str(o) for o in app.action_outputs)
+    assert "1/1 Fixed point(s) written on the private table (mode-0)" in output
+    # mode-0 was accepted, so no raw-converted translation ran.
+    assert "clk_vf_delta_for_target_mhz" not in str(app.native.calls)
+
+
+def test_vfcurve_reset_splits_public_and_fixed_points() -> None:
+    # A hybrid GPC curve holds offsets in BOTH tables (they stack): a reset
+    # that clears only one leaves the curve displaced.
+    app = FakeApp()
+    controller = VFCurveController(app)
+    controller._curves = {
+        "gpc": CurveData(
+            "gpc",
+            source="hybrid",
+            write_mode="public",
+            public_writable=[True, False, True],
+            bank=0,
+            seg_start=20,
+            seg_end=22,
+            frequencies=[1800.0, 1900.0, 2000.0],
+            defaults=[1780.0, 1880.0, 1980.0],
+        )
+    }
+
+    assert controller.handle_button("vf-reset") is True
+
+    assert app.actions == ["reset VFP deltas"]
+    # The reset also clears the curve's ClkDomains GLOBAL offset (separate RM
+    # storage — see _domain_global_reset_note).
+    assert app.native.calls == [
+        ("set_vfp_range_delta", "0x0000", 0, 0, 0),
+        ("set_vfp_range_delta", "0x0000", 2, 2, 0),
+        ("set_vfp_point_private", "0x0000", 0, 21, 0, True),
+        ("set_clk_domain_offset", "0x0000", 0, 0, 0, None),
+        ("set_clk_domain_offset", "0x0000", 0, 0, 1, None),
+    ]
+    output = "\n".join(str(o) for o in app.action_outputs)
+    assert "Successfully reset GPC curve to default (0-2, public)." in output
+    assert "1 Fixed point(s) cleared on the private table (mode-0, bank 0)" in output
+
+
 class _FakePlt:
     def __init__(self) -> None:
         # scatter recording for live-point assertions (no-ops otherwise).
