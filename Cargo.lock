@@ -941,6 +941,7 @@ dependencies = [
  "rustc-hash",
  "spirv",
  "thiserror 2.0.21",
+ "unicode-ident",
 ]
 
 [[package]]
