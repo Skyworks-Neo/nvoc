@@ -1,5 +1,4 @@
 use crate::runner::style::stylize;
-#[cfg(all(feature = "vulkan", target_os = "windows"))]
 use crate::vulkan_render::run_render_loop;
 use anstream::eprintln;
 use ash::{Instance, vk};
@@ -121,7 +120,7 @@ impl VulkanGraphicsEngine {
 
         let handle = thread::spawn(move || {
             let result = if let Some(render_cfg) = image_config.render {
-                dispatch_heavy(is_running, selection, image_config, render_cfg)
+                run_render_loop(is_running, selection, render_cfg)
             } else {
                 run_vulkan_stress_loop(is_running, selection, image_config)
             };
@@ -154,33 +153,6 @@ impl VulkanGraphicsEngine {
         }
         Ok(())
     }
-}
-
-#[cfg(target_os = "windows")]
-fn dispatch_heavy(
-    is_running: Arc<AtomicBool>,
-    selection: Option<VulkanDeviceSelection>,
-    _image_config: VulkanImageConfig,
-    render_cfg: VulkanRenderConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
-    run_render_loop(is_running, selection, render_cfg)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn dispatch_heavy(
-    is_running: Arc<AtomicBool>,
-    selection: Option<VulkanDeviceSelection>,
-    image_config: VulkanImageConfig,
-    _render_cfg: VulkanRenderConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!(
-        "{}",
-        stylize(
-            "[VKGFX-H] heavy render mode requires Windows; running light path",
-            true
-        )
-    );
-    run_vulkan_stress_loop(is_running, selection, image_config)
 }
 
 fn run_vulkan_stress_loop(

@@ -37,7 +37,7 @@ pub use verify::{
 #[path = "vulkan_gfx_stressor.rs"]
 pub mod vulkan_gfx_stressor;
 
-#[cfg(all(feature = "vulkan", target_os = "windows"))]
+#[cfg(feature = "vulkan")]
 pub mod vulkan_render;
 
 // CUDA backend lives in the lib so integration tests (and the bundled
