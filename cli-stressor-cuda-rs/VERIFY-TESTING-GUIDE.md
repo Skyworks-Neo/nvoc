@@ -65,11 +65,8 @@ memset 校验的 pattern 轮换（TM5 式相位）：hash(seed) → 全 1 → �
 | `--vulkan-heavy` | `--vulkan` | 渲染负载成为**默认图形负载**（旧名保留为 alias） |
 | `--vulkan-heavy-width/height/msaa/iters/shells/rotate/particles` | `--vulkan-width/...`（去 heavy） | 默认 1280×720 / MSAA1 / 128 iters / 16 shells |
 | `--vulkan-heavy-offscreen` | 默认即无头；`--vulkan-window` 出窗 | 语义反转：offscreen 是默认，传 `--vulkan-window` 才创建窗口+swapchain present |
-| `--enable-vulkan-stress` | `--legacy-vulkan` | 旧图像式负载（alias 保留） |
-| `--vulkan-image-*` / `--vulkan-minor-mixture-rate` | `--legacy-vulkan-image-*` / `--legacy-vulkan-minor-mixture-rate` | 旧负载参数（TOML 旧键名同样保留 alias） |
-| `--vulkan-only` | 不变 | 跳过 CUDA 只跑图形负载；默认走新渲染负载，配 `--legacy-vulkan` 走旧负载 |
-
-两个负载同时给 flag 时新渲染负载优先。
+| `--enable-vulkan-stress` → `--legacy-vulkan` | （已移除） | 旧图像式负载及其全部参数（`--vulkan-image-*`、`--vulkan-minor-mixture-rate`、TOML 旧键名）于 #355 后移除；图形负载只剩渲染管线 |
+| `--vulkan-only` | 不变 | 跳过 CUDA 只跑图形负载（渲染管线） |
 
 ---
 

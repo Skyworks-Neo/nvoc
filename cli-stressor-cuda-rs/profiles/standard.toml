@@ -12,8 +12,7 @@ stream_mode = "dual"
 disable_fp8 = true
 vulkan_only = false
 # Primary graphics load: FurMark-style render stressor (headless offscreen by
-# default; add vulkan_window = true to present a window). The old image-based
-# load remains available via legacy_vulkan = true + legacy_vulkan_image_* keys.
+# default; add vulkan_window = true to present a window).
 vulkan = true
 
 [kernel_params.gemm]
