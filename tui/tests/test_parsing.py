@@ -13,12 +13,15 @@
 # limitations under the License.
 from pathlib import Path
 
+import pytest
+
 from nvoc_tui.models import CurveData
 from nvoc_tui.parsing import (
     build_vf_curves,
     curve_meta,
     compute_vf_plot_bounds,
     find_curve_point_for_voltage,
+    group_route_runs,
     load_vf_curve,
     load_vf_curve_deltas,
     normalize_domain_offsets,
@@ -28,6 +31,7 @@ from nvoc_tui.parsing import (
     parse_info_output,
     parse_json_output,
     parse_status_output,
+    route_for_index,
     synthesize_effective,
     vf_curve_points_to_series,
     extract_ext_curves,
@@ -348,6 +352,7 @@ def test_build_vf_curves_public_only() -> None:
     assert set(curves) == {"gpc"}
     assert curves["gpc"].source == "public"
     assert curves["gpc"].write_mode == "public"
+    assert curves["gpc"].public_writable == [True]
     assert curves["gpc"].has_fixed is False
     assert curves["gpc"].voltages == [800.0]
     assert curves["gpc"].frequencies == [1800.0]
@@ -368,6 +373,7 @@ def test_build_vf_curves_fixed_point_forces_private_write() -> None:
     curves = build_vf_curves(gpc_points, None, None)
 
     assert curves["gpc"].has_fixed is True
+    assert curves["gpc"].public_writable == [False]
     assert curves["gpc"].write_mode == "private"
 
 
@@ -381,6 +387,63 @@ def test_curve_meta_fallback_for_unknown_ids() -> None:
     assert meta["label"] == "UNK1"
     assert meta["domain_bit"] is None
     assert meta["class"] == "graphics"
+
+
+def test_route_for_index_prefers_the_per_point_class() -> None:
+    curve = CurveData(
+        curve_id="gpc",
+        write_mode="public",
+        public_writable=[True, False, True],
+        seg_start=10,
+    )
+
+    assert [route_for_index(curve, i) for i in range(3)] == [
+        "public",
+        "private",
+        "public",
+    ]
+
+
+def test_route_for_index_falls_back_to_write_mode() -> None:
+    # No per-point read (private-only segment, corrupt public read, or a
+    # caller that predates the field): the curve-level verdict stands.
+    private_only = CurveData(curve_id="xbar", write_mode="private", bank=1)
+    assert route_for_index(private_only, 0) == "private"
+    public_only = CurveData(curve_id="gpc", write_mode="public")
+    assert route_for_index(public_only, 7) == "public"
+    # An index off the end of a stale list must not silently read as public.
+    stale = CurveData(
+        curve_id="gpc", write_mode="private", public_writable=[True, True]
+    )
+    assert route_for_index(stale, 9) == "private"
+
+
+def test_group_route_runs_splits_and_merges() -> None:
+    # Routes flip on the middle index ⇒ three runs; the flat delta keeps the
+    # public halves from merging across the Fixed point.
+    runs = group_route_runs(
+        ["public", "private", "public"], [125000, 125000, 125000], start=5
+    )
+    assert runs == [
+        ("public", 5, 5, 125000),
+        ("private", 6, 6, 125000),
+        ("public", 7, 7, 125000),
+    ]
+    # Same route, different delta (the public path's own grouping).
+    assert group_route_runs(["public"] * 3, [100000, 0, 100000], start=0) == [
+        ("public", 0, 0, 100000),
+        ("public", 1, 1, 0),
+        ("public", 2, 2, 100000),
+    ]
+    # Contiguous same-route same-delta points collapse into one run.
+    assert group_route_runs(["private"] * 4, [125000] * 4, start=2) == [
+        ("private", 2, 5, 125000)
+    ]
+
+
+def test_group_route_runs_rejects_misaligned_input() -> None:
+    with pytest.raises(ValueError):
+        group_route_runs(["public", "private"], [0], start=0)
 
 
 def test_build_vf_curves_private_segments_and_skips() -> None:
@@ -552,6 +615,12 @@ def test_build_vf_curves_hybrid_public_currents_private_defaults() -> None:
     assert curves["gpc"].source == "hybrid"
     assert curves["gpc"].frequencies == [1050.0, 1150.0]
     assert curves["gpc"].defaults == [1005.0, 1105.0]
+    # Regression: the hybrid branch used to leave write_mode at the "private"
+    # stamped when the private segment was created, so every GPC apply on a
+    # card with a populated private segment went to the private table — which
+    # STACKS on the public one on Ada. All-prog ⇒ the aggregate is public.
+    assert curves["gpc"].write_mode == "public"
+    assert curves["gpc"].public_writable == [True, True]
     assert curves["gpc"].has_fixed is False
 
 
@@ -584,6 +653,11 @@ def test_build_vf_curves_hybrid_public_defaults_unpopulated_keeps_private() -> N
     assert curves["gpc"].source == "hybrid"
     assert curves["gpc"].frequencies == [1050.0, 1150.0]
     assert curves["gpc"].defaults == [1000.0, 1100.0]
+    # The private defaults stay the base, so a public write (delta = target −
+    # default) would bake the public/private bias in as an error: no per-point
+    # route is adopted and the curve stays private, exactly as before.
+    assert curves["gpc"].public_writable is None
+    assert curves["gpc"].write_mode == "private"
 
 
 def test_build_vf_curves_pascal_public_defaults_all_zero_falls_back_to_private() -> (
@@ -647,6 +721,8 @@ def test_build_vf_curves_shifted_public_grid_falls_back_to_private() -> None:
     assert curves["gpc"].frequencies == [1000.0, 1100.0]
     assert curves["gpc"].defaults == [1000.0, 1100.0]
     assert curves["gpc"].has_fixed is True
+    # A shifted grid invalidates the index alignment: no per-point route.
+    assert curves["gpc"].public_writable is None
 
 
 def test_build_vf_curves_broken_public_frequencies_rejected() -> None:
