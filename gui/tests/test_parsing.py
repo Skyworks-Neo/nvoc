@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from src.parsing import (
     analyze_vfp_offsets,
     get_vfp_offset_state_from_csv,
+    group_route_runs,
     load_vfp_deltas,
     native_query_payload,
     normalize_native_vfp_lock_bounds,
@@ -14,6 +17,7 @@ from src.parsing import (
     parse_status_current_values,
     parse_supported_pstates,
     parse_vfp_lock_bounds,
+    route_for_index,
     write_vfp_points,
 )
 
@@ -137,3 +141,59 @@ def test_vfp_csv_helpers(tmp_path: Path) -> None:
     assert get_vfp_offset_state_from_csv(str(csv_path)) == (True, 25)
     assert analyze_vfp_offsets([1800.0], [1775.0]) == (True, 25)
     assert load_vfp_deltas(str(csv_path), points) == [(3, 40000)]
+
+
+class _CurveStub:
+    """Minimal curve for the routing predicate (mirrors _CurveData's API)."""
+
+    def __init__(self, write_mode: str, public_writable=None) -> None:
+        self.write_mode = write_mode
+        self.public_writable = public_writable
+
+
+def test_route_for_index_prefers_the_per_point_class() -> None:
+    curve = _CurveStub("public", [True, False, True])
+
+    assert [route_for_index(curve, i) for i in range(3)] == [
+        "public",
+        "private",
+        "public",
+    ]
+
+
+def test_route_for_index_falls_back_to_write_mode() -> None:
+    # No per-point read (private-only segment, corrupt public read, or a test
+    # double that predates the field): the curve-level verdict stands.
+    assert route_for_index(_CurveStub("private"), 0) == "private"
+    assert route_for_index(_CurveStub("public"), 7) == "public"
+    # An index off the end of a stale list must not silently read as public.
+    assert route_for_index(_CurveStub("private", [True, True]), 9) == "private"
+    # And a curve object with no attribute at all (legacy double).
+    assert route_for_index(object(), 0) == "private"
+
+
+def test_group_route_runs_splits_and_merges() -> None:
+    # Routes flip on the middle index ⇒ three runs; an equal delta keeps the
+    # public halves from merging across the Fixed point.
+    assert group_route_runs(
+        ["public", "private", "public"], [125000, 125000, 125000], start=5
+    ) == [
+        ("public", 5, 5, 125000),
+        ("private", 6, 6, 125000),
+        ("public", 7, 7, 125000),
+    ]
+    # Same route, different delta (the public path's own grouping).
+    assert group_route_runs(["public"] * 3, [100000, 0, 100000], start=0) == [
+        ("public", 0, 0, 100000),
+        ("public", 1, 1, 0),
+        ("public", 2, 2, 100000),
+    ]
+    # Contiguous same-route same-delta points collapse into one run.
+    assert group_route_runs(["private"] * 4, [125000] * 4, start=2) == [
+        ("private", 2, 5, 125000)
+    ]
+
+
+def test_group_route_runs_rejects_misaligned_input() -> None:
+    with pytest.raises(ValueError):
+        group_route_runs(["public", "private"], [0], start=0)

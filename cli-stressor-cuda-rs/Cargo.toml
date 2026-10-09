@@ -35,7 +35,7 @@ cudarc = { version = "0.19.7", optional = true, features = ["f16","nvrtc"] }
 half = { version = "2.7.1", optional = true }
 ash = { version = "0.38", optional = true }
 naga = { version = "30", optional = true, features = ["glsl-in", "spv-out"] }
-windows-sys = { version = "0.59", optional = true, features = [
+windows-sys = { version = "0.61", optional = true, features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
