@@ -142,6 +142,19 @@ pub fn query_nvml_pcie_replay_counter(nvml: &Nvml, gpu_id: u32) -> Option<u32> {
     query_nvml_pcie_telemetry(nvml, gpu_id).replay_counter
 }
 
+/// Query VRAM usage in KiB via NVML `nvmlDeviceGetMemoryInfo`
+/// (returns `(used_kib, total_kib, free_kib)`).
+///
+/// Fills the dashboard VRAM row on GPUs where NVAPI `GetMemoryInfo` yields
+/// nothing — live on RTX PRO 6000 Blackwell Server / libnvidia-api 580.173.02
+/// (`get-status` "Memory: N/A") — see
+/// docs/reverse-engineering/nvapi/blackwell-pro6000-580-173-02-audit.md T2.
+pub fn query_nvml_memory_kib(nvml: &Nvml, gpu_id: u32) -> Option<(u64, u64, u64)> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let mem = device.memory_info().ok()?;
+    Some((mem.used / 1024, mem.total / 1024, mem.free / 1024))
+}
+
 /// Query the current and maximum PCIe link generation, as a thin wrapper
 /// over [`query_nvml_pcie_telemetry`]. Returns `(current, max)`.
 pub fn query_nvml_pcie_link_gen(nvml: &Nvml, gpu_id: u32) -> (Option<u32>, Option<u32>) {

@@ -8716,7 +8716,9 @@ fn parse_clk_domain_table(trimmed: &str) -> CliResult<u32> {
         "sys2" => Ok(17),
         "hub2" => Ok(18),
         "leg" => Ok(19),
-        "pwr" => Ok(20),
+        // 20 = Pwr (RTSS) = uProc (xOCD / 50-series third-party): on GB202 it
+        // reads core-adjacent 1990.8 MHz (was a fixed 540 MHz on Ada 4060L).
+        "pwr" | "uproc" => Ok(20),
         "msd" => Ok(21),
         "utils" => Ok(22),
         "coldnv" => Ok(23),
@@ -9083,6 +9085,7 @@ fn parse_private_domain_id(raw: &str) -> Result<u32, String> {
         ("hub2", 18),
         ("leg", 19),
         ("pwr", 20),
+        ("uproc", 20),
         ("msd", 21),
         ("utils", 22),
         ("coldnv", 23),

@@ -1071,6 +1071,43 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("pcie_lanes".into(), u64_value(lanes as u64));
     }
 
+    // Linux-only poll-time NVML backfill (RTX PRO 6000 Blackwell, 2026-10-11):
+    // the Windows ban above is an nvml.dll D3cold stale-handle failure mode;
+    // Linux server drivers have no such transition path (live-verified by the
+    // audit's NVML sweep, reverse/linux-580.173.02/probe/nvml-sweep2.txt).
+    // Fills the two dashboard rows the Linux shim leaves empty:
+    // - VRAM: NVAPI GetMemoryInfo unimplemented (get-status "Memory: N/A")
+    // - PCIe link gen + replay counter: GpuStatus carries lanes only
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(nvml) = target.nvml() {
+            if status.memory.is_none()
+                && let Some((used_kib, total_kib, free_kib)) =
+                    nvoc_core::nvml::query_nvml_memory_kib(nvml, target.id.0)
+            {
+                map.insert(
+                    "vram".into(),
+                    value_object([
+                        ("total_kib", u64_value(total_kib)),
+                        ("used_kib", u64_value(used_kib)),
+                        ("free_kib", u64_value(free_kib)),
+                    ]),
+                );
+            }
+            let (cur_gen, max_gen) = nvoc_core::nvml::query_nvml_pcie_link_gen(nvml, target.id.0);
+            if let Some(g) = cur_gen {
+                map.insert("pcie_link_gen".into(), u64_value(g as u64));
+            }
+            if let Some(g) = max_gen {
+                map.insert("pcie_max_link_gen".into(), u64_value(g as u64));
+            }
+            if let Some(replay) = nvoc_core::nvml::query_nvml_pcie_replay_counter(nvml, target.id.0)
+            {
+                map.insert("pcie_replay_counter".into(), u64_value(replay as u64));
+            }
+        }
+    }
+
     // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle
     // reasons). `limits_decoded` is the same mask rendered as reason names so
     // consumers (TUI/CLI) don't each have to re-decode the bits.
