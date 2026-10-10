@@ -21,7 +21,13 @@ from src.widgets.lightweight_controls import (
     LiteButton,
     LiteEntry,
 )
-from src.parsing import analyze_vfp_offsets, load_vfp_deltas, write_vfp_points
+from src.parsing import (
+    analyze_vfp_offsets,
+    group_route_runs,
+    load_vfp_deltas,
+    route_for_index as _route_for_index,
+    write_vfp_points,
+)
 
 # ── De-CTk'd panel palette (matches overclock.py / fan_control.py) ──
 _PANEL_BG = "#2b2b2b"  # CTk dark frame/scroll background
@@ -336,15 +342,110 @@ def _curve_colors_for(cid: str) -> dict:
 _SECONDARY_RAIL_CURVES = ("xbar", "mem", "gpc_oc")
 
 
+def _has_private_segment(curve) -> bool:
+    """True when a private V/F segment backs this curve's points.
+
+    ``source`` is "public" only for the legacy flat public reads and the
+    Pascal public-only GPC curve — those have no private table to clear. Every
+    other source ("private", "hybrid") does. Test doubles built without a
+    ``source`` default to private, matching their ``write_mode``.
+    """
+    return getattr(curve, "source", "private") != "public"
+
+
+def _reset_runs(curve, start: int, end: int) -> List[Tuple[str, int, int, int]]:
+    """``group_route_runs`` over a visible range with every delta zeroed."""
+    routes = [_route_for_index(curve, i) for i in range(start, end + 1)]
+    return group_route_runs(routes, [0] * len(routes), start)
+
+
+def _public_runs_for(curve) -> List[Tuple[int, int]]:
+    """Visible (frm, to) runs the PUBLIC table owns on this curve.
+
+    Empty when the curve carries no per-point read (private-only segment, a
+    legacy public curve): the whole-bank private clear cannot reach public
+    points, but such curves have none to reach.
+    """
+    writable = getattr(curve, "public_writable", None)
+    if not writable:
+        return []
+    runs = _reset_runs(curve, 0, len(writable) - 1)
+    return [(frm, to) for route, frm, to, _d in runs if route == "public"]
+
+
+def _clear_private_runs(
+    native,
+    gpu: str,
+    bank: int,
+    seg_start: int,
+    runs: List[Tuple[int, int]],
+    class_name: str,
+    defaults_mhz: List[float],
+) -> Tuple[str, int, bool]:
+    """Zero the private points behind VISIBLE-index runs ``[(frm, to), …]``.
+
+    mode-0 (kHz offset 0) per point; when the family rejects it, the
+    raw-converted mode-1 clear for that run (delta 0 → the raw f-offset that
+    zeroes the effect, ≈ D0 per the g(def) prior). Returns ``(mode, cleared,
+    supported)`` with mode "mode-0" / "raw" / "mode-0+raw"; ``supported`` is
+    False when the final write reports the family unsupported.
+    """
+    modes: List[str] = []
+    cleared = 0
+    for frm, to in runs:
+        base = seg_start + frm
+        span = to - frm + 1
+        try:
+            for offset in range(span):
+                r = native.set_vfp_point_private(gpu, bank, base + offset, 0, True)
+                if isinstance(r, dict) and r.get("supported") is False:
+                    raise RuntimeError("private VFP family unsupported")
+            cleared += span
+            if "mode-0" not in modes:
+                modes.append("mode-0")
+            continue
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "argument" not in msg and "unsupported" not in msg:
+                raise
+        raw_deltas = []
+        for local in range(frm, to + 1):
+            def_mhz = (
+                int(round(defaults_mhz[local])) if local < len(defaults_mhz) else 0
+            )
+            r = native.clk_vf_delta_for_target_mhz(def_mhz, 0.0, class_name)
+            d = r.get("delta") if isinstance(r, dict) else None
+            raw_deltas.append(int(d) if d is not None else 0)
+        r2 = native.set_vfp_range_per_point_private(
+            gpu, bank, base, base + len(raw_deltas) - 1, raw_deltas
+        )
+        if isinstance(r2, dict) and r2.get("supported") is False:
+            return ("+".join(modes) if modes else "raw", cleared, False)
+        cleared += len(raw_deltas)
+        if "raw" not in modes:
+            modes.append("raw")
+    return "+".join(modes), cleared, True
+
+
 class _CurveData:
     """One VF curve (GPC/XBAR/MSD) loaded from public or private NVAPI.
 
     ``voltages``/``frequencies``/``defaults`` are in display units (mV / MHz).
-    ``source`` is "public" (GPC via the open VFP interface) or "private"
-    (any segment from ``query_private_vftable``). ``seg_start``/``seg_end`` are
-    the inclusive private point indices within ``bank`` (used for private
-    apply/reset); for the public GPC curve they mirror the public index range.
-    ``write_mode`` decides how ``_apply_adj`` / reset reach the GPU.
+    ``source`` is "public" (GPC via the open VFP interface), "private"
+    (any segment from ``query_private_vftable``) or "hybrid" (a private
+    segment plus a healthy public read — modern consumer cards).
+    ``seg_start``/``seg_end`` are the inclusive private point indices within
+    ``bank`` (used for private apply/reset); for the public GPC curve they
+    mirror the public index range.
+
+    ``public_writable`` is the per-point editability read off the PUBLIC table
+    (index-aligned with ``voltages``): True = the open VFP interface moves that
+    point, False = it reads Fixed and only the private table can. ``None`` when
+    no trustworthy public read backs the curve. ``write_mode`` is its AGGREGATE
+    — "public" when at least one point is publicly writable, "private" when
+    none is (private-only segment, public family unsupported, corrupt read, or
+    every point Fixed). ``write_mode`` alone is the coarse gate (Shift+Reset,
+    console); the per-point route is ``route_for_index``.
     """
 
     __slots__ = (
@@ -358,6 +459,7 @@ class _CurveData:
         "seg_end",
         "write_mode",
         "has_fixed",
+        "public_writable",
         "effective",
         "current_voltages",
         "grid_shift_mv",
@@ -388,9 +490,37 @@ class _CurveData:
         # "private_raw_converted" (private mode-1 raw f-offset via g(def))
         self.write_mode = "public"
         self.has_fixed = False
+        # Per-point public editability (see the class docstring). None until a
+        # healthy public read is adopted; set through mark_public_read so the
+        # aggregate stays in step with the list.
+        self.public_writable: Optional[List[bool]] = None
         # Synthesized effective series (positive-slot1 display), see
         # _synthesize_effective. None when no offset data was read.
         self.effective: Optional[_EffectiveCurve] = None
+
+    def mark_public_read(self, public_writable: Optional[List[bool]]) -> None:
+        """Adopt the public table's per-point editability for this curve.
+
+        ``None`` (or an empty read — no points, nothing to decide) = no
+        trustworthy public read: the curve keeps its curve-level ``write_mode``
+        and every point routes the old way.
+        """
+        if not public_writable:
+            self.public_writable = None
+            return
+        self.public_writable = list(public_writable)
+        self.has_fixed = any(not w for w in self.public_writable)
+        self.write_mode = "public" if any(self.public_writable) else "private"
+
+    def public_read_note(self) -> str:
+        """Console suffix naming the per-point class mix, "" when unknown."""
+        writable = self.public_writable
+        if not writable:
+            return ""
+        fixed = sum(1 for w in writable if not w)
+        if not fixed:
+            return ""
+        return f", {fixed}/{len(writable)} Fixed"
 
 
 class VFCurveTab:
@@ -1416,10 +1546,15 @@ class VFCurveTab:
         ``write_mode`` is set so ``_apply_adj`` / reset know how to reach the
         GPU:
 
-        * GPC via the open VFP interface and no Fixed points  → ``"public"``
-        * any private segment, or GPC with Fixed points / public unsupported
-          → ``"private"`` (apply dynamically tries mode-0 then falls back to
-          raw-converted)
+        * a curve with a healthy, index-aligned public read whose default
+          plane is the base → ``"public"``, and ``public_writable`` names the
+          points the public table can actually move (per-point routing:
+          ``"prog"``/``"dyn"`` public, ``"fixed"`` private — for that point
+          only). This is the Ada/consumer shape, where the private table
+          STACKS on the public one.
+        * any private segment without that read, GPC with every point Fixed /
+          public unsupported, or a corrupt public read → ``"private"`` (apply
+          dynamically tries mode-0 then falls back to raw-converted).
 
         Point-id ranges (seg_start/seg_end, bank) come straight from the
         private segment structure — never hardcoded.
@@ -1453,13 +1588,13 @@ class VFCurveTab:
                 / 1000.0
                 for p in gpc_points
             ]
-            gpc_curve.has_fixed = any(
-                p.get("point_type") == "fixed" for p in gpc_points
-            )
             gpc_curve.seg_start = 0
             gpc_curve.seg_end = len(gpc_points) - 1 if gpc_points else 0
-            # Public family present: traditional OC unless a point is Fixed.
-            gpc_curve.write_mode = "private" if gpc_curve.has_fixed else "public"
+            # Public family present: traditional OC for every point it can
+            # move, the private table only for the Fixed ones.
+            gpc_curve.mark_public_read([
+                p.get("point_type") != "fixed" for p in gpc_points
+            ])
         elif public_unsupported:
             # Open family rejected — the private GPC segment (if any) is the
             # only GPC source. Located below from clk_data.
@@ -1595,13 +1730,28 @@ class VFCurveTab:
                         (p.get("default_frequency_khz") or 0) / 1000.0
                         for p in gpc_points
                     ]
-                cd.has_fixed = any(p.get("point_type") == "fixed" for p in gpc_points)
+                    # Public default plane adopted ⇒ the public write is the
+                    # honest base for every point it can move. Routing is
+                    # PER POINT: an Ada/consumer GPC reads all-prog and goes
+                    # entirely public (the private table STACKS on top there —
+                    # a private write would double the offset invisibly),
+                    # while a Fixed point among them still needs the private
+                    # table. Only adopt when the default plane is public: the
+                    # else-shape keeps PRIVATE defaults, and a public write
+                    # (delta = target − default) would bake the private/public
+                    # bias in as an error on every apply. Such a curve keeps
+                    # the private route it had.
+                    cd.mark_public_read([
+                        p.get("point_type") != "fixed" for p in gpc_points
+                    ])
                 cd.source = "hybrid"
             else:
                 # Absent or broken public read (the known breakage: old
                 # driver + positive slot-1 zeroes everything but the #0
                 # sentinel): private currents AND defaults are the honest
-                # view — the public default plane is corrupt there.
+                # view — the public default plane is corrupt there. No usable
+                # per-point classes either: has_fixed marks the whole curve
+                # as not publicly writable (public_writable stays None).
                 cd.has_fixed = True
             curves["gpc"] = cd
         elif gpc_curve is not None:
@@ -2206,7 +2356,7 @@ class VFCurveTab:
             self._kick_direct_read(curve_id)
         self.app.console.append(
             f"[GUI] Active curve: {curve_id.upper()} "
-            f"({curve.source}, {curve.write_mode}).\n"
+            f"({curve.source}, {curve.write_mode}{curve.public_read_note()}).\n"
         )
 
     def _toggle_curve_visible(self, curve_id: str):
@@ -2389,6 +2539,7 @@ class VFCurveTab:
         """
         gpc = _CurveData("gpc")
         gpc.source = "public"
+        public_writable: List[bool] = []
         for p in points:
             gpc.voltages.append(p["voltage_uv"] / 1000.0)
             freq_mhz = p["frequency_khz"] / 1000.0
@@ -2397,9 +2548,8 @@ class VFCurveTab:
             gpc.defaults.append(
                 freq_mhz if default_khz is None else default_khz / 1000.0
             )
-            if p.get("point_type") == "fixed":
-                gpc.has_fixed = True
-        gpc.write_mode = "private" if gpc.has_fixed else "public"
+            public_writable.append(p.get("point_type") != "fixed")
+        gpc.mark_public_read(public_writable)
         gpc.seg_end = len(points) - 1 if points else 0
         self._curves = {"gpc": gpc}
         self._curve_visible = {"gpc": True}
@@ -4767,13 +4917,21 @@ class VFCurveTab:
     def _apply_adj(self):
         """Apply the current frequency edits for the selected range to the GPU.
 
-        Routes by the active curve's ``write_mode``:
+        Routes PER POINT (``route_for_index``): a point the public table can
+        move goes public, a point whose public ``point_type`` reads Fixed goes
+        private — for that point alone. The selection is split into contiguous
+        runs, each written by its own path:
 
-        * ``public``  — open VFP ``set_vfp_range_delta`` (grouped, unchanged).
-        * ``private`` — try private mode-0 (kHz offset) per point; on
+        * ``public``  — open VFP ``set_vfp_range_delta``, grouped by equal
+          delta.
+        * ``private`` — private mode-0 (kHz offset) per point; on
           ArgumentRange (mode-0 rejected, e.g. CMP170HX / Fixed points) fall
           back to raw-converted mode-1 via ``clk_vf_delta_for_target`` +
           ``set_vfp_range_per_point_private``. Console-logs which path ran.
+
+        An all-prog consumer card (Ada) therefore never touches the private
+        table, whose offsets STACK on the public ones; only a genuinely Fixed
+        point does, and only itself.
         """
         gpu = self.app.selected_gpu_target()
         try:
@@ -4829,51 +4987,79 @@ class VFCurveTab:
         self._redraw()
 
         curve = self._curves.get(self._active_curve)
+        if curve is None:
+            self.app.console.append("[GUI] Active curve missing — cannot apply.\n")
+            return
         # Build per-point delta list (kHz, integer) vs default.
         deltas_khz = [
             round((self._frequencies[i] - self._defaults[i]) * 1000)
             for i in range(start, end + 1)
         ]
+        # Per-point route: run order follows the selection, so a Fixed point
+        # inside it splits the write instead of dragging the whole range to
+        # the private table (which stacks on Ada and doubles the offset).
+        routes = [_route_for_index(curve, i) for i in range(start, end + 1)]
+        runs = group_route_runs(routes, deltas_khz, start)
+        pub_runs = [run for run in runs if run[0] == "public"]
+        priv_runs = [run for run in runs if run[0] == "private"]
+        pub_pts = sum(to - frm + 1 for _r, frm, to, _d in pub_runs)
+        priv_pts = sum(to - frm + 1 for _r, frm, to, _d in priv_runs)
+        bank = curve.bank
+        class_name = _curve_meta_for(curve.curve_id)["class"]
+        defaults_mhz = list(self._defaults)
+        cid = curve.curve_id.upper()
 
-        # ── Public path: GPC via the open VFP interface (unchanged). ──
-        if curve is not None and curve.write_mode == "public":
-            groups = []  # type: List[Tuple[int,int,int]]
-            g_start = start
-            g_delta = deltas_khz[0]
-            for offset, dkz in enumerate(deltas_khz[1:], start=1):
-                if dkz != g_delta:
-                    groups.append((g_start, start + offset - 1, g_delta))
-                    g_start = start + offset
-                    g_delta = dkz
-            groups.append((g_start, end, g_delta))
-
+        if pub_runs and priv_runs:
             self.app.console.append(
-                f"[GUI] Applying {len(groups)} public VFP group(s) "
-                f"to {self._active_curve.upper()} {start}–{end}…\n"
+                f"[GUI] Applying VFP to {cid} {start}–{end}: {pub_pts} point(s) "
+                f"public in {len(pub_runs)} run(s) + {priv_pts} Fixed point(s) "
+                f"private (bank {bank}, mode-0 → raw-converted fallback).\n"
+            )
+        elif pub_runs:
+            self.app.console.append(
+                f"[GUI] Applying {len(pub_runs)} public VFP group(s) "
+                f"to {cid} {start}–{end}…\n"
+            )
+        else:
+            self.app.console.append(
+                f"[GUI] Applying private VFP to {cid} "
+                f"{start}–{end} (bank {bank}, mode-0 → raw-converted fallback)…\n"
             )
 
-            def apply_groups(
-                native,
-                gpu=gpu,
-                groups=groups,
-                pending_wall=pending_wall,
-                pending_ceiling=pending_ceiling,
-                pending_floor=pending_floor,
-                rail_bit=self._active_p0_rail_bit(),
-            ) -> str:
-                applied = 0
-                failed = 0
-                messages = []
-                messages.extend(
-                    self._apply_binds_inline(
-                        native, gpu, rail_bit, pending_ceiling, pending_floor
-                    )
+        def apply_routed(
+            native,
+            gpu=gpu,
+            bank=bank,
+            seg_start=curve.seg_start,
+            class_name=class_name,
+            defaults_mhz=defaults_mhz,
+            deltas_khz=deltas_khz,
+            start=start,
+            runs=runs,
+            cid=cid,
+            pub_pts=pub_pts,
+            priv_pts=priv_pts,
+            pending_wall=pending_wall,
+            pending_ceiling=pending_ceiling,
+            pending_floor=pending_floor,
+            rail_bit=self._active_p0_rail_bit(),
+        ) -> str:
+            messages = []
+            messages.extend(
+                self._apply_binds_inline(
+                    native, gpu, rail_bit, pending_ceiling, pending_floor
                 )
-                if pending_wall is not None:
-                    messages.append(
-                        self._apply_wall_inline(native, gpu, pending_wall, rail_bit)
-                    )
-                for frm, to, dkz in groups:
+            )
+            if pending_wall is not None:
+                messages.append(
+                    self._apply_wall_inline(native, gpu, pending_wall, rail_bit)
+                )
+            applied = 0
+            failed = 0
+            priv_ok = 0
+            priv_modes: List[str] = []
+            for route, frm, to, dkz in runs:
+                if route == "public":
                     try:
                         native.set_vfp_range_delta(gpu, frm, to, dkz)
                     except Exception as exc:
@@ -4883,32 +5069,80 @@ class VFCurveTab:
                         )
                         continue
                     applied += 1
+                    continue
+                # Private run: mode-0 (kHz offset) per point, then the
+                # raw-converted mode-1 fallback. Absolute private ids are
+                # visible index + seg_start (the slot-1 shift is 1:1).
+                base = seg_start + frm
+                span = to - frm + 1
+                run_ok = False
+                try:
+                    for offset in range(span):
+                        r = native.set_vfp_point_private(
+                            gpu, bank, base + offset, dkz, True
+                        )
+                        if isinstance(r, dict) and r.get("supported") is False:
+                            raise RuntimeError("private VFP family unsupported")
+                    run_ok = True
+                except Exception as exc:
+                    msg = str(exc).lower()
+                    if "argument" not in msg and "unsupported" not in msg:
+                        raise
+                    # mode-0 rejected at readback → raw-converted for THIS run.
+                if run_ok:
+                    priv_ok += span
+                    if "mode-0" not in priv_modes:
+                        priv_modes.append("mode-0")
+                    continue
+                # Raw-converted: translate each MHz offset to a raw mode-1
+                # f-offset control value via the universal g(def) prior.
+                raw_deltas = []
+                for local in range(frm, to + 1):
+                    def_mhz = int(round(defaults_mhz[local]))
+                    tgt_mhz = deltas_khz[local - start] / 1000.0
+                    r = native.clk_vf_delta_for_target_mhz(def_mhz, tgt_mhz, class_name)
+                    d = r.get("delta") if isinstance(r, dict) else None
+                    if d is None:
+                        messages.append(
+                            f"raw-converted translation failed at def={def_mhz} MHz "
+                            f"({cid}); apply aborted."
+                        )
+                        return "\n".join(messages)
+                    raw_deltas.append(int(d))
+                r2 = native.set_vfp_range_per_point_private(
+                    gpu, bank, base, base + len(raw_deltas) - 1, raw_deltas
+                )
+                if isinstance(r2, dict) and r2.get("supported") is False:
+                    messages.append(f"private VFP write unsupported on {cid}.")
+                    return "\n".join(messages)
+                priv_ok += len(raw_deltas)
+                if "raw-converted" not in priv_modes:
+                    priv_modes.append("raw-converted")
+            priv_mode = "+".join(priv_modes)
+            if pub_runs and priv_runs:
+                messages.append(
+                    f"Applied {applied} public VFP delta group(s) ({pub_pts} pts); "
+                    f"{failed} failed. {priv_ok}/{priv_pts} Fixed point(s) written "
+                    f"on the private table ({priv_mode}) — not visible in the "
+                    f"public read; Shift+Reset clears them."
+                )
+            elif pub_runs:
                 messages.append(
                     f"Applied {applied} VFP delta group(s); {failed} failed."
                 )
-                return "\n".join(messages)
-
-            self.app.run_native_action(
-                "apply VFP point deltas",
-                apply_groups,
-                on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
-            )
-            return
-
-        # ── Private path: mode-0 first, raw-converted fallback. ──
-        if curve is None:
-            self.app.console.append("[GUI] Active curve missing — cannot apply.\n")
-            return
-        bank = curve.bank
-        base = curve.seg_start + start  # absolute private index of `start`
-        class_name = _curve_meta_for(curve.curve_id)["class"]
-        defaults_mhz = list(self._defaults)
+            else:
+                messages.append(
+                    f"Successfully applied private {priv_mode} offsets to {cid} "
+                    f"({priv_ok} pts)."
+                )
+            return "\n".join(messages)
 
         # ── Server Pascal dual-plane: the logical GPC OC curve applies
         # through the paired write — both planes converge to the same value
         # in the invariant-safe order (raises: plane A first; lowers: plane
         # B first), so plane A >= plane B holds at every instant. ──
         if curve.curve_id == "gpc_oc" and getattr(self, "_dual_plane_gpc", False):
+            base = curve.seg_start + start  # absolute private index of `start`
             a_base = base - 80  # plane-A coordinate of the same points
             self.app.console.append(
                 f"[GUI] Applying PAIRED dual-plane VFP to GPC OC {start}–{end} "
@@ -4953,82 +5187,9 @@ class VFCurveTab:
             )
             return
 
-        self.app.console.append(
-            f"[GUI] Applying private VFP to {curve.curve_id.upper()} "
-            f"{start}–{end} (bank {bank}, mode-0 → raw-converted fallback)…\n"
-        )
-
-        def apply_private(
-            native,
-            gpu=gpu,
-            bank=bank,
-            base=base,
-            class_name=class_name,
-            defaults_mhz=defaults_mhz,
-            deltas_khz=deltas_khz,
-            start=start,
-            curve_id=curve.curve_id,
-            pending_wall=pending_wall,
-            pending_ceiling=pending_ceiling,
-            pending_floor=pending_floor,
-            rail_bit=self._active_p0_rail_bit(),
-        ) -> str:
-            bind_msgs = self._apply_binds_inline(
-                native, gpu, rail_bit, pending_ceiling, pending_floor
-            )
-            wall_msg = ""
-            if pending_wall is not None:
-                wall_msg = (
-                    self._apply_wall_inline(native, gpu, pending_wall, rail_bit) + "\n"
-                )
-            wall_msg = "\n".join(bind_msgs + ([wall_msg] if wall_msg else []))
-            # 1) Try mode-0 (kHz frequency offset) per point.
-            try:
-                for offset, dkz in enumerate(deltas_khz):
-                    r = native.set_vfp_point_private(
-                        gpu, bank, base + offset, dkz, True
-                    )
-                    if isinstance(r, dict) and r.get("supported") is False:
-                        raise RuntimeError("private VFP family unsupported")
-                return wall_msg + (
-                    f"Successfully applied private mode-0 offsets to {curve_id.upper()} "
-                    f"({len(deltas_khz)} pts)."
-                )
-            except Exception as exc:
-                msg = str(exc).lower()
-                if "argument" not in msg and "unsupported" not in msg:
-                    raise
-                # mode-0 rejected at readback → fall through to raw-converted.
-            # 2) Raw-converted: translate each MHz offset to a raw mode-1
-            # f-offset control value via the universal g(def) prior.
-            raw_deltas = []
-            for offset in range(len(deltas_khz)):
-                def_mhz = int(round(defaults_mhz[start + offset]))
-                tgt_mhz = deltas_khz[offset] / 1000.0
-                r = native.clk_vf_delta_for_target_mhz(def_mhz, tgt_mhz, class_name)
-                d = r.get("delta") if isinstance(r, dict) else None
-                if d is None:
-                    return wall_msg + (
-                        f"raw-converted translation failed at def={def_mhz} MHz "
-                        f"({curve_id.upper()}); apply aborted."
-                    )
-                raw_deltas.append(int(d))
-            last = base + len(deltas_khz) - 1
-            r2 = native.set_vfp_range_per_point_private(
-                gpu, bank, base, last, raw_deltas
-            )
-            if isinstance(r2, dict) and r2.get("supported") is False:
-                return (
-                    wall_msg + f"private VFP write unsupported on {curve_id.upper()}."
-                )
-            return wall_msg + (
-                f"Successfully applied private raw-converted offsets to {curve_id.upper()} "
-                f"({len(raw_deltas)} pts)."
-            )
-
         self.app.run_native_action(
             "apply VFP point deltas",
-            apply_private,
+            apply_routed,
             on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
         )
 
@@ -5238,15 +5399,21 @@ class VFCurveTab:
     def _reset_vfp(self):
         """Reset the active curve to default (selected-curve semantics).
 
-        Public GPC → open ``set_vfp_range_delta`` 0 over the segment. Private
-        (XBAR/MSD, or GPC when public is unsupported) → mode-0 clear per
-        point, raw-converted clear fallback (delta 0 → raw f-offset that
-        zeroes the effect). Never touches other curves' segments.
+        Reset (no Shift) routes PER POINT: publicly writable runs go to the
+        open ``set_vfp_range_delta`` 0, Fixed runs (and every point of a
+        private-only curve) to the per-point mode-0 clear with the
+        raw-converted fallback (delta 0 → the raw f-offset that zeroes the
+        effect). A hybrid GPC curve therefore clears BOTH tables — the
+        private offsets stack on the public ones, so clearing one alone leaves
+        the curve displaced. Never touches other curves' segments.
 
-        Shift+Reset on a private curve → ``reset_vfp_private`` (the
-        reset-private-vftable-offset path): ONE RMW write clearing every
-        point on the bank — the per-point loop is O(points) private
-        SetControl escapes, painfully slow on wide Pascal banks.
+        Shift+Reset on a curve with a private segment (private or hybrid) →
+        ``reset_vfp_private`` (the reset-private-vftable-offset path): ONE RMW
+        write clearing every point on the bank — the per-point loop is
+        O(points) private SetControl escapes, painfully slow on wide Pascal
+        banks. This is also the recovery path for private offsets already
+        written by an older build, so a curve whose points now route public
+        keeps it (a hybrid curve ALSO zeroes its public runs here).
 
         Every reset ALSO clears the matching ClkDomains GLOBAL offset(s)
         (see _CURVE_WRITE_BIT): curve-point offsets and domain global
@@ -5297,10 +5464,16 @@ class VFCurveTab:
             )
             return
 
-        if shift_full and curve.write_mode != "public":
+        if shift_full and _has_private_segment(curve):
             bank = curve.bank
+            # Points the PUBLIC table owns on this curve (empty for a
+            # private-only segment): the bank clear cannot reach them, and on
+            # a hybrid curve they hold a real offset of their own.
+            pub_runs = _public_runs_for(curve)
 
-            def reset_full(native, gpu=gpu, bank=bank, cid=cid) -> str:
+            def reset_full(
+                native, gpu=gpu, bank=bank, cid=cid, pub_runs=pub_runs
+            ) -> str:
                 r = native.reset_vfp_private(gpu, bank, None)
                 if isinstance(r, dict) and r.get("supported") is False:
                     base = f"private whole-bank reset unsupported on {cid}."
@@ -5310,6 +5483,19 @@ class VFCurveTab:
                     base = (
                         f"Successfully reset ALL {cid} curve points "
                         f"(private whole-bank{count_txt})."
+                    )
+                if pub_runs:
+                    applied = 0
+                    for frm, to in pub_runs:
+                        try:
+                            native.set_vfp_range_delta(gpu, frm, to, 0)
+                        except Exception as exc:
+                            base += f" Warning: failed public reset {frm}-{to}: {exc}."
+                            continue
+                        applied += 1
+                    base += (
+                        f" Public points also zeroed ({applied}/{len(pub_runs)} "
+                        f"run(s))."
                     )
                 # Global counterpart: zero EVERY domain's global offset
                 # (the reset-private-freq-domain-global-offset footprint).
@@ -5326,13 +5512,58 @@ class VFCurveTab:
             return
 
         if curve.write_mode == "public":
-            s, e = curve.seg_start, curve.seg_end
+            # A per-point read means the curve's points may straddle both
+            # tables, and a hybrid curve's seg_start/seg_end are PRIVATE point
+            # ids — feeding those to the public writer would hit the wrong
+            # points, so walk the VISIBLE range. Without the read (legacy
+            # public curve) the segment bounds ARE the public range.
+            if getattr(curve, "public_writable", None):
+                s, e = 0, len(curve.public_writable) - 1
+                runs = _reset_runs(curve, s, e)
+            else:
+                s, e = curve.seg_start, curve.seg_end
+                runs = [("public", s, e, 0)]
+            pub_runs = [(frm, to) for route, frm, to, _d in runs if route == "public"]
+            priv_runs = [(frm, to) for route, frm, to, _d in runs if route == "private"]
+            class_name = _curve_meta_for(curve.curve_id)["class"]
+            defaults_mhz = list(curve.defaults)
+            seg_start, bank = curve.seg_start, curve.bank
 
             def reset_public(
-                native, gpu=gpu, s=s, e=e, cid=cid, curve_id=curve.curve_id
+                native,
+                gpu=gpu,
+                s=s,
+                e=e,
+                cid=cid,
+                curve_id=curve.curve_id,
+                pub_runs=pub_runs,
+                priv_runs=priv_runs,
+                class_name=class_name,
+                defaults_mhz=defaults_mhz,
+                seg_start=seg_start,
+                bank=bank,
             ) -> str:
-                native.set_vfp_range_delta(gpu, s, e, 0)
+                for frm, to in pub_runs:
+                    native.set_vfp_range_delta(gpu, frm, to, 0)
                 base = f"Successfully reset {cid} curve to default ({s}–{e}, public)."
+                if priv_runs:
+                    mode, cleared, supported = _clear_private_runs(
+                        native,
+                        gpu,
+                        bank,
+                        seg_start,
+                        priv_runs,
+                        class_name,
+                        defaults_mhz,
+                    )
+                    if not supported:
+                        base += " Private Fixed point clear unsupported."
+                    else:
+                        base += (
+                            f" {cleared} Fixed point(s) cleared on the private "
+                            f"table ({mode}, bank {bank}) — they do not show in "
+                            f"the public read."
+                        )
                 return f"{base}{self._domain_global_reset_note(native, gpu, curve_id)}"
 
             self.app.run_native_action(
@@ -5358,34 +5589,18 @@ class VFCurveTab:
             defaults_mhz=defaults_mhz,
             cid=cid,
         ) -> str:
-            # 1) mode-0 clear (value 0) per point in the segment.
-            try:
-                for idx in range(base, end_idx + 1):
-                    r = native.set_vfp_point_private(gpu, bank, idx, 0, True)
-                    if isinstance(r, dict) and r.get("supported") is False:
-                        raise RuntimeError("private VFP family unsupported")
-                return f"Successfully reset {cid} (private mode-0, {base}–{end_idx})."
-            except Exception as exc:
-                msg = str(exc).lower()
-                if "argument" not in msg and "unsupported" not in msg:
-                    raise
-            # 2) raw-converted clear: delta 0 → the raw f-offset that zeroes
-            # the effect (≈ D0 per the prior).
-            raw_deltas = []
-            for idx in range(base, end_idx + 1):
-                local = idx - base
-                def_mhz = (
-                    int(round(defaults_mhz[local])) if local < len(defaults_mhz) else 0
-                )
-                r = native.clk_vf_delta_for_target_mhz(def_mhz, 0.0, class_name)
-                d = r.get("delta") if isinstance(r, dict) else None
-                raw_deltas.append(int(d) if d is not None else 0)
-            r2 = native.set_vfp_range_per_point_private(
-                gpu, bank, base, end_idx, raw_deltas
+            mode, _cleared, supported = _clear_private_runs(
+                native,
+                gpu,
+                bank,
+                base,
+                [(0, end_idx - base)],
+                class_name,
+                defaults_mhz,
             )
-            if isinstance(r2, dict) and r2.get("supported") is False:
+            if not supported:
                 return f"private reset unsupported on {cid}."
-            return f"Successfully reset {cid} (private raw, {base}–{end_idx})."
+            return f"Successfully reset {cid} (private {mode}, {base}–{end_idx})."
 
         def reset_private_and_global(native, gpu=gpu, curve_id=curve.curve_id) -> str:
             base = reset_private(native)

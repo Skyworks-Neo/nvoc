@@ -211,7 +211,7 @@ generations are mutually exclusive, enforced at compile time):
 |---|---|---|
 | `cuda12` (default) | CUDA GEMM / memcpy / reduction / atomic kernels via the CUDA 12.9 API (NVRTC up to `compute_90`) | `cudarc`, `half`; NVIDIA driver ≥ 536 + CUDA runtime libraries at runtime |
 | `cuda11` | Same kernels via the CUDA 11.4 API surface for R470-era drivers (no `cuDeviceGetUuid_v2`, NVRTC capped at `sm_86`) | `cudarc`, `half`; R470+ driver + CUDA runtime libraries at runtime |
-| `vulkan` | Vulkan graphics stress (3D render workloads) | `ash`; needs Vulkan driver at runtime |
+| `vulkan` | Vulkan graphics stress (FurMark-style 3D render workloads; offscreen on every OS, windowed presentation on Windows) | `ash`, `naga` (GLSL→SPIR-V at runtime); needs a Vulkan driver at runtime |
 
 **Build with CUDA (modern drivers — the default):**
 
@@ -236,6 +236,17 @@ cargo build --release -p cli-stressor-cuda-rs --features vulkan
 ```bash
 cargo run --release -p cli-stressor-cuda-rs -- --duration 30 --precisions fp16,tf32
 ```
+
+**Vulkan render stress (pure-Vulkan mode, no CUDA driver needed):**
+
+```bash
+cargo run --release -p cli-stressor-cuda-rs --features vulkan -- --vulkan-only --gpu-index 0 --duration 30
+```
+
+> `--vulkan-only` renders headless offscreen and selects the GPU directly via
+> `--gpu-index` (Vulkan-side PCI-sorted index) / `--pci-bus` / `--gpu-uuid`,
+> without touching CUDA. Add `--vulkan` instead to stack the render load on
+> top of the CUDA stress; the sidecar then follows the CUDA device by UUID.
 
 **Run with a config file:**
 
@@ -577,7 +588,7 @@ autoscan 稳定性验证时需要。**构建不需要 CUDA Toolkit**——`cudar
 |---|---|---|
 | `cuda12`（默认） | 经 CUDA 12.9 API 的 CUDA GEMM / memcpy / reduction / atomic 内核（NVRTC 上限 `compute_90`） | `cudarc`、`half`；运行时需要 NVIDIA 驱动 ≥ 536 + CUDA 运行时库 |
 | `cuda11` | 面向 R470 世代驱动的 CUDA 11.4 API 面（无 `cuDeviceGetUuid_v2`，NVRTC 上限 `sm_86`） | `cudarc`、`half`；R470+ 驱动 + CUDA 运行时库 |
-| `vulkan` | Vulkan 图形压力测试（3D 渲染负载） | `ash`；运行时需要 Vulkan 驱动 |
+| `vulkan` | Vulkan 图形压力测试（FurMark 式 3D 渲染负载；全平台 offscreen，仅 Windows 出窗） | `ash`、`naga`（运行时 GLSL→SPIR-V）；运行时需要 Vulkan 驱动 |
 
 **CUDA 构建（现代驱动，即默认）：**
 
@@ -602,6 +613,16 @@ cargo build --release -p cli-stressor-cuda-rs --features vulkan
 ```bash
 cargo run --release -p cli-stressor-cuda-rs -- --duration 30 --precisions fp16,tf32
 ```
+
+**Vulkan 渲染压测（纯 Vulkan 模式，无需 CUDA 驱动）：**
+
+```bash
+cargo run --release -p cli-stressor-cuda-rs --features vulkan -- --vulkan-only --gpu-index 0 --duration 30
+```
+
+> `--vulkan-only` 无头 offscreen 渲染，GPU 直接通过 `--gpu-index`（Vulkan 侧 PCI
+> 排序索引）/ `--pci-bus` / `--gpu-uuid` 选择，完全不依赖 CUDA。改传 `--vulkan`
+> 则在 CUDA 压测之上叠加渲染负载，此时 sidecar 按 CUDA UUID 对齐同一块卡。
 
 **使用配置文件运行：**
 

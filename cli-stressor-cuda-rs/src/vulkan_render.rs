@@ -23,7 +23,7 @@
 //! external toolchain needed).
 
 use crate::runner::style::stylize;
-use crate::vulkan_gfx_stressor::{VulkanDeviceSelection, select_gpu_by_cuda_identity};
+use crate::vulkan_gfx_stressor::VulkanDeviceSelection;
 use ash::Instance;
 use ash::khr::surface::Instance as SurfaceInstance;
 use ash::khr::swapchain::Device as SwapchainDevice;
@@ -360,6 +360,12 @@ impl Win32Window {
         self.hwnd
     }
 
+    fn hinstance(&self) -> isize {
+        unsafe {
+            windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as isize
+        }
+    }
+
     fn pump_messages(&self) -> Result<(), Box<dyn std::error::Error>> {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             DispatchMessageW, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
@@ -387,6 +393,30 @@ impl Drop for Win32Window {
                 DestroyWindow(self.hwnd as *mut core::ffi::c_void);
             }
         }
+    }
+}
+
+/// No window system binding outside Windows: `run_render_loop` always
+/// renders offscreen there, so this stand-in is never constructed.
+#[cfg(not(target_os = "windows"))]
+struct Win32Window;
+
+#[cfg(not(target_os = "windows"))]
+impl Win32Window {
+    fn new(_width: u32, _height: u32) -> Result<Self, Box<dyn std::error::Error>> {
+        Err("windowed Vulkan render requires Windows".into())
+    }
+
+    fn hwnd(&self) -> isize {
+        0
+    }
+
+    fn hinstance(&self) -> isize {
+        0
+    }
+
+    fn pump_messages(&self) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
     }
 }
 
@@ -485,22 +515,29 @@ pub fn run_render_loop(
     unsafe {
         // ---- target selection: windowed swapchain vs headless offscreen ----
         let use_swapchain = cfg!(target_os = "windows") && !cfg.offscreen;
+        if !cfg.offscreen && !use_swapchain {
+            eprintln!(
+                "{}",
+                stylize(
+                    "[VKGFX-H] --vulkan-window requires Windows; rendering offscreen",
+                    true
+                )
+            );
+        }
 
         let mut window_hwnd: isize = 0;
         let mut window_hinstance: isize = 0;
         let window = if use_swapchain {
             let w = Win32Window::new(cfg.width, cfg.height)?;
             window_hwnd = w.hwnd();
-            window_hinstance =
-                windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null())
-                    as isize;
+            window_hinstance = w.hinstance();
             Some(w)
         } else {
             None
         };
 
         let entry = ash::Entry::load()?;
-        let mut instance_exts: Vec<*const i8> = Vec::new();
+        let mut instance_exts: Vec<*const std::ffi::c_char> = Vec::new();
         if use_swapchain {
             instance_exts.push(ash::khr::surface::NAME.as_ptr());
             instance_exts.push(ash::khr::win32_surface::NAME.as_ptr());
@@ -516,7 +553,8 @@ pub fn run_render_loop(
         )?;
 
         let pdevice = if let Some(selection) = selection {
-            select_gpu_by_cuda_identity(&instance, selection.cuda_uuid, selection.cuda_pci_bus)
+            selection
+                .resolve(&instance)
                 .map_err(|err| format!("[VKGFX-H] Vulkan GPU selection failed: {err}"))?
         } else {
             let pdevices = instance.enumerate_physical_devices()?;
@@ -555,7 +593,7 @@ pub fn run_render_loop(
             })
             .ok_or("no graphics queue family")?;
 
-        let mut device_exts: Vec<*const i8> = Vec::new();
+        let mut device_exts: Vec<*const std::ffi::c_char> = Vec::new();
         if use_swapchain {
             device_exts.push(ash::khr::swapchain::NAME.as_ptr());
         }
@@ -1617,6 +1655,7 @@ pub fn run_render_loop(
         }
         device.destroy_device(None);
         instance.destroy_instance(None);
+        #[cfg(target_os = "windows")]
         drop(window);
 
         Ok(())

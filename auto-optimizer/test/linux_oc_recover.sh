@@ -2,7 +2,7 @@
 # NVOC GPU recovery for Linux — merge of the original unbind+FLR path and the
 # nvidia-smi -r / module-reload escalation ladder, hang-proofed.
 #
-# Expect: this_script [--kill-holders] {nv_pci_like_0000:01:00.0}
+# Expect: this_script [--kill-holders] [--force] {nv_pci_like_0000:01:00.0}
 #
 # Why not a bare `echo $pci > .../unbind`: the kernel blocks that write until
 # EVERY /dev/nvidia* file descriptor is closed. Sensor pollers holding NVML
@@ -15,6 +15,14 @@
 #     --kill-holders it SIGKILLs them first (kills ALL GPU clients machine-wide);
 #   - stops nvidia-persistenced — the by-design permanent fd holder — before
 #     tearing anything down, and restarts it at the end.
+#
+# "Healthy" means more than nvidia-smi answering: a wedged board can still
+# respond to NVML while its sensor fields read ERR! (nvidia-smi -q carries
+# more of the same). The health probe therefore queries the fields that go bad
+# first and treats any error marker as unhealthy — N/A is NOT an error here:
+# some server/embedded cards (e.g. PG199 automotive A100) legitimately report
+# N/A on sensor fields they lack. Pass --force to skip the probe entirely and
+# run the ladder regardless of what nvidia-smi reports.
 #
 # Ladder (first tier whose post-check passes wins):
 #   1. nvidia-smi -r        in-driver reset, per-GPU, cheapest
@@ -34,18 +42,20 @@ TIMEOUT_MOD="${TIMEOUT_MOD:-30}"
 TIMEOUT_PROBE="${TIMEOUT_PROBE:-10}"
 
 KILL_HOLDERS=0
+FORCE=0
 gpu_pci=""
 DRV_DIR=/sys/bus/pci/drivers/nvidia
 PERSISTED_STOPPED=0
 IDX=""
 
 usage() {
-  echo "Usage: sudo $0 [--kill-holders] NV_GPU_PCI_ID (like 0000:01:00.0)" 1>&2
+  echo "Usage: sudo $0 [--kill-holders] [--force] NV_GPU_PCI_ID (like 0000:01:00.0)" 1>&2
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -k|--kill-holders) KILL_HOLDERS=1 ;;
+    -f|--force) FORCE=1 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" 1>&2; usage; exit 127 ;;
     *) gpu_pci="$1" ;;
@@ -116,14 +126,34 @@ pci_to_index() { # best effort; empty output when NVML cannot see the GPU
 }
 
 gpu_healthy() { # $1 = optional NVML index; probes are deadline-guarded too
-  local idx="${1:-}"
+  local idx="${1:-}" out rc
+  # Exit-0 on --query-gpu=name alone is NOT health: a wedged board keeps
+  # answering NVML while its sensor fields read ERR! (nvidia-smi -q shows
+  # more of the same). Probe the fields that go bad first and treat any error
+  # marker as unhealthy so the ladder keeps escalating instead of stopping at
+  # a card that merely "responds". N/A is deliberately accepted: some
+  # server/embedded boards (e.g. PG199 automotive A100) report it normally.
   if [[ -n "$idx" ]]; then
-    run_deadline "$TIMEOUT_PROBE" "" -- \
-      nvidia-smi -i "$idx" --query-gpu=name --format=csv,noheader >/dev/null 2>&1
+    out="$(run_deadline "$TIMEOUT_PROBE" "" -- \
+      nvidia-smi -i "$idx" \
+      --query-gpu=name,temperature.gpu,utilization.gpu,memory.used \
+      --format=csv,noheader 2>/dev/null)"
   else
-    run_deadline "$TIMEOUT_PROBE" "" -- \
-      nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1
+    out="$(run_deadline "$TIMEOUT_PROBE" "" -- \
+      nvidia-smi \
+      --query-gpu=name,temperature.gpu,utilization.gpu,memory.used \
+      --format=csv,noheader 2>/dev/null)"
   fi
+  rc=$?
+  if (( rc != 0 )); then return 1; fi
+  # The four fields above are numeric on a working board (or legitimately
+  # N/A on boards lacking the sensor), so matching these markers never hits
+  # a real error.
+  if [[ ! "$out" =~ [^[:space:]] ]] || [[ "${out,,}" == *err* ]] \
+    || [[ "$out" == *"Unknown Error"* ]]; then
+    return 1
+  fi
+  return 0
 }
 
 report_holders() {
@@ -282,8 +312,17 @@ finish_fail() {
 echo "=== NVOC GPU recovery: $gpu_pci ==="
 
 # Read-only probe first: do not touch a system whose GPU is already fine.
+# --force skips this gate entirely and runs the ladder no matter what
+# nvidia-smi reports.
 IDX="$(pci_to_index || true)"
-if [[ -n "$IDX" ]] && gpu_healthy "$IDX"; then
+if (( FORCE )); then
+  echo "--force: ignoring health probe, running the recovery ladder regardless"
+  if [[ -n "$IDX" ]]; then
+    echo "probe said: index $IDX, fields: $(nvidia-smi -i "$IDX" \
+      --query-gpu=name,temperature.gpu,utilization.gpu,memory.used \
+      --format=csv,noheader 2>/dev/null || echo '<probe failed>')"
+  fi
+elif [[ -n "$IDX" ]] && gpu_healthy "$IDX"; then
   echo "GPU already responds to NVML (index $IDX) — nothing to recover."
   nvidia-smi -i "$IDX" || true
   exit 0

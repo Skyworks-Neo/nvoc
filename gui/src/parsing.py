@@ -447,6 +447,54 @@ def get_vfp_offset_state_from_csv(
     return analyze_vfp_offsets(frequencies, defaults)
 
 
+def route_for_index(curve: Any, index: int) -> str:
+    """Which V/F table ``index`` of ``curve`` (a visible/plotted index) goes to.
+
+    ``curve.public_writable`` is the per-point editability read off the public
+    table (``query_public_vftable``'s ``point_type``): True = the open VFP
+    interface can move the point, False = it reads Fixed there and only the
+    private table can. ``None``/absent (private-only segment, corrupt public
+    read, and the test doubles that predate the field) means no per-point
+    information — the curve-level verdict stands, exactly as before.
+    """
+    writable = getattr(curve, "public_writable", None)
+    if writable is None or not (0 <= index < len(writable)):
+        return (
+            "public"
+            if getattr(curve, "write_mode", "private") == "public"
+            else "private"
+        )
+    return "public" if writable[index] else "private"
+
+
+def group_route_runs(
+    routes: list[str], deltas_khz: list[int], start: int
+) -> list[tuple[str, int, int, int]]:
+    """Split a selection into contiguous same-route, same-delta write runs.
+
+    ``routes`` and ``deltas_khz`` are index-aligned with the selection, whose
+    first point is the visible index ``start``. Returns ``[(route, frm, to,
+    dkhz), …]`` with inclusive VISIBLE indices — callers add ``seg_start`` to
+    reach the private table. A run breaks when the route flips (a Fixed point
+    inside the selection) or the delta changes (the public path's existing
+    grouping); a private run must stay contiguous because
+    ``set_vfp_range_per_point_private`` writes one span at a time.
+    """
+    if len(routes) != len(deltas_khz):
+        raise ValueError(
+            f"routes/deltas length mismatch: {len(routes)} != {len(deltas_khz)}"
+        )
+    runs: list[tuple[str, int, int, int]] = []
+    for offset, route in enumerate(routes):
+        dkhz = deltas_khz[offset]
+        if runs and runs[-1][0] == route and runs[-1][3] == dkhz:
+            prev_route, frm, _to, _dkhz = runs[-1]
+            runs[-1] = (prev_route, frm, start + offset, dkhz)
+        else:
+            runs.append((route, start + offset, start + offset, dkhz))
+    return runs
+
+
 def write_vfp_points(path: str, points: list[dict[str, Any]]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)

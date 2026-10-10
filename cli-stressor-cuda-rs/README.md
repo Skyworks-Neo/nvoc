@@ -49,7 +49,8 @@
 - 支持的精度模式：**FP64、FP32、TF32、FP16、BF16、INT8、INT16、INT32**；FP8 尚未实现
 - 使用 CPU FP64 参考结果进行周期性校验（INT 精度跳过校验，详见[注意事项](#注意事项)）
 - 多流提交模式：`single` / `dual` / `triple`
-- Vulkan 图形压力侧车：渲染负载 `--vulkan`（默认无头 offscreen，`--vulkan-window` 出窗）或旧版图像负载 `--legacy-vulkan`；需 `--features vulkan`
+- Vulkan 图形压力侧车：渲染负载 `--vulkan`（默认无头 offscreen，`--vulkan-window` 出窗，仅 Windows）；需 `--features vulkan`
+- `--vulkan-only` 是纯 Vulkan 路径：在 CUDA 初始化之前处理，GPU 直接按 `--gpu-uuid` / `--pci-bus` / `--gpu-index`（Vulkan 侧 PCI 排序索引，选中前打印完整映射表）选择，无需可用 CUDA 驱动。注意 Vulkan 枚举包含非 NVIDIA 设备，精确选择优先用 UUID 或 PCI 地址
 - PCI 总线 / UUID / 排序索引 GPU 选择；`--list-gpus` 枚举设备
 
 ### 支持精度一览
@@ -145,7 +146,6 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
   - 映射：`{ gemm = 0.4, intalu = 0.2, memcpy = 0.2, reduction = 0.2 }`
 - `kernel_params.<kernel>` 支持按 kernel 覆盖参数，包括 `precisions`
 - `validate_interval = 0` 可关闭周期性验证
-- `vulkan_minor_mixture_rate` 用于 Vulkan 图形压力：启用 Vulkan 时会按该比例混入小尺寸 3D 图像（宽高随机取 127/256/511/512/1023，depth 保持不变）
 
 示例（`stressor.toml`）：
 
@@ -246,7 +246,8 @@ burst_iters = 64
 - Precision modes: **FP64, FP32, TF32, FP16, BF16, INT8, INT16, INT32**; FP8 is not yet implemented
 - Periodic validation using a CPU FP64 reference result (INT precisions skip validation; see [Notes](#notes-english))
 - Multi-stream submission: `single` / `dual` / `triple`
-- Optional Vulkan graphics stress sidecar: render load `--vulkan` (headless offscreen by default, `--vulkan-window` to present a window) or the legacy image load `--legacy-vulkan`; requires `--features vulkan`
+- Optional Vulkan graphics stress sidecar: render load `--vulkan` (headless offscreen by default, `--vulkan-window` to present a window, Windows only); requires `--features vulkan`
+- `--vulkan-only` is a pure-Vulkan path handled before any CUDA init: the GPU is selected directly via `--gpu-uuid` / `--pci-bus` / `--gpu-index` (Vulkan-side PCI-sorted index; the full mapping is printed before selection), so no working CUDA driver is required. Note the Vulkan enumeration includes non-NVIDIA devices; prefer UUID or PCI address for exact selection
 - PCI bus / UUID / sorted-index GPU selection; `--list-gpus` to enumerate devices
 
 ### Precision Matrix
@@ -342,7 +343,6 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
   - map: `{ gemm = 0.4, intalu = 0.2, memcpy = 0.2, reduction = 0.2 }`
 - `kernel_params.<kernel>` supports per-kernel overrides, including `precisions`
 - `validate_interval = 0` disables periodic validation
-- `vulkan_minor_mixture_rate` controls Vulkan graphics stress: when Vulkan is enabled, small 3D images are mixed in at that rate (width/height randomly chosen from 127/256/511/512/1023; depth stays the same)
 
 Example (`stressor.toml`):
 

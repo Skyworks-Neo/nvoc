@@ -28,6 +28,30 @@ single source of truth is `[workspace.package].version` in the root
 - CI now runs the `nvoc-auto-optimizer` non-GPU unit test suite.
 - README Quick Start now documents prebuilt release downloads, checksum
   validation, and GitHub build-provenance verification (#232).
+- stressor: removed the legacy image-based Vulkan load (`--legacy-vulkan`,
+  `--legacy-vulkan-image-*`, `--legacy-vulkan-minor-mixture-rate`, and the
+  matching TOML keys). The FurMark-style render pipeline (`--vulkan`) is the
+  only graphics load; `--vulkan-only` now always runs it. Nothing in the
+  optimizer, profiles (beyond a comment), tests, or workflows referenced the
+  removed interface.
+- stressor: `--vulkan-only` is now a pure-Vulkan path handled before any CUDA
+  init — the GPU is selected directly from `--gpu-uuid`/`--pci-bus`/
+  `--gpu-index` (Vulkan-side PCI-sorted index, full mapping printed before
+  selection), so a Vulkan-only run no longer requires a working CUDA driver.
+  Mixed-mode `--vulkan` still aligns the sidecar to the CUDA device by UUID.
+
+### Fixed
+
+- GUI/TUI VF-curve apply and reset now route **per point**: a point the public
+  V/F table can move is written through the open interface, and only a point
+  whose public `point_type` reads Fixed goes to the private table. A GPC curve
+  built as *hybrid* (private segment + healthy public read) used to keep
+  `write_mode="private"` from the segment build, so every GPC apply on a card
+  with a populated private segment hit the private table — whose offsets
+  **stack** on the public ones on Ada and never show up in the public read, so
+  the curve moved twice as far as the user asked with no feedback. Shift+Reset
+  stays reachable on such a curve (it is the only way to clear private offsets
+  written by an older build) and now zeroes the curve's public runs as well.
 
 ## [0.1.0] — historical
 

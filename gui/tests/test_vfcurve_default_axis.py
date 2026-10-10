@@ -92,6 +92,13 @@ def test_hybrid_public_currents_with_private_defaults() -> None:
     assert gpc.source == "hybrid"
     assert gpc.frequencies == [1050.0, 1150.0]
     assert gpc.defaults == [1005.0, 1105.0]
+    # Regression: this branch used to leave write_mode at the "private"
+    # stamped when the private segment object was created, so every GPC apply
+    # on a card with a populated private segment went to the private table —
+    # which STACKS on the public one on Ada. All-prog ⇒ the aggregate is
+    # public and the per-point route is adopted.
+    assert gpc.write_mode == "public"
+    assert gpc.public_writable == [True, True]
     assert gpc.has_fixed is False
 
 
@@ -126,6 +133,11 @@ def test_hybrid_public_defaults_unpopulated_keeps_private() -> None:
     assert gpc.source == "hybrid"
     assert gpc.frequencies == [1050.0, 1150.0]
     assert gpc.defaults == [1000.0, 1100.0]
+    # The private defaults stay the base, so a public write (delta = target −
+    # default) would bake the public/private bias in as an error: no per-point
+    # route is adopted and the curve stays private, exactly as before.
+    assert gpc.public_writable is None
+    assert gpc.write_mode == "private"
 
 
 def test_pascal_public_defaults_all_zero_falls_back_to_private() -> None:
@@ -200,6 +212,11 @@ def test_shifted_public_grid_adopted_as_current() -> None:
     assert gpc.frequencies == [1050.0, 1150.0]
     assert gpc.defaults == [1000.0, 1100.0]
     assert gpc.has_fixed is False
+    # Defaults stay on the PRIVATE grid here (the public default plane is
+    # empty), so no per-point route is adopted: a public write would apply
+    # target − private_default against the public table's own base.
+    assert gpc.public_writable is None
+    assert gpc.write_mode == "private"
     # The current series rides the shifted PUBLIC grid; the base/default
     # axis stays on the private grid.
     assert gpc.current_voltages == [850.0, 875.0]
@@ -235,6 +252,10 @@ def test_broken_public_frequencies_rejected_even_on_matching_grid() -> None:
     assert gpc.source == "private"
     assert gpc.frequencies == [1000.0, 1100.0]
     assert gpc.defaults == [1000.0, 1100.0]
+    # A corrupt read yields no per-point classes: the whole curve stays
+    # private (has_fixed is the no-public-route sentinel here).
+    assert gpc.public_writable is None
+    assert gpc.has_fixed is True
 
 
 def test_all_zero_private_voltage_axis_keeps_public_source() -> None:
@@ -265,6 +286,8 @@ def test_all_zero_private_voltage_axis_keeps_public_source() -> None:
     assert gpc.source == "public"
     assert gpc.frequencies == [1050.0, 1150.0]
     assert gpc.defaults == [1000.0, 1100.0]
+    assert gpc.write_mode == "public"
+    assert gpc.public_writable == [True, True]
 
 
 # ── Tier 1: effective-series synthesis (broken-positive-slot1 fallback) ──
