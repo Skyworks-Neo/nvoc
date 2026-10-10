@@ -23,7 +23,7 @@
 //! external toolchain needed).
 
 use crate::runner::style::stylize;
-use crate::vulkan_gfx_stressor::{VulkanDeviceSelection, select_gpu_by_cuda_identity};
+use crate::vulkan_gfx_stressor::VulkanDeviceSelection;
 use ash::Instance;
 use ash::khr::surface::Instance as SurfaceInstance;
 use ash::khr::swapchain::Device as SwapchainDevice;
@@ -553,7 +553,8 @@ pub fn run_render_loop(
         )?;
 
         let pdevice = if let Some(selection) = selection {
-            select_gpu_by_cuda_identity(&instance, selection.cuda_uuid, selection.cuda_pci_bus)
+            selection
+                .resolve(&instance)
                 .map_err(|err| format!("[VKGFX-H] Vulkan GPU selection failed: {err}"))?
         } else {
             let pdevices = instance.enumerate_physical_devices()?;

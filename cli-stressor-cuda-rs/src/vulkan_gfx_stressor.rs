@@ -3,23 +3,53 @@ use crate::vulkan_render::run_render_loop;
 use anstream::eprintln;
 use ash::{Instance, vk};
 use cli_stressor_cuda_rs::PciBusAddress;
-use rand::RngExt;
 use std::ffi::CStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Which physical device the Vulkan sidecar should drive. Mixed mode
+/// (`--vulkan` alongside the CUDA load) fills the UUID/PCI fields from the
+/// CUDA device identity so both APIs land on the same GPU; Vulkan-only mode
+/// builds it straight from the `--gpu-uuid`/`--pci-bus`/`--gpu-index` CLI
+/// hints and needs no CUDA context at all.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VulkanDeviceSelection {
-    pub cuda_uuid: [u8; 16],
-    pub cuda_pci_bus: Option<PciBusAddress>,
+    /// Match the device whose vendor UUID equals this (zero = unset).
+    pub uuid: [u8; 16],
+    /// Standalone or fallback match on the PCIe bus address.
+    pub pci_bus: Option<PciBusAddress>,
+    /// Position in the PCI-sorted device enumeration (pure-Vulkan path,
+    /// same ordering rule as the CUDA `--gpu-index`).
+    pub index: Option<u32>,
+}
+
+impl VulkanDeviceSelection {
+    /// Resolve to a concrete physical device. UUID match wins, then PCI bus,
+    /// then the PCI-sorted index; with no hints the first enumerated device
+    /// is used.
+    pub fn resolve(self, instance: &Instance) -> Result<vk::PhysicalDevice, String> {
+        if !is_zero_uuid(&self.uuid) || self.pci_bus.is_some() {
+            return select_gpu_by_cuda_identity(instance, self.uuid, self.pci_bus);
+        }
+        if let Some(index) = self.index {
+            return select_gpu_by_sorted_index(instance, index);
+        }
+        let pdevices = unsafe {
+            instance
+                .enumerate_physical_devices()
+                .map_err(|err| format!("failed to enumerate Vulkan physical devices: {err}"))?
+        };
+        pdevices
+            .first()
+            .copied()
+            .ok_or_else(|| "no Vulkan physical devices found".to_string())
+    }
 }
 
 /// FurMark-style heavy render parameters. Defined here (rather than in the
-/// Windows-only `vulkan_render` module) so the config type exists on every
-/// platform; only the render *loop* is Windows-gated, and non-Windows builds
-/// fall back to the light image path.
+/// `vulkan_render` module) so the config type exists on every platform; the
+/// offscreen render loop runs on all of them and only windowed presentation
+/// stays Windows-only.
 #[derive(Clone, Copy, Debug)]
 pub struct VulkanRenderConfig {
     pub width: u32,
@@ -41,70 +71,34 @@ pub struct VulkanRenderConfig {
     pub particles: u32,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct VulkanImageConfig {
-    pub width: u32,
-    pub height: u32,
-    pub depth: u32,
-    pub image_count: u32,
-    pub msaa: u32,
-    pub minor_mixture_rate: f64,
-    /// FurMark-style heavy render mode (Win32 window + shaders + blend +
-    /// depth + present). Windows-only; falls back to the light path elsewhere.
-    pub render: Option<VulkanRenderConfig>,
-}
-
-impl Default for VulkanImageConfig {
-    fn default() -> Self {
-        Self {
-            width: 8192,
-            height: 8192,
-            depth: 1,
-            image_count: 6,
-            msaa: 1,
-            minor_mixture_rate: 0.15,
-            render: None,
-        }
-    }
-}
-
-struct VulkanImageBatch {
-    extent: vk::Extent3D,
-    images: Vec<vk::Image>,
-    memories: Vec<vk::DeviceMemory>,
-    resolve_images: Vec<vk::Image>,
-    resolve_memories: Vec<vk::DeviceMemory>,
-}
-
 pub struct VulkanGraphicsEngine {
     is_running: Arc<AtomicBool>,
     has_error: Arc<AtomicBool>,
     selection: Option<VulkanDeviceSelection>,
-    image_config: VulkanImageConfig,
+    render_config: VulkanRenderConfig,
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl VulkanGraphicsEngine {
-    pub fn new(image_config: VulkanImageConfig) -> Self {
+    pub fn new(render_config: VulkanRenderConfig) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             has_error: Arc::new(AtomicBool::new(false)),
             selection: None,
-            image_config,
+            render_config,
             thread_handle: None,
         }
     }
 
-    #[cfg(feature = "cuda")]
     pub fn with_selection(
         selection: VulkanDeviceSelection,
-        image_config: VulkanImageConfig,
+        render_config: VulkanRenderConfig,
     ) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             has_error: Arc::new(AtomicBool::new(false)),
             selection: Some(selection),
-            image_config,
+            render_config,
             thread_handle: None,
         }
     }
@@ -113,18 +107,13 @@ impl VulkanGraphicsEngine {
         let is_running = self.is_running.clone();
         let has_error = self.has_error.clone();
         let selection = self.selection;
-        let image_config = self.image_config;
+        let render_config = self.render_config;
 
         is_running.store(true, Ordering::SeqCst);
         has_error.store(false, Ordering::SeqCst);
 
         let handle = thread::spawn(move || {
-            let result = if let Some(render_cfg) = image_config.render {
-                run_render_loop(is_running, selection, render_cfg)
-            } else {
-                run_vulkan_stress_loop(is_running, selection, image_config)
-            };
-            if let Err(e) = result {
+            if let Err(e) = run_render_loop(is_running, selection, render_config) {
                 eprintln!(
                     "{}",
                     stylize(&format!("[VulkanGfx] Thread crashed: {:?}", e), true)
@@ -155,454 +144,72 @@ impl VulkanGraphicsEngine {
     }
 }
 
-fn run_vulkan_stress_loop(
-    is_running: Arc<AtomicBool>,
-    selection: Option<VulkanDeviceSelection>,
-    image_config: VulkanImageConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
-    unsafe {
-        let entry = ash::Entry::load()?;
-        let app_info = vk::ApplicationInfo::default()
-            .application_name(c"HeadlessStressor")
-            .api_version(vk::API_VERSION_1_2);
-
-        let instance_create_info = vk::InstanceCreateInfo::default().application_info(&app_info);
-        let instance = entry.create_instance(&instance_create_info, None)?;
-
-        let pdevice = if let Some(selection) = selection {
-            let selection_result = if selection.cuda_pci_bus.is_some() {
-                select_gpu_by_cuda_identity(&instance, selection.cuda_uuid, selection.cuda_pci_bus)
-            } else {
-                select_gpu_by_cuda_uuid(&instance, selection.cuda_uuid)
-            };
-            match selection_result {
-                Ok(dev) => dev,
-                Err(err) => {
-                    eprintln!(
-                        "{}",
-                        stylize(
-                            &format!(
-                                "[VulkanGfx] Vulkan GPU selection failed: {err}; fallback to CUDA-only stress"
-                            ),
-                            true
-                        )
-                    );
-                    eprintln!(
-                        "{}",
-                        stylize(
-                            "Your Target GPU may not have proper Vulkan driver, check compatibility...",
-                            true
-                        )
-                    );
-                    return Ok(());
-                }
-            }
-        } else {
-            let pdevices = instance.enumerate_physical_devices()?;
-            if pdevices.is_empty() {
-                return Err("No Vulkan physical devices found".into());
-            }
-            pdevices[0]
-        };
-
-        let queue_family_properties = instance.get_physical_device_queue_family_properties(pdevice);
-        let graphics_queue_index = queue_family_properties
-            .iter()
-            .position(|info| info.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-            .ok_or("No Vulkan graphics queue family found")?
-            as u32;
-
-        let queue_priorities = [1.0];
-        let queue_create_infos = [vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(graphics_queue_index)
-            .queue_priorities(&queue_priorities)];
-
-        let device_create_info =
-            vk::DeviceCreateInfo::default().queue_create_infos(&queue_create_infos);
-        let device = instance.create_device(pdevice, &device_create_info, None)?;
-        let queue = device.get_device_queue(graphics_queue_index, 0);
-
-        let pool_create_info = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(graphics_queue_index)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let command_pool = device.create_command_pool(&pool_create_info, None)?;
-
-        let cmd_buf_alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        let cmd_buffer = device.allocate_command_buffers(&cmd_buf_alloc_info)?[0];
-
-        let fence_create_info =
-            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        let fence = device.create_fence(&fence_create_info, None)?;
-
-        // ==========================================
-        // 模块：极高压内存与 ROP 占据 (3D images + optional MSAA)
-        let sample_flags = vk::SampleCountFlags::from_raw(image_config.msaa);
-        let main_extent = vk::Extent3D {
-            width: image_config.width,
-            height: image_config.height,
-            depth: image_config.depth,
-        };
-
-        let image_count = image_config.image_count.max(1) as usize;
-        let msaa_on = image_config.msaa > 1;
-
-        let mem_properties = instance.get_physical_device_memory_properties(pdevice);
-
-        let create_batch =
-            |extent: vk::Extent3D| -> Result<VulkanImageBatch, Box<dyn std::error::Error>> {
-                let image_create_info = vk::ImageCreateInfo::default()
-                    .image_type(vk::ImageType::TYPE_3D)
-                    .format(vk::Format::R16G16B16A16_UNORM)
-                    .extent(extent)
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(sample_flags)
-                    .tiling(vk::ImageTiling::OPTIMAL)
-                    .usage(
-                        vk::ImageUsageFlags::TRANSFER_SRC
-                            | vk::ImageUsageFlags::TRANSFER_DST
-                            | vk::ImageUsageFlags::COLOR_ATTACHMENT,
-                    )
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-                let mut images = Vec::new();
-                let mut memories = Vec::new();
-                let mut resolve_images = Vec::new();
-                let mut resolve_memories = Vec::new();
-
-                for _ in 0..image_count {
-                    let img = device.create_image(&image_create_info, None)?;
-                    let mem_req = device.get_image_memory_requirements(img);
-                    let mem_type_idx = (0..mem_properties.memory_type_count)
-                        .find(|&i| {
-                            (mem_req.memory_type_bits & (1 << i)) != 0
-                                && mem_properties.memory_types[i as usize]
-                                    .property_flags
-                                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                        })
-                        .ok_or("No compatible DEVICE_LOCAL Vulkan memory type found")?;
-                    let alloc_info = vk::MemoryAllocateInfo::default()
-                        .allocation_size(mem_req.size)
-                        .memory_type_index(mem_type_idx);
-                    let mem = device.allocate_memory(&alloc_info, None)?;
-                    device.bind_image_memory(img, mem, 0)?;
-                    images.push(img);
-                    memories.push(mem);
-
-                    if msaa_on {
-                        let rinfo = vk::ImageCreateInfo::default()
-                            .image_type(vk::ImageType::TYPE_3D)
-                            .format(vk::Format::R16G16B16A16_UNORM)
-                            .extent(extent)
-                            .mip_levels(1)
-                            .array_layers(1)
-                            .samples(vk::SampleCountFlags::TYPE_1)
-                            .tiling(vk::ImageTiling::OPTIMAL)
-                            .usage(
-                                vk::ImageUsageFlags::TRANSFER_SRC
-                                    | vk::ImageUsageFlags::TRANSFER_DST,
-                            )
-                            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-                        let rimg = device.create_image(&rinfo, None)?;
-                        let rreq = device.get_image_memory_requirements(rimg);
-                        let rtype_idx = (0..mem_properties.memory_type_count)
-                            .find(|&i| {
-                                (rreq.memory_type_bits & (1 << i)) != 0
-                                    && mem_properties.memory_types[i as usize]
-                                        .property_flags
-                                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                            })
-                            .ok_or("No compatible DEVICE_LOCAL memory for resolve image")?;
-                        let ralloc = vk::MemoryAllocateInfo::default()
-                            .allocation_size(rreq.size)
-                            .memory_type_index(rtype_idx);
-                        let rmem = device.allocate_memory(&ralloc, None)?;
-                        device.bind_image_memory(rimg, rmem, 0)?;
-                        resolve_images.push(rimg);
-                        resolve_memories.push(rmem);
-                    }
-                }
-
-                Ok(VulkanImageBatch {
-                    extent,
-                    images,
-                    memories,
-                    resolve_images,
-                    resolve_memories,
-                })
-            };
-
-        let main_batch = create_batch(main_extent)?;
-        let mut minor_batches = Vec::new();
-        if image_config.minor_mixture_rate > 0.0 {
-            let size = 16u32;
-            let extent = vk::Extent3D {
-                width: size.min(main_extent.width).max(1),
-                height: size.min(main_extent.height).max(1),
-                depth: size.min(main_extent.depth).max(1),
-            };
-            minor_batches.push(create_batch(extent)?);
-        }
-
-        // Convert layout to GENERAL
-        {
-            device.reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty())?;
-            let begin_info = vk::CommandBufferBeginInfo::default()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-            device.begin_command_buffer(cmd_buffer, &begin_info)?;
-
-            let subresource_range = vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .level_count(1)
-                .layer_count(1);
-            let mut barriers = Vec::new();
-            for batch in std::iter::once(&main_batch).chain(minor_batches.iter()) {
-                for &img in &batch.images {
-                    barriers.push(
-                        vk::ImageMemoryBarrier::default()
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::GENERAL)
-                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .image(img)
-                            .subresource_range(subresource_range)
-                            .src_access_mask(vk::AccessFlags::empty())
-                            .dst_access_mask(
-                                vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
-                            ),
-                    );
-                }
-                for &img in &batch.resolve_images {
-                    barriers.push(
-                        vk::ImageMemoryBarrier::default()
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::GENERAL)
-                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .image(img)
-                            .subresource_range(subresource_range)
-                            .src_access_mask(vk::AccessFlags::empty())
-                            .dst_access_mask(
-                                vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
-                            ),
-                    );
-                }
-            }
-            device.cmd_pipeline_barrier(
-                cmd_buffer,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-            device.end_command_buffer(cmd_buffer)?;
-            let cmd_buffers = [cmd_buffer];
-            let submits = [vk::SubmitInfo::default().command_buffers(&cmd_buffers)];
-            device.queue_submit(queue, &submits, vk::Fence::null())?;
-            device.queue_wait_idle(queue)?;
-        }
-
-        let subresource_range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-
-        let mut rng = rand::rng();
-        let stress_start = std::time::Instant::now();
-        let mut last_log = stress_start;
-        let mut window_submits: u64 = 0;
-        let mut pipeline_flushes: u64 = 0;
-
-        while is_running.load(Ordering::SeqCst) {
-            device.wait_for_fences(&[fence], true, u64::MAX)?;
-            device.reset_fences(&[fence])?;
-            device.reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty())?;
-
-            let begin_info = vk::CommandBufferBeginInfo::default()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-            device.begin_command_buffer(cmd_buffer, &begin_info)?;
-
-            // Heavy work: clear + resolve (MSAA) or clear + blit
-            for _ in 0..20 {
-                let use_minor = !minor_batches.is_empty()
-                    && rng.random::<f64>() <= image_config.minor_mixture_rate;
-                let active_batch = if use_minor {
-                    let idx = rng.random_range(0..minor_batches.len());
-                    &minor_batches[idx]
-                } else {
-                    &main_batch
-                };
-                let active_images = &active_batch.images;
-                let active_resolve_images = &active_batch.resolve_images;
-                let active_extent = active_batch.extent;
-                let active_image_count = active_images.len();
-
-                let c_val: f32 = rng.random_range(0.0..1.0);
-                let clear_color = vk::ClearColorValue {
-                    float32: [c_val, 1.0 - c_val, c_val * 0.5, 1.0],
-                };
-                let target_img_idx = rng.random_range(0..active_image_count);
-                device.cmd_clear_color_image(
-                    cmd_buffer,
-                    active_images[target_img_idx],
-                    vk::ImageLayout::GENERAL,
-                    &clear_color,
-                    &[subresource_range],
-                );
-
-                if msaa_on {
-                    let resolve_dst_idx = (target_img_idx + 1) % active_image_count;
-                    let resolve = vk::ImageResolve::default()
-                        .src_subresource(
-                            vk::ImageSubresourceLayers::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .layer_count(1),
-                        )
-                        .src_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-                        .dst_subresource(
-                            vk::ImageSubresourceLayers::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .layer_count(1),
-                        )
-                        .dst_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-                        .extent(active_extent);
-                    device.cmd_resolve_image(
-                        cmd_buffer,
-                        active_images[target_img_idx],
-                        vk::ImageLayout::GENERAL,
-                        active_resolve_images[resolve_dst_idx],
-                        vk::ImageLayout::GENERAL,
-                        &[resolve],
-                    );
-                } else {
-                    let src_idx = (target_img_idx + 1) % active_image_count;
-                    let dst_idx = (target_img_idx + 2) % active_image_count;
-                    let blit = vk::ImageBlit::default()
-                        .src_subresource(
-                            vk::ImageSubresourceLayers::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .layer_count(1),
-                        )
-                        .src_offsets([
-                            vk::Offset3D { x: 0, y: 0, z: 0 },
-                            vk::Offset3D {
-                                x: active_extent.width as i32,
-                                y: active_extent.height as i32,
-                                z: active_extent.depth as i32,
-                            },
-                        ])
-                        .dst_subresource(
-                            vk::ImageSubresourceLayers::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .layer_count(1),
-                        )
-                        .dst_offsets([
-                            vk::Offset3D { x: 0, y: 0, z: 0 },
-                            vk::Offset3D {
-                                x: active_extent.width as i32,
-                                y: active_extent.height as i32,
-                                z: active_extent.depth as i32,
-                            },
-                        ]);
-                    device.cmd_blit_image(
-                        cmd_buffer,
-                        active_images[src_idx],
-                        vk::ImageLayout::GENERAL,
-                        active_images[dst_idx],
-                        vk::ImageLayout::GENERAL,
-                        &[blit],
-                        vk::Filter::NEAREST,
-                    );
-                }
-
-                let memory_barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
-                    .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
-
-                device.cmd_pipeline_barrier(
-                    cmd_buffer,
-                    vk::PipelineStageFlags::ALL_COMMANDS,
-                    vk::PipelineStageFlags::ALL_COMMANDS,
-                    vk::DependencyFlags::empty(),
-                    &[memory_barrier],
-                    &[],
-                    &[],
-                );
-                pipeline_flushes += 1;
-            }
-
-            device.end_command_buffer(cmd_buffer)?;
-
-            let cmd_buffers = [cmd_buffer];
-            let submit_info = vk::SubmitInfo::default().command_buffers(&cmd_buffers);
-
-            device.queue_submit(queue, &[submit_info], fence)?;
-            window_submits += 1;
-
-            let now = std::time::Instant::now();
-            let log_elapsed = now.duration_since(last_log);
-            if log_elapsed >= Duration::from_secs(3) {
-                let elapsed_s = stress_start.elapsed().as_secs_f64();
-                let submits_per_s = window_submits as f64 / log_elapsed.as_secs_f64().max(1e-6);
-                println!(
-                    "{}",
-                    stylize(
-                        &format!(
-                            "[VKGFX] {:>6.1}s | {:>5.1} submits/s | Pipeline Flushes: {}",
-                            elapsed_s, submits_per_s, pipeline_flushes
-                        ),
-                        false
-                    )
-                );
-                window_submits = 0;
-                last_log = now;
-            }
-
-            let r = rng.random_range(0..100);
-            let sleep_time = if r < 2 {
-                Duration::from_millis(20)
-            } else {
-                Duration::from_millis(rng.random_range(4..16))
-            };
-            thread::sleep(sleep_time);
-        }
-
-        device.device_wait_idle()?;
-
-        for batch in std::iter::once(&main_batch).chain(minor_batches.iter()) {
-            for &img in &batch.images {
-                device.destroy_image(img, None);
-            }
-            for &mem in &batch.memories {
-                device.free_memory(mem, None);
-            }
-            for &img in &batch.resolve_images {
-                device.destroy_image(img, None);
-            }
-            for &mem in &batch.resolve_memories {
-                device.free_memory(mem, None);
-            }
-        }
-
-        device.destroy_fence(fence, None);
-        device.destroy_command_pool(command_pool, None);
-        device.destroy_device(None);
-        instance.destroy_instance(None);
-
-        Ok(())
-    }
-}
-
-pub fn select_gpu_by_cuda_uuid(
+/// Select by position in the PCI-sorted device enumeration, mirroring the
+/// CUDA `--gpu-index` ordering rule (domain/bus/device/function ascending;
+/// devices that do not report a PCI address sort last, in enumeration order).
+pub fn select_gpu_by_sorted_index(
     instance: &Instance,
-    target_cuda_uuid: [u8; 16],
+    index: u32,
 ) -> Result<vk::PhysicalDevice, String> {
-    select_gpu_by_cuda_identity(instance, target_cuda_uuid, None)
+    let pdevices = unsafe {
+        instance
+            .enumerate_physical_devices()
+            .map_err(|err| format!("failed to enumerate Vulkan physical devices: {err}"))?
+    };
+    if pdevices.is_empty() {
+        return Err("no Vulkan physical devices found".to_string());
+    }
+
+    let mut entries: Vec<(Option<PciBusAddress>, vk::PhysicalDevice, String)> = Vec::new();
+    for pdevice in pdevices {
+        let (name, _uuid, uuid_hex, pci) =
+            unsafe { query_vulkan_device_identity(instance, pdevice) }
+                .map_err(|err| format!("failed to query device identity: {err}"))?;
+        entries.push((pci, pdevice, format!("{name} | uuid={uuid_hex}")));
+    }
+
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by(|&a, &b| match (&entries[a].0, &entries[b].0) {
+        (Some(x), Some(y)) => {
+            (x.domain, x.bus, x.device, x.function).cmp(&(y.domain, y.bus, y.device, y.function))
+        }
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.cmp(&b),
+    });
+
+    for (position, &entry_idx) in order.iter().enumerate() {
+        let (pci, _, label) = &entries[entry_idx];
+        println!(
+            "{}",
+            stylize(
+                &format!(
+                    "[VulkanGfx] Vulkan device [{position}]: {} | pci={}",
+                    label,
+                    pci.as_ref()
+                        .map(format_pci_address)
+                        .unwrap_or_else(|| "<none>".to_string())
+                ),
+                false
+            )
+        );
+    }
+
+    let picked = *order.get(index as usize).ok_or_else(|| {
+        format!(
+            "Vulkan device index {index} out of range ({} devices)",
+            entries.len()
+        )
+    })?;
+    let (_, pdevice, label) = &entries[picked];
+    println!(
+        "{}",
+        stylize(
+            &format!("[VulkanGfx] Selected Vulkan device by sorted index {index}: {label}"),
+            false
+        )
+    );
+    Ok(*pdevice)
 }
 
 pub fn select_gpu_by_cuda_identity(
