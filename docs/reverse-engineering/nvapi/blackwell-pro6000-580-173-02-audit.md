@@ -127,6 +127,11 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 
 **遗留**：视频负载确认（需 NVENC 客户端，本机无 ffmpeg/torch）——装齐后跑一次 encode，预期 Msd/Vid 跳至 2107 档且 VideoEngine>0；ECC/负载下 bit 32 归因实验同批。
 
+**补充实锤（同日，ffmpeg + h264_nvenc 4K120 负载，`pro6000_msd_load_live` 双接口采样器）**：
+- NVENC 负载下 **GetAllClocks[21] 从空闲的 41-211 MHz 爬升到 2015-2066 MHz**，与直测 direct(21) 的 2093-2103 MHz 同步跟踪（恒差 ~3% = 有效频率 vs 瞬时频率的采样差）——**两接口读的是同一个 video 时钟，GetAllClocks 的 Msd 槽没有错**；此前的"明显不符"是空闲门控值 vs 单次 max 采样的错位。
+- Msd 归属、双标签、空闲漂浮解释三项全部获得负载态交叉证实；域 21 案卷彻底关闭。
+- 顺带发现并修复：Utils(22) 直测可测（定频 107.9-108.0）但 GetAllClocks 槽恒零——pynvoc `normalize_status` 现对 FCLK 域集中 GetAllClocks 缺席的域做 `QueryNvapiClkDomainFreqsBatch` 回退直测，TUI FCLK 行从 5 域恢复到 6 域（+UTILS）。
+
 ## 文档裁决记录（对既有文档的修订指令）
 
 1. `nvpwrcontrol-blackwell-tuner-audit.md` §4.3：裁决为**读法 A**（index 语义）；工具的 "XBAR physical"= SYS；§9.3 裁决协议可关闭。

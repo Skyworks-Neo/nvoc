@@ -823,10 +823,34 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     let all_clocks_mhz = if let Some(all) = &status.all_clocks
         && !all.is_empty()
     {
-        let entries = all
+        let mut entries = all
             .iter()
             .map(|(domain, freq)| (domain.to_string(), f64_value(freq.0 as f64 / 1000.0)))
             .collect::<Vec<_>>();
+        // DIRECT-MEASURE FALLBACK for fabric domains GetAllClocks V2 leaves
+        // zero: "driver doesn't populate the slot" ≠ "unmeasurable". Live on
+        // RTX PRO 6000 Blackwell Server (580.173.02): Utils(22) reads a real
+        // fixed 107.9 MHz via 0x527FC458 but its GetAllClocks slot stays 0,
+        // so the TUI FCLK line silently dropped it. Probe the FCLK domain set
+        // that GetAllClocks omitted and fill from the direct measure; refused
+        // domains (-104 / freq 0) are skipped. Cost: only the missing slots,
+        // a handful of small controls per poll.
+        const FABRIC_BITS: [u32; 11] = [0, 1, 2, 21, 3, 5, 25, 6, 7, 20, 22];
+        let populated: std::collections::BTreeSet<i32> =
+            all.keys().map(|domain| domain.repr()).collect();
+        let missing: Vec<u32> = FABRIC_BITS
+            .iter()
+            .copied()
+            .filter(|bit| !populated.contains(&(*bit as i32)))
+            .collect();
+        if !missing.is_empty()
+            && let Ok(Some(freqs)) = run(target, QueryNvapiClkDomainFreqsBatch { domains: missing })
+                .map(|report| report.output)
+        {
+            for f in freqs.into_iter().filter(|f| f.freq_mhz > 0.0) {
+                entries.push((f.domain.to_string(), f64_value(f.freq_mhz)));
+            }
+        }
         Some(value_object(
             entries.iter().map(|(k, v)| (k.as_str(), v.clone())),
         ))
