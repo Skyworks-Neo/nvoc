@@ -251,6 +251,82 @@ pub fn fetch_gpu_type(info: &GpuInfo) -> Result<GpuType, Error> {
     Ok(detect_gpu_type(&info.name, &info.codename))
 }
 
+/// 补全 Linux libnvidia-api 不实现的身份查询，消灭 get-info 的 "Unknown"。
+///
+/// 依据（RTX PRO 6000 Blackwell Server / 580.173.02 活体探针，
+/// nvapi-rs tests/blackwell_pro6000_identity_live.rs + 审计
+/// docs/reverse-engineering/nvapi/blackwell-pro6000-580-173-02-audit.md）：
+/// - `NvAPI_GPU_GetGPUType` rc=-3（NoImplementation）
+/// - `NvAPI_GPU_GetSystemType` rc=-3
+/// - `NvAPI_GPU_GetFoundry` rc=-104（NotSupported）
+/// - `NvAPI_GPU_GetRamType` 正常返回（GDDR7=16，枚举已补）
+///
+/// 推导规则（只填确有依据的，宁缺毋滥）：
+/// - **gpu_type**：nvoc 只枚举 PCIe 独立卡（PhysicalGpu 句柄），Unknown →
+///   Discrete 是安全推导。
+/// - **foundry**：GB/GH/AD/GA/TU1/GP/GV 系全部为 TSMC 代工（2016 起
+///   NVIDIA 大芯片公开事实；GB202 = TSMC 4N 级）。其他 codename 不猜。
+/// - **system_type**：NVAPI 词表只有 Laptop/Desktop（1/2），没有 server 值
+///   ——Windows 上服务器卡也落这两档。名称含 Laptop/Notebook → Laptop，
+///   否则 → Desktop（机箱级语义；"Server Edition" 属桌面型机箱家族）。
+pub fn fill_identity_gaps(info: &mut GpuInfo) {
+    use ::nvapi::{Foundry, GpuType as NvGpuType, SystemType};
+
+    let (gpu_type, foundry, system_type) = derive_identity_gaps(
+        &info.name,
+        &info.codename,
+        info.gpu_type,
+        info.foundry,
+        info.system_type,
+    );
+    info.gpu_type = gpu_type;
+    info.foundry = foundry;
+    info.system_type = system_type;
+}
+
+/// [`fill_identity_gaps`] 的纯推导核（对原始字段运算，便于单测）。
+fn derive_identity_gaps(
+    name: &str,
+    codename: &str,
+    gpu_type: ::nvapi::GpuType,
+    foundry: ::nvapi::Foundry,
+    system_type: ::nvapi::SystemType,
+) -> (::nvapi::GpuType, ::nvapi::Foundry, ::nvapi::SystemType) {
+    use ::nvapi::{Foundry, GpuType as NvGpuType, SystemType};
+
+    let gpu_type = if gpu_type == NvGpuType::Unknown {
+        NvGpuType::Discrete
+    } else {
+        gpu_type
+    };
+
+    let foundry = if foundry == Foundry::Unknown && tsmc_codename(codename) {
+        Foundry::TSMC
+    } else {
+        foundry
+    };
+
+    let system_type = if system_type == SystemType::Unknown {
+        let combined = format!("{name}{codename}");
+        if combined.contains("Laptop") || combined.contains("Notebook") {
+            SystemType::Laptop
+        } else {
+            SystemType::Desktop
+        }
+    } else {
+        system_type
+    };
+
+    (gpu_type, foundry, system_type)
+}
+
+/// TSMC 代工的芯片 codename 前缀（公开工艺归属，非逆向值）。
+fn tsmc_codename(codename: &str) -> bool {
+    ["GB", "GH", "AD", "GA", "TU1", "GP", "GV"]
+        .iter()
+        .any(|p| codename.starts_with(p))
+}
+
 // ─────────────────────── GpuOcParams: OC 扫描参数 ────────────────────────────
 
 /// GPU 世代专属的超频扫描固定参数
@@ -1005,6 +1081,74 @@ mod tests {
         assert!(!GpuType::WorkstationAmpere.is_pre_ampere());
         assert!(!GpuType::ServerHopper.is_pre_ampere());
         assert!(GpuType::Unknown.is_pre_ampere());
+    }
+
+    /// GB202 同芯片跨产品线识别：消费 5090 与工作站 PRO 6000 共用 codename，
+    /// 分类必须走产品名称关键词而非芯片代号（真机约束：两张 RTX PRO 6000
+    /// Blackwell Server / 580.173.02 与消费 5090 同为 GB202）。
+    #[test]
+    fn detect_gb202_splits_by_product_name_not_codename() {
+        // 消费 5090：GeForce 关键词排除 professional → Desktop50Series
+        assert_eq!(
+            detect_gpu_type("NVIDIA GeForce RTX 5090", "GB202"),
+            GpuType::Desktop50Series
+        );
+        // 工作站 PRO 6000：RTX + 6000 且无 GeForce → WorkstationBlackwell
+        assert_eq!(
+            detect_gpu_type(
+                "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+                "GB202GL-A"
+            ),
+            GpuType::WorkstationBlackwell
+        );
+        // 本机真机名（live codename 是 GB202GL-A，带 GL 后缀）
+        assert_eq!(
+            detect_gpu_type("NVIDIA RTX PRO 6000 Blackwell Server Edition", "GB202GL-A"),
+            GpuType::WorkstationBlackwell
+        );
+        // codename 缺失时（探测面异常）5090 仍不得误入工作站分支
+        assert_eq!(
+            detect_gpu_type("NVIDIA GeForce RTX 5090", ""),
+            GpuType::Unknown
+        );
+    }
+
+    /// fill_identity_gaps：Linux libnvidia-api 未实现的三个身份字段按证据
+    /// 推导（活体依据见函数 doc）。
+    #[test]
+    fn fill_identity_gaps_derives_unimplemented_fields() {
+        use ::nvapi::{Foundry, GpuType as NvGpuType, SystemType};
+        let (gt, fd, st) = derive_identity_gaps(
+            "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "GB202GL-A",
+            NvGpuType::Unknown,
+            Foundry::Unknown,
+            SystemType::Unknown,
+        );
+        assert_eq!(gt, NvGpuType::Discrete);
+        assert_eq!(fd, Foundry::TSMC);
+        // NVAPI 词表无 server 档 → 机箱级归 Desktop（函数 doc 的取舍）
+        assert_eq!(st, SystemType::Desktop);
+
+        // codename 不在 TSMC 表 → foundry 保持 Unknown（宁缺毋滥）
+        let (_, fd, _) = derive_identity_gaps(
+            "Some Card",
+            "ZZ99",
+            NvGpuType::Unknown,
+            Foundry::Unknown,
+            SystemType::Unknown,
+        );
+        assert_eq!(fd, Foundry::Unknown);
+
+        // Laptop 名 → Laptop 档
+        let (_, _, st) = derive_identity_gaps(
+            "NVIDIA GeForce RTX 5090 Laptop GPU",
+            "GB202",
+            NvGpuType::Unknown,
+            Foundry::Unknown,
+            SystemType::Unknown,
+        );
+        assert_eq!(st, SystemType::Laptop);
     }
 }
 

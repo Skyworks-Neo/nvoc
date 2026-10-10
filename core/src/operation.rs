@@ -131,6 +131,10 @@ impl GpuOperation for QueryGpuInfo {
         {
             info.uuid = low_nvml::query_nvml_uuid(nvml, target.id.0);
         }
+        // Linux libnvidia-api doesn't implement GetGPUType/GetSystemType/
+        // GetFoundry (-3/-104) — derive what we can from our own card
+        // knowledge instead of reporting "Unknown" (see gpu_type.rs).
+        super::gpu_type::fill_identity_gaps(&mut info);
         Ok(info)
     }
 }
