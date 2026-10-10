@@ -167,7 +167,12 @@ class NVOCApp(App[None]):
 
     def save_config(self) -> None:
         self.config_store.data = self.config_data
-        self.config_store.save()
+        try:
+            self.config_store.save()
+        except OSError as e:
+            # Unwritable config (e.g. owned by root after a sudo run) should
+            # not crash the TUI; keep running with in-memory settings.
+            self.write_log(f"Failed to save config: {e}")
 
     def selected_gpu_idx(self) -> int | None:
         return self.header_controller.selected_gpu_idx()
