@@ -450,9 +450,9 @@ fn failure_hint(tail: &str) -> Option<&'static str> {
         // build keeps failing.
         Some(
             "the frozen environment's python lacks the _tkinter extension; the distro's \
-             python3-tk package only fixes the distro interpreter. From the repository \
-             root run: uv python install 3.12 && uv venv --clear --python 3.12 (uv's \
-             python bundles Tcl/Tk), then rebuild",
+             python3-tk package only fixes the distro interpreter. Run `cargo xtask setup` \
+             first (it rebuilds the environment on uv's Tcl/Tk-bundled python \
+             automatically), then rebuild",
         )
     } else if tail.contains("ModuleNotFoundError") {
         Some(
@@ -496,7 +496,7 @@ mod tests {
         let hint = super::failure_hint("ModuleNotFoundError: No module named '_tkinter'")
             .expect("tkinter signature recognized");
         assert!(hint.contains("python3-tk"));
-        assert!(hint.contains("uv venv --clear --python 3.12"));
+        assert!(hint.contains("cargo xtask setup"));
         // Any other missing module falls back to the generic environment fix.
         let hint = super::failure_hint("ModuleNotFoundError: No module named 'customtkinter'")
             .expect("missing module recognized");

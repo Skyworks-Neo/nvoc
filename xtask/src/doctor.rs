@@ -3,10 +3,12 @@
 //! Every check prints `[ok]` / `[warn]` / `[FAIL]` with an actionable hint, and
 //! mutating steps honor `--dry-run`. Blocking failures (git, submodule, Rust,
 //! the native toolchain, uv, Python envs) fail the run; informational probes
-//! (CUDA runtime, tkinter) never do. The native-toolchain check branches on
-//! the resolved rustc's host triple: `-msvc` requires Visual Studio Build
-//! Tools, while gnu-like faces (msys2's clang64 `windows-gnullvm`) link via
-//! the toolchain's own lld and skip the MSVC gate.
+//! (CUDA runtime, tkinter) never do — a failed tkinter import instead
+//! self-repairs in user space whenever the interpreter flavor allows it.
+//! The native-toolchain check branches on the resolved rustc's host triple:
+//! `-msvc` requires Visual Studio Build Tools, while gnu-like faces (msys2's
+//! clang64 `windows-gnullvm`) link via the toolchain's own lld and skip the
+//! MSVC gate.
 
 use crate::args::SetupArgs;
 use crate::util::{self, Res};
@@ -510,7 +512,8 @@ fn bootstrap_python(args: &SetupArgs, root: &Path) -> usize {
     problems
 }
 
-// The install_missing opt-in only fires inside the unix tkinter diagnosis.
+// The install_missing opt-in only gates the distro (sudo) branch of the unix
+// tkinter diagnosis; the other two flavors self-repair in user space.
 #[cfg_attr(windows, allow(unused_variables))]
 fn sanity_imports(root: &Path, install_missing: bool) -> usize {
     let mut problems = 0usize;
@@ -536,11 +539,11 @@ fn sanity_imports(root: &Path, install_missing: bool) -> usize {
 
 /// The tkinter import failed. A uv-managed interpreter bundles Tcl/Tk, so a
 /// package-manager install is usually NOT the fix — classify which kind of
-/// interpreter the gui environment resolved to and tailor the guidance:
-/// managed (rare failure) points at refreshing the toolchain, source-built
-/// at rebuilding with tk headers or switching to the bundled python, and a
-/// plain distro interpreter at the distro's split tkinter package.
-/// Warn-only, like the check above.
+/// interpreter the gui environment resolved to and tailor the response: the
+/// managed and source-built flavors self-repair in user space (see
+/// [`repair_tkinter`]), while a plain distro interpreter points at the
+/// distro's split tkinter package (installed non-interactively under
+/// `--install-missing`). Warn-only, like the check above.
 #[cfg(not(windows))]
 fn diagnose_tkinter(root: &Path, install_missing: bool) {
     let mut prefix = util::uv_run(
@@ -553,7 +556,17 @@ fn diagnose_tkinter(root: &Path, install_missing: bool) {
     managed_dir.args(["python", "dir"]);
     let managed_dir = util::capture(&mut managed_dir).unwrap_or_default();
 
-    match classify_interpreter(&prefix, &managed_dir) {
+    let flavor = classify_interpreter(&prefix, &managed_dir);
+    // The two non-distro flavors are fully user-space repairs — uv owns both
+    // the toolchain and the environment, no sudo anywhere — so apply them
+    // directly and only fall back to guidance when the repair did not take.
+    if matches!(flavor, InterpFlavor::UvManaged | InterpFlavor::SourceBuilt)
+        && repair_tkinter(root, flavor)
+    {
+        println!("  [ok]   tkinter repaired in the gui environment");
+        return;
+    }
+    match flavor {
         InterpFlavor::UvManaged => {
             util::warn("tkinter import failed although the uv-managed interpreter bundles Tcl/Tk");
             util::hint("the managed toolchain is stale or broken; refresh it and re-run setup:");
@@ -608,6 +621,73 @@ fn diagnose_tkinter(root: &Path, install_missing: bool) {
             }
         }
     }
+}
+
+/// Applies the user-space tkinter repair for `flavor` and verifies it with a
+/// fresh import. Returns false when the flavor needs root (Distro), the
+/// interpreter version cannot be determined, or a step failed — the caller's
+/// guidance is the fallback in every false case. Default-on (no flag): every
+/// step runs through uv against uv-owned assets — the managed toolchain and
+/// the repository's own lockfile-driven venv, never the system — so a plain
+/// `cargo xtask setup` fixes itself instead of only advising.
+#[cfg(not(windows))]
+fn repair_tkinter(root: &Path, flavor: InterpFlavor) -> bool {
+    // major.minor is all uv's install/venv selectors need, and the only part
+    // that matters when swapping the broken interpreter for the bundled one.
+    let mut probe = util::uv_run(
+        root,
+        "nvoc-gui",
+        &[
+            "python",
+            "-c",
+            "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+        ],
+    );
+    let version = util::capture(&mut probe)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if version.is_empty() {
+        util::warn(
+            "could not determine the gui environment's python version; tkinter \
+             repair not attempted",
+        );
+        return false;
+    }
+    match flavor {
+        InterpFlavor::UvManaged => {
+            println!("  [..]   reinstalling the uv-managed python {version} (bundles Tcl/Tk)");
+            let mut command = Command::new("uv");
+            command.args(["python", "install", &version, "--reinstall"]);
+            util::run(&mut command).is_ok() && tkinter_import_ok(root)
+        }
+        InterpFlavor::SourceBuilt => {
+            println!("  [..]   provisioning uv's Tcl/Tk-bundled python {version}");
+            let mut install = Command::new("uv");
+            install.args(["python", "install", &version]);
+            if util::run(&mut install).is_err() {
+                return false;
+            }
+            println!("  [..]   recreating the environment with it (the next uv run re-syncs)");
+            let mut venv = Command::new("uv");
+            venv.args(["venv", "--clear", "--python", &version]);
+            venv.current_dir(root);
+            if util::run(&mut venv).is_err() {
+                return false;
+            }
+            tkinter_import_ok(root)
+        }
+        // Needs the distro package manager (root) — never auto-applied.
+        InterpFlavor::Distro => false,
+    }
+}
+
+/// Fresh tkinter import against the gui environment; the `uv run` also
+/// re-syncs a freshly recreated venv from the lockfile on its way in.
+#[cfg(not(windows))]
+fn tkinter_import_ok(root: &Path) -> bool {
+    let mut check = util::uv_run(root, "nvoc-gui", &["python", "-c", "import tkinter"]);
+    util::run(&mut check).is_ok()
 }
 
 /// True when the interpreter's base prefix lives under uv's managed-python
