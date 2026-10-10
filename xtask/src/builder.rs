@@ -31,8 +31,14 @@ pub fn build(args: &BuildArgs) -> Res<()> {
     }
     result?;
     if args.py_onefile {
-        py_onefile(&util::repo_root())?;
+        let result = py_onefile(&util::repo_root());
+        // Registered even when the step fails: the jobs build independently,
+        // so one dist directory can exist while the other job failed — a
+        // successful TUI must not lose its PATH entry to a broken GUI. Only
+        // what was actually built gets registered (see
+        // ensure_onefile_on_user_path).
         pathenv::ensure_onefile_on_user_path(&util::repo_root());
+        result?;
     }
     Ok(())
 }
@@ -400,11 +406,17 @@ fn py_onefile(root: &Path) -> Res<()> {
             Ok(Ok(dist)) => println!("  [{}] onefile artifact: {}", job.label, dist.display()),
             Ok(Err(message)) => {
                 let tail = log_tail(&job.log_path(root));
-                let message = if tail.is_empty() {
+                let mut message = if tail.is_empty() {
                     message
                 } else {
                     format!("{message}\n--- {} log tail ---\n{tail}", job.label)
                 };
+                // The advice rides in the failure message so it lands next to
+                // the log tail the user is already reading.
+                if let Some(hint) = failure_hint(&tail) {
+                    message.push_str("\n         hint: ");
+                    message.push_str(hint);
+                }
                 failure = failure.or(Some(message));
             }
             Err(_) => {
@@ -424,6 +436,32 @@ fn log_tail(path: &Path) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(30);
     lines[start..].join("\n")
+}
+
+/// Maps recognizable pyinstaller log signatures to actionable advice, so a
+/// failed onefile job points at the fix instead of only at a log tail. First
+/// match wins; pure so tests can feed samples.
+fn failure_hint(tail: &str) -> Option<&'static str> {
+    if tail.contains("No module named '_tkinter'") {
+        // The GUI spec imports customtkinter at build time, which needs the
+        // `_tkinter` extension a source-built python never compiled. The
+        // distro's tkinter package only serves the distro interpreter, so
+        // `apt install python3-tk` reports "already installed" while the
+        // build keeps failing.
+        Some(
+            "the frozen environment's python lacks the _tkinter extension; the distro's \
+             python3-tk package only fixes the distro interpreter. From the repository \
+             root run: uv python install 3.12 && uv venv --clear --python 3.12 (uv's \
+             python bundles Tcl/Tk), then rebuild",
+        )
+    } else if tail.contains("ModuleNotFoundError") {
+        Some(
+            "a dependency is missing from the uv environment; re-run `cargo xtask setup` \
+             to rebuild the environments, then rebuild",
+        )
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -451,6 +489,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn pyinstaller_log_signatures_map_to_hints() {
+        let hint = super::failure_hint("ModuleNotFoundError: No module named '_tkinter'")
+            .expect("tkinter signature recognized");
+        assert!(hint.contains("python3-tk"));
+        assert!(hint.contains("uv venv --clear --python 3.12"));
+        // Any other missing module falls back to the generic environment fix.
+        let hint = super::failure_hint("ModuleNotFoundError: No module named 'customtkinter'")
+            .expect("missing module recognized");
+        assert!(hint.contains("cargo xtask setup"));
+        assert_eq!(super::failure_hint("linker crashed; core dumped"), None);
     }
 
     #[test]

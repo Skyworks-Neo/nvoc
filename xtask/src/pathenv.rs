@@ -15,11 +15,18 @@ pub fn ensure_release_on_user_path(root: &Path) {
     ensure_dirs_on_user_path(&[root.join("target").join("release")]);
 }
 
-/// Called after a successful `xtask build --release --py-onefile`: the two
-/// PyInstaller dist directories join the user PATH next to target/release,
+/// Called after `xtask build --release --py-onefile`: the PyInstaller dist
+/// directories that actually exist join the user PATH next to target/release,
 /// so the onefile `NVOC-GUI`/`nvoc-tui` launchers are reachable everywhere.
+/// One onefile job can fail while the other succeeded, so what got built —
+/// not the step's overall success — decides what is registered; with nothing
+/// built at all this is a no-op.
 pub fn ensure_onefile_on_user_path(root: &Path) {
-    ensure_dirs_on_user_path(&[root.join("gui").join("dist"), root.join("tui").join("dist")]);
+    let dists = [root.join("gui").join("dist"), root.join("tui").join("dist")];
+    let built: Vec<PathBuf> = dists.into_iter().filter(|dir| dir.is_dir()).collect();
+    if !built.is_empty() {
+        ensure_dirs_on_user_path(&built);
+    }
 }
 
 fn ensure_dirs_on_user_path(dirs: &[PathBuf]) {
