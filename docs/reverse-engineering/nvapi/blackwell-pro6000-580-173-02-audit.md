@@ -92,6 +92,41 @@
 
 **结论**：Windows 上的"内核写功率顶"配方（Nvpwr/sys 门禁 + RVA 签名 + PowerRoot 字段写）在 Linux 开源驱动栈上**没有对应物**——等价物在 GSP-RM 固件里。kmd-power-policy-layout-r610-74.md 应加"Linux: N/A（GSP-only）"横向批注；Linux 侧的用户态可达功率面 = T3-7 的命名控制族（RATED_TDP/EDPP/TGP-mode，带特权门）。
 
+## 活体实验记录（2026-10-11，`blackwell_recon_live` 首跑 + CLI 采样）
+
+T4-4 任务在真机执行（只读），文档等待已久的三个 50 系悬案一次收官：
+
+**1. §4.3 测量语义裁决 — index 语义活体钉死**
+直测 0x527FC458 扫表（+4=0..28）+ TopRels 比率自检：
+
+| +4 | 读数 | 归属 | 自检 |
+|---|---|---|---|
+| 0 | 2432.801 MHz | GPC | =Graphics 时钟 ✓ |
+| 1 | 2180.953 MHz | **XBAR** | **0.8965×GPC ≈ TopRels 比率 0.8999 ✓✓** |
+| 2 | 2212.428 MHz | SYS（GPC 派生） | 0.9094×GPC |
+| 4 | 12479.384 MHz | MCLK | =Memory ✓ |
+| 20 | 1991.483 MHz | **uProc**（见下） | 0.8186×GPC |
+| 21 | 2107.001 MHz | **Msd/Vid** | =video max 2107 分毫不差 |
+| 22 | 107.936 MHz | Utils | 定频 108，与 Ada 一致 |
+| 3,5-18,23-25 | -104 | 本代无测量槽 | |
+| 19,26-28 | -5 | 非法 | |
+
+XBAR 自检通过 = **index 语义 + 域归因同时活体确认**（与 shim 反编译裁决 T2-1 双源一致）。NvpwrControl 工具传 +4=0x2 实测的是 SYS，其 "physical XBAR" 展示错域——结案。
+
+**2. §4.1 V2 记录子型 — 活体读数与 shim 静态解三源互锁**
+ClockDomains V2 GetControl（magic 0x261A4）：controllable mask 0xFF，**dom 0-7 全部 type=0x0F**。这个 0x0F 不是 NvpwrControl 字面的 wire 值，而是 shim 映射的输出：wire 子型 0x10 → `sub_9D10` case 16→15(0x0F) 写入 rec+0（若 wire 真是 0x0F=15，映射后应为 0x0E≠观测）——静态 T2-3/T2-4 与活体三源互锁。BW 锚点 freq@+0x114 / MSVDD@+0x11C 结构上可读但**值全零**（空闲态无 populate）→ "唯一活跃条目"启发式正确返回 None 不误触发。
+
+**3. TopRels 比率记录 — 首次活体命中**
+GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.8999) @rec+0x68**——tag3+0xE660 是 Blackwell 特有的推断（nvpwrcontrol-audit §9.1 在 Ada 上观察到 tag5/payload0）获活体证实；本机 GPC:XBAR = 0.9。§9.1 的"Ada 边是 enum=2 无比率"对照成立。
+
+**4. 域 21（Msd）显示问题 — 用户悬案定论**
+"50 系 MSD 显示一直是错"的活体终审：直测 +4=21 单次读 **2107.001 MHz = video 时钟 max 分毫不差**；同时段 GetAllClocks[21] 空闲漂浮 41-211 MHz（媒体子系统空闲门控，真值非错读）。**域 21 = video/media 时钟在 50 系活体确认**——xOCD 的 "Video/NVD" 归因正确，2026-10-05 "不权威"裁决翻案；`Msd/Vid` 双名标签保留。深度空闲读数漂浮是门控现象，不是显示 bug。
+
+**5. uProc 数值确认**
++4=20 直测 1991.483 MHz（0.8186×GPC），与 All Clocks 面板 1990.6-1991.5 一致——域 20 在 GB202 上为核心邻近可变时钟（Ada 上为定频 540），uProc（微处理器/GSP 类）释义成立。
+
+**遗留**：视频负载确认（需 NVENC 客户端，本机无 ffmpeg/torch）——装齐后跑一次 encode，预期 Msd/Vid 跳至 2107 档且 VideoEngine>0；ECC/负载下 bit 32 归因实验同批。
+
 ## 文档裁决记录（对既有文档的修订指令）
 
 1. `nvpwrcontrol-blackwell-tuner-audit.md` §4.3：裁决为**读法 A**（index 语义）；工具的 "XBAR physical"= SYS；§9.3 裁决协议可关闭。
@@ -100,6 +135,9 @@
 4. `unregistered-handler-triage-2.md`：`0x991E343D` 误标翻案（= SET 0x2080D01C 的读孪生，OC 相关）。
 5. `nvapi-rs sys/src/gpu/clock.rs:1975`：0xFB8F61EC ↔ RM cmd 归属纠正（0x20809018；0x20809006 属 0x527FC458）。
 6. `linux-version-coverage-audit.md`：QI 基线按版本分叉（610.57.04=590 / 580.173.02=547）；NVML 基线 255/404/417 三点。
+7. （活体补强 2026-10-11）§4.3 从"结构层裁决"升级为"活体双源裁决"：XBAR 比率自检 0.8965≈0.8999 通过，index 语义+域归因同时钉死，§9.3 协议正式关闭。
+8. （活体补强 2026-10-11）域 21 = video/media 时钟在 50 系活体确认（+4=21 读 2107.001 = video max 分毫不差）；2026-10-05 "xOCD Video 标注不权威"的裁决翻案；`Msd/Vid` 双名保留，深度空闲漂浮值 = 媒体子系统门控真值。
+9. （活体补强 2026-10-11）§4.1 V2 记录：GB202 真机 dom 0-7 的 rec+0 全部 type=0x0F——这**正是 T2-3/T2-4 shim 映射的输出**（wire 子型 0x10 → `sub_9D10` case 16→15 = 0x0F 写入 rec+0；若 wire 是 NvpwrControl 字面的 0x0F=15，映射后应是 0x0E）。三源互锁：NvpwrControl 的 0x0F marker（Windows 写 wire 原值或同映）+ shim 16→15 case + 真机 rec+0=0x0F。BW 锚点结构可读但空闲态值全零。
 
 ## repo 集成点（主循环人工核对，修正了代理维度的"零识别"误报）
 
