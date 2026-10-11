@@ -194,6 +194,8 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 
 **遗留**（按价值排序）：①CLK 模块（0x10DF000-0x1120000）+ PERF 簇（0x1740000-0x17B0000，含 softFloor 调用者 0x178F684/0x1AFAA4C）穷举 root+7408 槽 544/545/600 的读取者——彻底钉死"引擎永不读这些组"（已采样路径全为控制面，穷举未完成）；②NVOC 类厂表 off_4161248 枚举 → 找 root+7408 表的写入者（root ctor）；③PRIVATE 面 0xFEC00D04 不在 NV2080 类表——按 method 0x0D04/0xFEC0 扫其它类分派表；④libnvidia-api.so.i64 查 reasonId→NVAPI 位映射（关 bit 0x20）；⑤活体对照 /proc/driver/nvidia/params + nvidia-smi -q -d PERFORMANCE 的 RmPerfCf* 默认值（服务器 vs 消费 616.92）。
 
+**GSP 分派表全量 inventory（`probe/gsp_dispatch_inventory.txt`）**：条目布局修正为 stride 40B {u64 f0; u64 f1; u32 cmd@16; u32 psz; u64 schema@24; u64 impl@32}，0x1C19000..0x1C1E000 区间共 **82 个 0x2080 控制全部枚举**。亮点：**0x2080A611 (psz 0xA28C) / 0x2080A619 (psz 0x2A030=172KB) / 0x2080A632** = PMGR FINN 族（Windows PowerRoot 等价命令带 0x2080A6xx 在 GSP 侧的在位证据）；**0x2080D020 (psz 0x4BD8) impl 0x1120F9C** = p100-audit VF trio 的 SET 且 impl 落在 CLK 模块边界（PRIVATE 面候选，B 任务②相关）；0x2080A023 (psz 0x2799C=163KB) 巨型控制待归类。MODS 交叉参考指认的 SetPerfPoint/InjectPerfPoint 行为化提交面应在此表中（确切 cmd 待 MODS 二进制 assert 桥接确认——MODS 包在另一机器）。
+
 ## 文档裁决记录（对既有文档的修订指令）
 
 1. `nvpwrcontrol-blackwell-tuner-audit.md` §4.3：裁决为**读法 A**（index 语义）；工具的 "XBAR physical"= SYS；§9.3 裁决协议可关闭。
