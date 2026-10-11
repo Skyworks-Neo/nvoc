@@ -174,6 +174,8 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 - 工程意义：**XBAR 降频（策略级）真通道** + nvpwrcontrol §4.4 SetControl 首次真机验证 + "比率记录 Blackwell 特有"二次证实。
 - 写法（本卡实测要点）：TopRels CONTROL 0x1075C，**seed 仅 +4=0xFF**（616.92 式全量种子 -104 被拒，`top_rels_control_seeded()` 的 seed_mask 是旧代配方需绕开），ratio dword @rest 0x64（abs 0x68），ver1 0x1075C。v2 失败教训：up-walk-only 会把"钳死"误判为"惰性"——**行为实验必须双向**。
 
+**v4 包络测绘（同日）**：记录面无限制（0.0687..1.0 全部落表逐字精确）；引擎行为 = **XBAR = ratio × GPC，钳制于 [~884MHz 频率下限， 0.9 devinit 上限墙]**——0.30/0.0687/0.075 实测均 0.364（884-885MHz 频率钳而非比率钳）；0.9062/0.9102/0.9141/0.95/1.0 落表但时钟钉死 0.897-0.900。H2（转换触发）彻底否定：包括跨负载转换在内全部即时应用。上钳制点 = devinit 比率本身，细边界待扫。
+
 ## GSP-RM 固件逆向报告（2026-10-11，gsp_rm_inner.elf 全量分析）
 
 资产：`reverse/linux-580.173.02/gsp_rm_inner.elf.i64`（168MB 完整 IDA 库，27,985 函数，~4s 可开）+ `probe/gsp_rm_decompiles/` 27 个反编译文件。地址桥接：内层 ELF 逐字嵌入外层 bundle 偏移 0x1A1040，LOAD1（代码+rodata）outer_vaddr = inner_vaddr + 0xA1000。注意 `gsp_ga10x.bin.i64`（304MB）实为**零分析**（loader 输出，0 函数）——真身是内层 ELF。idalib 30s 空闲超时会杀死大库加载，绕法 = 直接批驱动 idapro.open_database()（内层全量分析 2005s 单线程）。
