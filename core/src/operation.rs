@@ -2724,14 +2724,43 @@ impl GpuOperation for SetSubdomainFreqRatio {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        // 40-series/Ada shape: the control record exists but the ratio slot
+        // reads 0 (no ratio carrier on this generation) — a write would be
+        // silently ignored, so surface that instead of a pointless RM write.
+        if gpu.top_rels_ratio_slot(self.slot).map_err(Error::from)? == Some(0) {
+            return Err(Error::Custom(format!(
+                "TopRels ratio slot {} reads 0 (no ratio carrier on this generation) — write face not applicable",
+                self.slot
+            )));
+        }
         let ratio = if (self.ratio - 0.9).abs() < f64::EPSILON {
             0xE660
         } else {
             (self.ratio * 65536.0).round() as u32
         };
+        gpu.set_top_rels_ratio_slot(self.slot, ratio)
+            .map_err(Error::from)
+    }
+}
+
+/// Read one TopRels control slot's ratio (raw U16.16; slots 0/10-13).
+#[derive(Clone, Copy, Debug)]
+pub struct QuerySubdomainFreqRatioSlot {
+    pub slot: usize,
+}
+
+impl GpuOperation for QuerySubdomainFreqRatioSlot {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QuerySubdomainFreqRatioSlot
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         target
             .nvapi()?
-            .set_top_rels_ratio_slot(self.slot, ratio)
+            .top_rels_ratio_slot(self.slot)
             .map_err(Error::from)
     }
 }
@@ -2755,6 +2784,10 @@ impl GpuOperation for ResetSubdomainFreqRatio {
         let Some(default) = gpu.top_rels_default_ratio(self.slot).map_err(Error::from)? else {
             return Ok(None);
         };
+        if default == 0.0 {
+            // ratio carrier absent on this generation (40-series/Ada shape)
+            return Ok(None);
+        }
         let raw = (default * 65536.0).round() as u32;
         gpu.set_top_rels_ratio_slot(self.slot, raw).map_err(Error::from)
     }

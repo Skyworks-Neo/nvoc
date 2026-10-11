@@ -26,7 +26,7 @@ use nvoc_core::{
     ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
     ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
     ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset,
-    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetTopRelsRatioToDefault,
+    ResetPublicVftableGpcLock, ResetPublicVftableOffset,
     ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
     SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
     SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
@@ -4478,11 +4478,26 @@ fn execute_target(
                     json!({"supported": false, "note": "TopRels control answers on 50-series only (Pascal/Turing -103, Ampere/Ada -1)"}),
                 );
             };
+            // slot inventory: 0 = engine-tracked active ratio; 10-13 =
+            // regime-variant stores (writable, engine-inert on 580.173.02).
+            // Exposed so users discover set/reset-subdomain-freq-ratio --slot.
+            let mut slots = serde_json::Map::new();
+            for slot in [0usize, 10, 11, 12, 13] {
+                if let Some(raw) =
+                    run(target, QuerySubdomainFreqRatioSlot { slot })?.output
+                {
+                    slots.insert(
+                        slot.to_string(),
+                        json!({ "raw": raw, "ratio": raw as f64 / 65536.0 }),
+                    );
+                }
+            }
             Ok(json!({
                 "offset": offset,
                 "raw": raw,
                 "raw_hex": format!("{raw:#x}"),
                 "ratio": raw as f64 / 65536.0,
+                "slots": slots,
             }))
         }
         Command::SetTopRelsRatio => {

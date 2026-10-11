@@ -270,8 +270,6 @@ pub fn fetch_gpu_type(info: &GpuInfo) -> Result<GpuType, Error> {
 ///   ——Windows 上服务器卡也落这两档。名称含 Laptop/Notebook → Laptop，
 ///   否则 → Desktop（机箱级语义；"Server Edition" 属桌面型机箱家族）。
 pub fn fill_identity_gaps(info: &mut GpuInfo) {
-    use ::nvapi::{Foundry, GpuType as NvGpuType, SystemType};
-
     let (gpu_type, foundry, system_type) = derive_identity_gaps(
         &info.name,
         &info.codename,

@@ -131,6 +131,7 @@ pub enum OperationKind {
     ResetTopRelsRatioToDefault,
     SetSubdomainFreqRatio,
     ResetSubdomainFreqRatio,
+    QuerySubdomainFreqRatioSlot,
     SetNvapiVoltRailOffset,
     /// Set a volt-rail to an absolute target voltage (mV) by deriving the
     /// required µV offset from the live control/status snapshot. Shares the
