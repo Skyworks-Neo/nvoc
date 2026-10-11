@@ -234,6 +234,8 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 3. `0x28DCA3F0` 写路径安全评审（T4-2，对照两阶段连贯写协议）。
 4. ~~NVML 活体域枚举~~（已完成：`probe/nvml-sweep2.txt`，结果已回填）。
 5. RPC 侧功率控制序列化面枚举（验证轮遗留）：`rpcCtrlPerfRatedTdpSetControl_{STUB,v1A_1F}` @`0x176780`/`0x387470` 及 `rpcRmApiControl_*` 族。
+6. **MODS 交叉参考落地（见 [`../mods/mods-cross-reference-blackwell-pro6000.md`](../mods/mods-cross-reference-blackwell-pro6000.md)）**：(a) TopRels 活写面 = clock propagation topology relationship，先枚举关系（`GetClkTopPropRelsInfo` 语义）再逐关系测绘钳制边界；(b) `RmVFPointCheckIgnore` 配方已解（fpf.jse：使能→Volt3x.SetVoltagesMv 800-880mV→GetVoltageMv 回读→恢复；键只放宽 VF/电压限预检，非引擎策略）；(c) 行为化提交步 = `SetPerfPoint`/`InjectPerfPoint` 族（**非** 0x2080D01C/D02D 记录面）——遗留①的读者候选应加入这两个 impl。
+7. MODS x86-64 内嵌 RM ↔ GSP 固件 assert 字符串桥接：用本文 GSP 锚定串（softFloor/PERF-CF/PMGR）在 MODS 520/570 二进制（x86-64，反编译质量优于 RISC-V）解平行样本后映射回 GSP 地址；GB202 CVB 表真值已解（`cvb_ist_gb202_*.yme.dec`，注意 `usage: slt` 分档）。
 
 ## 证据与产物索引
 
@@ -242,3 +244,4 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 - live probe 归档：`reverse/linux-580.173.02/probe/{smi-full,smi-features,smi-supported-clocks,smi-query,query-gpu,proc-gpu-info,dmon-sample,nvml-exports,nvml-sweep,nvml-sweep2}.txt` + `nvml_sweep.py`/`nvml_probe2.py`
 - 多代理工作流：13 探测维度 × 逐 finding 对抗验证 × completeness critic × 3 followup；两轮共 39 个代理（25 首轮 + 5 个 429 限流死者中 2 个重跑成功，3 个由主循环人工补齐），journal: 会话目录 `wf_996f8571-8d0`；digest 快照 `probe/workflow-digest-r1.md`
 - modeset-survey / wrapper-gaps 维度未被独立代理完成（429），已分别由 strings-sweep+versions 修正、qi-table T3-3 覆盖关闭
+- MODS 量产包交叉参考：`docs/reverse-engineering/mods/mods-cross-reference-blackwell-pro6000.md`（.jse 解密算法+双代 keyblob、TopRels/rmkey/commit 序列证据、GB202 CVB 资产；解密产物与 IDA 库在分析机 `reverse/mods_analysis/`，不入库）
