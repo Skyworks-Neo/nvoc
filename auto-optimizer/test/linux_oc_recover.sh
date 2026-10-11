@@ -236,10 +236,16 @@ tier2_unbind_flr_rebind() {
 # RC watchdog is the teardown attempt failing). No unload or PCI trick
 # can clear it — only a host reboot re-initializes GSP-RM from scratch.
 gpu_wedged_below_driver() {
-  local since
-  since="$(date -d '10 minutes ago' '+[%s.%6N]' 2>/dev/null || true)"
-  local wedged recent
+  # signature 1: D-state writers stuck in the nvidia probe on THIS device —
+  # each prior recovery run leaves one more (kill -9 cannot clear D-state)
+  local stuck
+  stuck=$(ps -eo stat=,cmd= 2>/dev/null | grep -E '^[D]' | grep -c "echo '$gpu_pci' > .*bind" || true)
+  (( stuck > 0 )) && return 0
+  # signature 2: RC watchdog firing (GPU stopped answering channel preemption)
+  local wedged
   wedged=$(dmesg 2>/dev/null | grep -ci 'RC watchdog: GPU is probably locked' || true)
+  # signature 3: NVRM refuses PCI remove on this BDF (non-zero usage count)
+  local recent
   recent=$(dmesg -T 2>/dev/null | grep -i "non-zero usage count.*$gpu_pci" | tail -n 1 || true)
   (( wedged >= 3 )) && [[ -n "$recent" ]]
 }
