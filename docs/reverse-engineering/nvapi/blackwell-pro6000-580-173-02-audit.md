@@ -178,6 +178,8 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 
 **0.9 恒定写矩阵收官（`pro6000_slot_vf_matrix_live`）**：xbar slot2 ±100MHz、slot3 ±100mV、slot4 ±100 raw、VF 点 180..189 mode0 +50MHz、mode1 raw 1000——**全部落表（逐字回读）、全部行为惰性**（XBAR 2177-2186 噪声带，电压恒 960.0mV，GPC 恒 2426-2436）。两次 bank0 复位 645 点全通。服务器卡最终定性：**唯一行为活写的 VF 族通道 = TopRels 比率（下向自由、上行钳 devinit 0.9）；其余全部记录面**。
 
+**Envelope 实验收官（`pro6000_toprels_envelope_live`）**：五槽写矩阵（root）——rec10 0.8→0.95 落表、时钟钉死 0.898×（rec10 非引擎跟踪）；rec0→0.95 + rec11 上界 2.0→3.0 同写落表、时钟仍钉死（0.9 上限**非包络编码，是引擎侧策略**）。最终图景：五个 GPC:XBAR 比率槽中**只有 rec0 被引擎读**（下向自由、上向钳 devinit 值），rec10/11/12/13 = 惰性记录。上行解锁的剩余候选 = 注册表策略覆盖键（`RmPerfCfPolicyOverrides`/`RmPerfCfControllersOverrides`，协议见 §A；`RmVFPointCheckIgnore` 据 MODS 语义只放宽电压预检，对此无效）。
+
 ## GSP-RM 固件逆向报告（2026-10-11，gsp_rm_inner.elf 全量分析）
 
 资产：`reverse/linux-580.173.02/gsp_rm_inner.elf.i64`（168MB 完整 IDA 库，27,985 函数，~4s 可开）+ `probe/gsp_rm_decompiles/` 27 个反编译文件。地址桥接：内层 ELF 逐字嵌入外层 bundle 偏移 0x1A1040，LOAD1（代码+rodata）outer_vaddr = inner_vaddr + 0xA1000。注意 `gsp_ga10x.bin.i64`（304MB）实为**零分析**（loader 输出，0 函数）——真身是内层 ELF。idalib 30s 空闲超时会杀死大库加载，绕法 = 直接批驱动 idapro.open_database()（内层全量分析 2005s 单线程）。
