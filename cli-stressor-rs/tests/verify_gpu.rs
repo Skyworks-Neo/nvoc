@@ -3,7 +3,7 @@
 //! These need a real CUDA device and are `#[ignore]`d by default (repo policy:
 //! GPU-touching tests stay out of the default gate). Run them explicitly:
 //!
-//! `cargo test -p cli-stressor-cuda-rs --test verify_gpu -- --ignored`
+//! `cargo test -p cli-stressor-rs --test verify_gpu -- --ignored`
 
 // The lib's `cuda_backend` module only exists under the `cuda` feature; the
 // non-CUDA CI job compiles this test target with `--no-default-features`.

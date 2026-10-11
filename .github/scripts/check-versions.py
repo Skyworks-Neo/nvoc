@@ -21,7 +21,7 @@ CRATES = [
     "cli",
     "auto-optimizer",
     "srv",
-    "cli-stressor-cuda-rs",
+    "cli-stressor-rs",
     "nvoc-python",
     "xtask",
 ]

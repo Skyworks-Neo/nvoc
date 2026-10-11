@@ -1429,9 +1429,7 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
 fn render_grouped_help() -> String {
     use nvoc_cli_common::color::{stylize_group_heading, stylize_help_command};
     let mut text = String::new();
-    text.push_str(
-        "GPU core-domain stressor (Rust): CUDA compute + Vulkan graphics + video engines, with a validation sidecar\n\n",
-    );
+    text.push_str("GPU stressor: CUDA compute + Vulkan graphics + video engines, with a validation sidecar\n\n");
     text.push_str("Usage: cli-stressor-rs [OPTIONS]\n\n");
 
     let mut section = |key: &str, title: &str, flags: &[(&str, &str)]| {
@@ -1442,124 +1440,59 @@ fn render_grouped_help() -> String {
         for (flag, about) in flags {
             text.push_str(&format!("    {}  {}\n", stylize_help_command(flag), about));
         }
-        text.push('\n');
     };
 
     section(
         "cuda",
         "CUDA COMPUTE",
         &[
-            ("--duration <S>", "stress wall time [default: 90]"),
-            (
-                "--precisions <LIST>",
-                "fp32/tf32/fp16/bf16/int8/int16/int32/fp64 mix",
-            ),
-            (
-                "--kernel-types <LIST>",
-                "kernel-path mixture (gemm, memset, ...)",
-            ),
-            ("--stream-mode <MODE>", "single/dual/triple CUDA streams"),
-            (
-                "--mem-mode <MODE>",
-                "verify working set: auto/resident (L2-sized) / stream (slab)",
-            ),
+            ("--duration <S>", "stress wall time [90]"),
+            ("--precisions <LIST>", "fp32/tf32/fp16/bf16/int8/16/32/fp64"),
+            ("--kernel-types <LIST>", "kernel-path mixture"),
+            ("--stream-mode <M>", "single/dual/triple CUDA streams"),
+            ("--mem-mode <M>", "verify set: auto/resident (L2) / stream (slab)"),
             ("--no-verify", "disable the ride-on-load SDC detectors"),
-            (
-                "--verify-continue-on-error",
-                "count faults instead of aborting (rate mapping)",
-            ),
-            (
-                "--sdc-log <PATH>",
-                "JSONL SDC event stream + telemetry cadence",
-            ),
-            ("--gpu-generate", "device-side stress-buffer generation"),
+            ("--verify-continue-on-error", "count faults, don't abort"),
+            ("--sdc-log <PATH>", "JSONL SDC events + telemetry"),
         ],
     );
     section(
         "vulkan",
         "VULKAN GRAPHICS",
         &[
-            (
-                "--vulkan",
-                "run the offscreen render stress alongside the CUDA load",
-            ),
-            ("--vulkan-only", "pure Vulkan run (no CUDA required)"),
-            (
-                "--vulkan-window",
-                "windowed presentation (Windows; default offscreen)",
-            ),
-            ("--vulkan-msaa <N>", "MSAA sample count"),
-            (
-                "--pulse-mode <MODE>",
-                "power pulsing: fixed/sweep (MODS VkStressPulse)",
-            ),
-            (
-                "--pulse-duty <PCT>",
-                "burst fraction of each pulse period [default: 30]",
-            ),
-            (
-                "--pulse-low-hz <HZ>",
-                "pulse floor, 50 Hz = the RM power-capping period",
-            ),
-            (
-                "--pulse-high-hz <HZ>",
-                "sweep ceiling (frames > period saturate duty)",
-            ),
-            (
-                "--pulse-spin-idle",
-                "spin through idle windows (kHz range, burns a core)",
-            ),
-            (
-                "--vulkan-queue-priority-low",
-                "render queue at LOW global priority",
-            ),
+            ("--vulkan", "render stress beside the CUDA load"),
+            ("--vulkan-only", "pure Vulkan run (no CUDA)"),
+            ("--vulkan-window", "windowed presentation (Windows)"),
+            ("--pulse-mode <M>", "fixed/sweep duty-cycle pulsing"),
+            ("--pulse-duty <PCT>", "burst fraction per period [30]"),
+            ("--pulse-spin-idle", "spin idle windows (kHz range)"),
+            ("--vulkan-queue-priority-low", "render queue at LOW priority"),
         ],
     );
     section(
         "video",
         "VIDEO ENGINES",
         &[
-            (
-                "--video",
-                "NVENC→NVDEC encode/decode loop alongside the CUDA load",
-            ),
-            ("--video-only", "pure video-engine run"),
-            (
-                "--video-validate",
-                "CRC-check every decoded frame (default on; forces CONSTQP)",
-            ),
-            (
-                "--video-width <PX>",
-                "synthetic frame width [default: 1920]",
-            ),
-            (
-                "--video-height <PX>",
-                "synthetic frame height [default: 1080]",
-            ),
-            (
-                "--video-preset <P>",
-                "NVENC preset p1..p7 (1 = fastest, 7 = best) [default: p3]",
-            ),
-            (
-                "--video-bitrate <BPS>",
-                "H264 CBR bitrate (only with --video-validate off)",
-            ),
+            ("--video", "NVENC→NVDEC loop beside the CUDA load"),
+            ("--video-only", "pure video run"),
+            ("--video-validate <B>", "CRC decoded frames [true]"),
+            ("--video-preset <P>", "NVENC preset p1..p7 [p3]"),
+            ("--video-width/--video-height", "frame size [1920x1080]"),
         ],
     );
     section(
-        "common",
-        "COMMON",
+        "general",
+        "GENERAL",
         &[
-            ("--gpu-index <N>", "CUDA GPU index in PCI-bus-sorted order"),
+            ("--gpu-index <N>", "GPU index (PCI-bus-sorted)"),
             ("--gpu-uuid <UUID>", "select GPU by UUID"),
+            ("--pci-bus <ADDR>", "select GPU by PCI address"),
+            ("--list-gpus", "list CUDA devices and exit"),
             ("--json-out <PATH>", "machine-readable verdict JSON"),
-            ("--config <PATH>", "runtime TOML config"),
-            ("--profile <NAME>", "built-in TOML profile (e.g. standard)"),
+            ("--config/--profile", "runtime TOML / built-in profile"),
         ],
     );
-    text.push_str(
-        "Run `cli-stressor-rs --help` for the complete option list; GPU-mutating loads need a real device.\n",
-    );
+    text.push_str("\nRun `cli-stressor-rs --help` for the complete option list.\n");
     text
 }
 

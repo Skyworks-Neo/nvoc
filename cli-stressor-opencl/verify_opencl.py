@@ -1,6 +1,6 @@
 """Ride-on-load verification for the OpenCL stressor.
 
-Mirrors the CUDA implementation (cli-stressor-cuda-rs verify_kernels.rs):
+Mirrors the CUDA implementation (cli-stressor-rs verify_kernels.rs):
 the checker rides the GEMM pipeline and inspects the buffers the stress ops
 hammer, expected values are recomputed from the element index (no golden
 buffer), per-check state is reduced device-side into a compact report, and

@@ -7,7 +7,7 @@
 - NVIDIA 官方 OC Scanner 逆向：`01-memory/nvidia-oc-scanner-reversed.md`、会话 `98c31eb8-*.jsonl`（行 13197-13619，scanner.dll + gpu_stressor 全逆）
 - HYDRA 2.2B PRO 逆向：`01-memory/hydra-22b-pro-reversed.md`、会话 `8b18f9fb-*.jsonl`（GpuStress readback 解码）
 - 170HX HBM 取证：会话 `170HX/8f113028-*.jsonl`
-- 当前实现：`cli-stressor-cuda-rs/` 全源码通读 + `auto-optimizer/` 扫描判据链
+- 当前实现：`cli-stressor-rs/` 全源码通读 + `auto-optimizer/` 扫描判据链
 
 ---
 
@@ -15,7 +15,7 @@
 
 nvoc 的自动超频判定回路完全在用户态，stressor 本身只产生负载，判据分两层：
 
-**stressor 层**（cli-stressor-cuda-rs）：
+**stressor 层**（cli-stressor-rs）：
 - 失败途径穷举：CUDA/cuBLAS API 错误、GEMM 校验失败、Vulkan sidecar error flag。退出码 0/1/2。
 - 唯一数值校验 = `validate_precision`（lib.rs:791-847）：独立生成的 1024² 小矩阵 CPU FP64 参考 vs GPU，逐元素 atol/rtol 比对，默认每 5s 一次。**与正在压测的大矩阵/burst 缓冲完全无关**。
 - **从不校验的路径**：memcpy dst、memset 缓冲、atomic 输出、intalu 输出（"intentionally non-referenceable"，lib.rs:294-305）、INT8 GEMM、Vulkan image。asum 是唯一每迭代隐式 D2H 的路径但回传值不比对。
@@ -105,7 +105,7 @@ nvoc 的自动超频判定回路完全在用户态，stressor 本身只产生负
 2. **FP8 是名义精度**：可解析、有 SM 门控，但 backend upload/gemm 直接报错（backend.rs:245-247, gemm.rs:473-475）。
 3. `run_stress_for_precision`（lib.rs:1007）pub API 全仓库无调用者。
 4. `empty_cache()` 是 no-op（backend.rs:480-482）。
-5. dyn-export 内嵌 profile 跑 FP32，而 external 模式的 50 系 toml（auto-optimizer/test/cli-stressor-cuda-rs-dyn-export-50series.toml）实际跑 FP16——两者负载强度不一致，作对照时需注意。
+5. dyn-export 内嵌 profile 跑 FP32，而 external 模式的 50 系 toml（auto-optimizer/test/cli-stressor-rs-dyn-export-50series.toml）实际跑 FP16——两者负载强度不一致，作对照时需注意。
 6. 早期优化的 tiled_random_bytes（4MiB tile memcpy 路径）已随被删的 PyTorch stressor（#200）消失；Rust 侧对应物仅剩 rayon 逐 chunk 种子派生 + burst C 缓冲复用（#214）。
 
 ---
@@ -123,7 +123,7 @@ nvoc 的自动超频判定回路完全在用户态，stressor 本身只产生负
 关键出处索引：
 - `reverse/nvoc-gpu-archive-2026-08-28/01-memory/nvidia-oc-scanner-reversed.md`、`hydra-22b-pro-reversed.md`
 - 会话原文：`02-conversations/nvoc/98c31eb8-*.jsonl` 行 13197-13619（Scanner）；`8b18f9fb-*.jsonl` 行 1321-1359（HYDRA readback）；`170HX/8f113028-*.jsonl` 行 249/266（ECC 取证）
-- 当前实现：`cli-stressor-cuda-rs/src/lib.rs:791-847`（校验 sidecar）、`lib.rs:294-305`（INT 不校验声明）、`int_alu.rs:46`（LCG）、`main.rs:303-314`（profile 字段）；`auto-optimizer/src/oc_scanner/pressure.rs:627-800`（事件日志判据）、`scan_strategy.rs:147-341`（StepController）
+- 当前实现：`cli-stressor-rs/src/lib.rs:791-847`（校验 sidecar）、`lib.rs:294-305`（INT 不校验声明）、`int_alu.rs:46`（LCG）、`main.rs:303-314`（profile 字段）；`auto-optimizer/src/oc_scanner/pressure.rs:627-800`（事件日志判据）、`scan_strategy.rs:147-341`（StepController）
 
 
 ---

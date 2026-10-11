@@ -1,4 +1,4 @@
-# cli-stressor-cuda-rs
+# cli-stressor-rs
 
 > Language switch / 语言切换: [中文](#中文) | [English](#english)
 >
@@ -35,7 +35,7 @@
 
 ### 概述
 
-`cli-stressor-cuda-rs` 是一个用 Rust 编写的 CUDA 计算压力测试工具。它通过随机化 GEMM / 整数 ALU / 访存 / 原子操作负载和周期性的 CPU 侧校验，帮助发现静默数据损坏和硬件稳定性问题。
+`cli-stressor-rs` 是一个用 Rust 编写的 CUDA 计算压力测试工具。它通过随机化 GEMM / 整数 ALU / 访存 / 原子操作负载和周期性的 CPU 侧校验，帮助发现静默数据损坏和硬件稳定性问题。
 
 ### 功能特点
 
@@ -99,24 +99,24 @@
 CUDA 支持通过 feature flag 控制。
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
+cargo run -p cli-stressor-rs --features cuda -- --duration 30 --precisions fp16,tf32
 ```
 
 ```bash
 # 混合 FP + 整数压力（推荐）
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions fp16,bf16,int8,int32 \
   --kernel-types gemm,intalu,memcpy
 
 # INT16 压力（仅 intalu）
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions int16 \
   --kernel-types intalu
 
 # INT8 cuBLAS GEMM + INT32 intalu 混合
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions int8,int32 \
   --kernel-types gemm,intalu
@@ -125,19 +125,19 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- \
 若启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
 
 ```bash
-cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
+cargo build --release -p cli-stressor-rs --features cuda,vulkan
 ```
 
 可选：通过配置文件运行（所有选项都可放入 config）。
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
+cargo run -p cli-stressor-rs --features cuda -- --config ./stressor.toml
 ```
 
 ### 配置文件
 
 - 参数优先级：`命令行显式传入 > config 文件 > 内置默认值`
-- 内置 autoscan profile 位于 `cli-stressor-cuda-rs/profiles/`：
+- 内置 autoscan profile 位于 `cli-stressor-rs/profiles/`：
   - `40-50.toml`：面向 NVIDIA GeForce RTX 40/50 系显卡，由 auto-optimizer 自动选择。
   - `standard.toml`：默认配置，面向 8G+ 显存显卡。
   - `low-vram.toml`：较低显存配置，面向 6G-8G 显存显卡。
@@ -232,7 +232,7 @@ burst_iters = 64
 
 ### Overview
 
-`cli-stressor-cuda-rs` is a Rust-based CUDA compute stress tool. It uses randomized GEMM / integer ALU / memory / atomic workloads and periodic CPU-side validation to help detect silent data corruption and hardware stability issues.
+`cli-stressor-rs` is a Rust-based CUDA compute stress tool. It uses randomized GEMM / integer ALU / memory / atomic workloads and periodic CPU-side validation to help detect silent data corruption and hardware stability issues.
 
 ### Features
 
@@ -296,24 +296,24 @@ Enforced at startup; incompatible combos exit with an error:
 CUDA support is behind a feature flag.
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
+cargo run -p cli-stressor-rs --features cuda -- --duration 30 --precisions fp16,tf32
 ```
 
 ```bash
 # Mixed FP + integer stress (recommended)
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions fp16,bf16,int8,int32 \
   --kernel-types gemm,intalu,memcpy
 
 # INT16 stress (intalu only)
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions int16 \
   --kernel-types intalu
 
 # INT8 cuBLAS GEMM + INT32 intalu mixed
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions int8,int32 \
   --kernel-types gemm,intalu
@@ -322,19 +322,19 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- \
 When enabling Vulkan graphics stress, build with both features:
 
 ```bash
-cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
+cargo build --release -p cli-stressor-rs --features cuda,vulkan
 ```
 
 Optional: run with a config file (all options can be provided in config).
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
+cargo run -p cli-stressor-rs --features cuda -- --config ./stressor.toml
 ```
 
 ### Config File
 
 - Precedence: `explicit CLI value > config file > built-in default`
-- Built-in autoscan profiles are under `cli-stressor-cuda-rs/profiles/`:
+- Built-in autoscan profiles are under `cli-stressor-rs/profiles/`:
   - `40-50.toml`: tuned for NVIDIA GeForce RTX 40/50-series GPUs and selected automatically by auto-optimizer.
   - `standard.toml`: default profile for cards with 8G+ VRAM.
   - `low-vram.toml`: lower-VRAM profile for cards with 6G-8G VRAM.

@@ -214,6 +214,11 @@ pub fn stylize_group_heading(group: &str, text: &str) -> String {
         "vfp" => Color::BrightBlue,
         "perf" => Color::BrightYellow,
         "scanner" => Color::BrightCyan,
+        // cli-stressor-rs grouped-help families (neighbors differ in hue).
+        "cuda" => Color::BrightRed,
+        "vulkan" => Color::BrightGreen,
+        "video" => Color::BrightMagenta,
+        "general" => Color::BrightWhite,
         _ => Color::BrightWhite,
     };
     text.color(color).bold().to_string()

@@ -42,7 +42,7 @@ The matrix produces:
 |---|---:|---:|---:|---:|
 | `nvoc-cli`, `nvoc-tui`, `nvoc-gui` | Yes | Yes | Yes | Yes |
 | Bundled `nvoc-auto-optimizer` executable | Yes | Yes | Yes | Yes |
-| Standalone `cli-stressor-cuda-rs` executable | Yes | Yes | Yes | Yes |
+| Standalone `cli-stressor-rs` executable | Yes | Yes | Yes | Yes |
 | OpenCL stressor | Yes | Yes | Yes | No |
 | Standalone NVOC-SRV executables | No | No | Yes | Yes |
 
