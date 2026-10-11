@@ -178,6 +178,8 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 
 **perf 原因注册表**（mission 4）：两处 32B 记录注册表 {name, kind 0xFF01..0xFF0B, seqIdx, limitId, typeFlag}——Registry A @0x1DEB548 119 条（POWERMIZER=32、ECC_MAX=144、CUDA_MAX=152、RATED_TDP_MAX/MIN=136/133、OOB_CLOCK_LIMIT=142/143、FORCED=130、OVERCLOCK=77…）、Registry B ~0x1DEC3E8（PERFORMANCE_CAP0/1、PERF_CF_CONTROLLER_{GPC,DRAM,NVD,XBAR,PCIE}_{MIN,MAX}、POWERMIZER_HARD…）。NVAPI 位变换（bit 0x20 归因）在宿主侧 libnvidia-api.so——待查其 limits 响应解析器（.i64 已在盘）。
 
+**bit 0x20 活体归因实验（同日，`pro6000_perf_status_live`）**：PerfPoliciesGetStatus RAW dump（0x550 结构全量）显示——空闲与 NVENC 4K120 负载下 **limits 恒为 0x10（NoLoad）**，bit 0x20 从未激活；policies 位图恒 3；padding 尾部仅 +0x38/+0x3c 有一个不变的 64 位计数（0xc42c3680_00007a89，疑似冻结的时间戳——旁证 Linux shim 的 GetStatus 只回填前 16 字节，其余为陈旧/零）。结论：**bit 0x20 = "supported 但本负载形态下永不激活"的限因**。NVENC 类负载不足以触发；归因路径 = 功率钳制下的 CUDA 计算负载（`nvidia-smi -pl 300` root 后跑满 → 观察位 0x1/0x20 是否同亮）或 GSP 侧 perf-CF 引擎 6 元限因数组的定位（遗留①的子任务）。另注：Linux shim 的 GetStatus 实为 16B 简化传输（selector 0x5A，3 输出），与 Windows 0x550 结构语义不同——nvid.rs 的 id→名映射沿自 Windows RE，Linux 侧行为以实测为准。
+
 **遗留**（按价值排序）：①CLK 模块（0x10DF000-0x1120000）+ PERF 簇（0x1740000-0x17B0000，含 softFloor 调用者 0x178F684/0x1AFAA4C）穷举 root+7408 槽 544/545/600 的读取者——彻底钉死"引擎永不读这些组"（已采样路径全为控制面，穷举未完成）；②NVOC 类厂表 off_4161248 枚举 → 找 root+7408 表的写入者（root ctor）；③PRIVATE 面 0xFEC00D04 不在 NV2080 类表——按 method 0x0D04/0xFEC0 扫其它类分派表；④libnvidia-api.so.i64 查 reasonId→NVAPI 位映射（关 bit 0x20）；⑤活体对照 /proc/driver/nvidia/params + nvidia-smi -q -d PERFORMANCE 的 RmPerfCf* 默认值（服务器 vs 消费 616.92）。
 
 ## 文档裁决记录（对既有文档的修订指令）
