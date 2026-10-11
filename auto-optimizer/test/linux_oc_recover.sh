@@ -11,8 +11,11 @@
 # holders exit. This script therefore:
 #   - runs every potentially blocking step as a background writer polled
 #     against a deadline, so the script itself can never wedge;
-#   - reports /dev/nvidia* holders up front (fuser, fallback lsof); with
-#     --kill-holders it SIGKILLs them first (kills ALL GPU clients machine-wide);
+#   - reports /dev/nvidia* holders up front (fuser, fallback lsof) plus any
+#     docker containers holding the device (their containerd-shim shows in
+#     fuser but not what it serves); with --kill-holders it SIGKILLs the
+#     holders and stops those containers first (kills ALL GPU clients
+#     machine-wide; stopped containers are restarted on exit);
 #   - stops nvidia-persistenced — the by-design permanent fd holder — before
 #     tearing anything down, and restarts it at the end.
 #
@@ -26,13 +29,21 @@
 #
 # Ladder (first tier whose post-check passes wins):
 #   1. nvidia-smi -r        in-driver reset, per-GPU, cheapest
-#   2. unbind -> PCI FLR -> rebind
+#   2. GSP-wedge bus reset  the 2026-10-12 live-proven recovery for the
+#                           "WPR2 already up" / RmInitAdapter-failed GSP wedge
+#                           (RTX PRO 6000, 580.173.02): stop display-manager,
+#                           unload the nvidia CLIENT modules (never nvidia
+#                           itself), unbind, SECONDARY BUS reset (deeper than
+#                           FLR — FLR alone does not clear the GSP WPR2 state),
+#                           restore reset_method, rebind, restart the DM
+#   3. unbind -> PCI FLR -> rebind
 #                           original path; FLR is the step that actually
 #                           resets hardware state (PLL/VREG) written bad by OC
-#   3. PCI remove + rescan  rescues devices that fell off the bus (Xid 79)
-#   4. module stack reload  last resort; affects every GPU on the host
+#   4. PCI remove + rescan  rescues devices that fell off the bus (Xid 79)
+#   5. module stack reload  last resort; affects every GPU on the host
 #
-# Exit codes: 0 recovered (or already healthy), 1 still broken, 127 usage.
+# Exit codes: 0 recovered (or already healthy), 1 still broken, 3 wedged
+# below the driver (reboot required), 127 usage.
 
 set -u
 
@@ -46,10 +57,15 @@ FORCE=0
 gpu_pci=""
 DRV_DIR=/sys/bus/pci/drivers/nvidia
 PERSISTED_STOPPED=0
+DM_STOPPED=0
+DOCKER_GPU_CONTAINERS=()
+DOCKER_STOPPED=()
 IDX=""
 
 usage() {
   echo "Usage: sudo $0 [--kill-holders] [--force] NV_GPU_PCI_ID (like 0000:01:00.0)" 1>&2
+  echo "  --kill-holders  SIGKILL /dev/nvidia* holders and stop docker GPU containers (restarted on exit)" 1>&2
+  echo "  --force         skip the health probe, run the ladder regardless" 1>&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -184,6 +200,71 @@ restore_persistenced() {
   systemctl start nvidia-persistenced 2>/dev/null || true
 }
 
+# The display manager holds /dev/nvidia* fds through its session (a stopped
+# gdm still leaves the seat session's clients alive — live 2026-10-12: -r
+# kept answering "In use by another client" AFTER gdm died until the client
+# modules were unloaded). Tier 2 stops it outright; restored at finish.
+# Stopping it kills the console graphical session — SSH sessions survive.
+quiesce_display_manager() {
+  if systemctl is-active --quiet display-manager 2>/dev/null; then
+    echo "Stopping display-manager (graphical console session dies; restarted at the end)"
+    systemctl stop display-manager 2>/dev/null && DM_STOPPED=1 || true
+  fi
+}
+
+restore_display_manager() {
+  (( DM_STOPPED )) || return 0
+  echo "Restarting display-manager"
+  systemctl start display-manager 2>/dev/null || true
+}
+
+# Docker GPU containers hold /dev/nvidia* through containerd-shim — fuser
+# shows the shim pid but not what it serves. Detect them up front; --kill-
+# holders stops them (restarted at the end), without it they are reported
+# so the operator knows why an unbind can block.
+find_docker_gpu_containers() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+  local id info
+  for id in $(docker ps -q 2>/dev/null); do
+    info="$(docker inspect -f \
+      '{{json .HostConfig.DeviceRequests}} {{json .HostConfig.Devices}}' "$id" 2>/dev/null)" || continue
+    [[ "$info" == *nvidia* ]] || continue
+    DOCKER_GPU_CONTAINERS+=("$id $(docker inspect -f '{{.Name}}' "$id" 2>/dev/null || true)")
+  done
+  if (( ${#DOCKER_GPU_CONTAINERS[@]} )); then
+    echo "Docker GPU containers running:"
+    local entry
+    for entry in "${DOCKER_GPU_CONTAINERS[@]}"; do
+      echo "  ${entry/ /  }"
+    done
+  fi
+}
+
+quiesce_docker_containers() {
+  (( ${#DOCKER_GPU_CONTAINERS[@]} )) || return 0
+  if (( KILL_HOLDERS )); then
+    local id
+    for id in "${DOCKER_GPU_CONTAINERS[@]}"; do
+      id="${id%% *}"
+      if run_deadline 30 "docker stop ${id::12}" -- docker stop -t 10 "$id"; then
+        DOCKER_STOPPED+=("$id")
+      fi
+    done
+  else
+    echo "Docker GPU containers are holding the device — rerun with --kill-holders to stop them"
+  fi
+}
+
+restore_docker_containers() {
+  (( ${#DOCKER_STOPPED[@]} )) || return 0
+  echo "Restarting stopped docker containers"
+  local id
+  for id in "${DOCKER_STOPPED[@]}"; do
+    docker start "$id" >/dev/null 2>&1 || echo "  docker start $id failed (start it manually)"
+  done
+}
+
 tier1_nvml_reset() {
   echo "=== Tier 1: nvidia-smi -r (in-driver reset) ==="
   if [[ -z "$IDX" ]]; then
@@ -200,8 +281,95 @@ tier1_nvml_reset() {
   return 1
 }
 
-tier2_unbind_flr_rebind() {
-  echo "=== Tier 2: unbind -> PCI FLR -> rebind ==="
+# GSP-firmware wedge: the driver is ALIVE (nvidia-smi answers for the OTHER
+# GPUs) but this board's GSP-RM cannot re-initialize — journal signature
+# (live 2026-10-12, RTX PRO 6000 / 580.173.02 open module):
+#   NVRM: _kgspBootGspRm: unexpected WPR2 already up, cannot proceed
+#   NVRM: crashcatWayfinderGetReportQueue_V1: insufficiently-sized L1 ...
+#   NVRM: RmInitAdapter: Cannot initialize GSP firmware RM / RmInitAdapter failed
+#   nvidia <bdf>: AMD-Vi: Event logged [IO_PAGE_FAULT ...]  (5 s flood)
+# nvidia-smi -r refuses forever ("In use by another client" — the driver
+# itself is the client holding a half-initialized GPU). RECOVERABLE: stop
+# the DM, unload the CLIENT modules (nvidia stays — unloading it would take
+# every healthy GPU down too), unbind, SECONDARY BUS reset (deeper than the
+# FLR the device may offer; FLR leaves the WPR2 state untouched), rebind.
+gpu_gsp_wedged() {
+  dmesg 2>/dev/null | grep -q "WPR2 already up" && return 0
+  dmesg 2>/dev/null | grep -q "RmInitAdapter.*failed" && return 0
+  # IOMMU page-fault flood pinned to this BDF (5 s cadence in the live log)
+  dmesg -T 2>/dev/null | grep "IO_PAGE_FAULT" | grep -q "$gpu_pci" && return 0
+  return 1
+}
+
+unload_client_modules() {
+  # peermem -> uvm -> drm -> modeset: reverse of the dependency stack.
+  # nvidia itself is deliberately NOT in this list (GPU 0 keeps running).
+  local m
+  for m in nvidia_peermem nvidia_uvm nvidia_drm nvidia_modeset; do
+    lsmod | grep -q "^${m} " || continue
+    if run_deadline "$TIMEOUT_MOD" "modprobe -r $m" -- modprobe -r "$m"; then
+      echo "  unloaded $m"
+    else
+      echo "  unload $m failed (client fds still open — rerun with --kill-holders)"
+    fi
+  done
+}
+
+tier2_gsp_bus_reset() {
+  echo "=== Tier 2: GSP-wedge bus reset (stop DM -> unload clients -> unbind -> bus reset -> rebind) ==="
+  local bound=1
+  if [[ "$(readlink "/sys/bus/pci/devices/$gpu_pci/driver" 2>/dev/null)" != */drivers/nvidia ]]; then
+    bound=0
+    echo "  device not bound to nvidia — skipping unbind"
+  fi
+  quiesce_display_manager
+  quiesce_docker_containers
+  unload_client_modules
+  if (( bound )); then
+    if ! run_deadline "$TIMEOUT_SYSFS" "unbind $gpu_pci" -- \
+        bash -c "echo '$gpu_pci' > '$DRV_DIR/unbind'"; then
+      echo "  unbind blocked — fd holders still alive; kill them and rerun (--kill-holders)"
+      return 1
+    fi
+    echo "  unbound"
+  fi
+  sleep 2
+  # Prefer the SECONDARY BUS reset: the live proof reset a board whose FLR
+  # class GSP state (WPR2) survived; "bus" clears it. reset_method holds the
+  # SUPPORTED list when read; restore the kernel default afterwards.
+  local rm_supported
+  rm_supported="$(cat "/sys/bus/pci/devices/$gpu_pci/reset_method" 2>/dev/null || true)"
+  if [[ "$rm_supported" == *bus* ]]; then
+    echo "  reset_method: bus (supported: ${rm_supported//$'\n'/ })"
+    echo "bus" > "/sys/bus/pci/devices/$gpu_pci/reset_method" 2>/dev/null || true
+  else
+    echo "  reset_method: device default (${rm_supported:-unknown})"
+  fi
+  if run_deadline "$TIMEOUT_SYSFS" "PCI bus reset" -- \
+      bash -c "echo 1 > '/sys/bus/pci/devices/$gpu_pci/reset'"; then
+    echo "  bus reset issued"
+  else
+    echo "  reset failed — attempting rebind anyway"
+  fi
+  echo "default" > "/sys/bus/pci/devices/$gpu_pci/reset_method" 2>/dev/null || true
+  sleep 2
+  if [[ "$(readlink "/sys/bus/pci/devices/$gpu_pci/driver" 2>/dev/null)" != */drivers/nvidia && -d "$DRV_DIR" ]]; then
+    if ! run_deadline "$TIMEOUT_SYSFS" "rebind $gpu_pci" -- \
+        bash -c "echo '$gpu_pci' > '$DRV_DIR/bind'"; then
+      echo "  rebind failed"
+      return 1
+    fi
+  fi
+  echo "  waiting for RmInitAdapter (GSP boot takes seconds)"
+  sleep 5
+  IDX="$(pci_to_index || true)"
+  if [[ -n "$IDX" ]] && gpu_healthy "$IDX"; then return 0; fi
+  echo "  bound but not healthy"
+  return 1
+}
+
+tier3_flr_rebind() {
+  echo "=== Tier 3: unbind -> PCI FLR -> rebind ==="
   if [[ "$(readlink "/sys/bus/pci/devices/$gpu_pci/driver" 2>/dev/null)" != */drivers/nvidia ]]; then
     echo "  skipped: device not bound to nvidia"
     return 1
@@ -257,6 +425,8 @@ finish_wedged() {
   dmesg 2>/dev/null | grep -Ei 'NVRM|Xid' | tail -n 15 || true
   report_holders
   restore_persistenced
+  restore_docker_containers
+  restore_display_manager
   echo "RECOVERY: IMPOSSIBLE FROM THE HOST —"
   echo "  $gpu_pci is wedged below the driver (RC watchdog hard lock + non-zero"
   echo "  usage count pinning the PCI device). Every tier above is structurally"
@@ -266,8 +436,8 @@ finish_wedged() {
   exit 3
 }
 
-tier3_remove_rescan() {
-  echo "=== Tier 3: PCI remove + rescan ==="
+tier4_remove_rescan() {
+  echo "=== Tier 4: PCI remove + rescan ==="
   local remove_ok=0
   if run_deadline "$TIMEOUT_SYSFS" "remove $gpu_pci" -- \
       bash -c "echo '$gpu_pci' > '/sys/bus/pci/devices/$gpu_pci/remove'"; then
@@ -295,8 +465,8 @@ tier3_remove_rescan() {
   return 1
 }
 
-tier4_module_reload() {
-  echo "=== Tier 4: full nvidia module reload (hits every GPU on the host) ==="
+tier5_module_reload() {
+  echo "=== Tier 5: full nvidia module reload (hits every GPU on the host) ==="
   if gpu_wedged_below_driver; then
     echo "  skipped: modules are pinned by the wedged GPU (unload provably fails)"
     return 2
@@ -338,6 +508,8 @@ finish_ok() {
   echo "=== Final state ==="
   nvidia-smi || true
   restore_persistenced
+  restore_docker_containers
+  restore_display_manager
   echo "RECOVERY: SUCCESS"
   exit 0
 }
@@ -349,6 +521,8 @@ finish_fail() {
   dmesg 2>/dev/null | grep -Ei 'NVRM|Xid' | tail -n 15 || true
   report_holders
   restore_persistenced
+  restore_docker_containers
+  restore_display_manager
   nvidia-smi || true
   echo "RECOVERY: FAILED — remaining option is a host reboot."
   exit 1
@@ -374,6 +548,7 @@ elif [[ -n "$IDX" ]] && gpu_healthy "$IDX"; then
 fi
 
 report_holders
+find_docker_gpu_containers
 if (( KILL_HOLDERS )) && ls /dev/nvidia* >/dev/null 2>&1; then
   echo "Killing all processes holding /dev/nvidia*"
   fuser -k -KILL /dev/nvidia* 2>/dev/null || true
@@ -382,10 +557,14 @@ fi
 quiesce_persistenced
 IDX="$(pci_to_index || true)"
 echo "NVML index: ${IDX:-<unresolvable — GPU invisible to nvidia-smi>}"
+if gpu_gsp_wedged; then
+  echo "GSP-firmware wedge signature present (WPR2/RmInitAdapter/IOMMU faults) — tier 2 is the proven path"
+fi
 
 if tier1_nvml_reset; then finish_ok; fi
-if tier2_unbind_flr_rebind; then finish_ok; fi
-if tier3_remove_rescan; then finish_ok; fi
-if tier4_module_reload; then finish_ok; fi
+if tier2_gsp_bus_reset; then finish_ok; fi
+if tier3_flr_rebind; then finish_ok; fi
+if tier4_remove_rescan; then finish_ok; fi
+if tier5_module_reload; then finish_ok; fi
 if gpu_wedged_below_driver; then finish_wedged; fi
 finish_fail
