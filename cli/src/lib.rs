@@ -26,23 +26,23 @@ use nvoc_core::{
     ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
     ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
     ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset,
-    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
-    RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
-    SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed,
-    SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
-    SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
-    SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration, SetNvapiOverclockedPstates,
-    SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
-    SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue, SetNvapiPowerCommand,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiTopRelsRatio,
-    SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate,
-    SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
-    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
-    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
-    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetTopRelsRatioToDefault,
+    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
+    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
+    SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
+    SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
+    SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap,
+    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue,
+    SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta,
+    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
+    SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
+    SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
+    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
+    SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets,
+    fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
     query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
     sync_memory_pstate_as_p0,
@@ -185,6 +185,8 @@ pub enum Command {
     GetAutoboostSupport,
     GetEdid,
     SetPstateGlobalFreqOffset,
+    SetSubdomainFreqRatio,
+    ResetSubdomainFreqRatio,
     SetOverclockedPstates,
     GetPstates20Private,
     SetPstates20PrivateDelta,
@@ -705,6 +707,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::GetTopRelsRatio,
+                CommandSpec::new("get-subdomain-freq-ratio", Group::Clock, "Read the TopRels GPC:XBAR propagation ratio (XBAR = ratio x GPC; raw U16.16). LIVE-VERIFIED on Blackwell server 580.173.02: down-free 0.70-0.90 instant/reversible, up-clamped at the devinit 0.9 by engine policy (five ratio slots 0.8/0.9/1.2/1.5/2.0 exist; only the 0.9 slot is engine-tracked)"),
+            ),
+            (
                 Command::GetSupportedLegacyApplicationFreq,
                 CommandSpec {
                     adapters: &NVML_ONLY,
@@ -736,10 +742,6 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     formatter: Some(output::format_throttle_reasons_output),
                     ..CommandSpec::new("get-throttle-reasons", Group::Info, "Read NVML throttle reasons")
                 },
-            ),
-            (
-                Command::GetTopRelsRatio,
-                CommandSpec::new("get-top-rels-ratio", Group::Clock, "Read the TopRels clock-tree relation ratio (0xCBFF71D0, raw U16.16 at the resolved offset; 50-series only — Pascal/Turing -103, Ampere/Ada -1). Edge semantics (GPC→XBAR vs MSVDD:memory ratio) are under adjudication; see docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md §16.3"),
             ),
             (Command::GetUuid, CommandSpec::new("get-uuid", Group::Info, "Read GPU UUID")),
             (
@@ -870,6 +872,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     options: Box::leak(Box::new(["domain"])),
                     ..CommandSpec::new("reset-public-vftable-offset", Group::Vfp, "Reset NVAPI VFP deltas")
+                },
+            ),
+            (
+                Command::ResetSubdomainFreqRatio,
+                CommandSpec {
+                    adapters: &BOTH_BACKENDS,
+                    options: Box::leak(Box::new([])),
+                    ..CommandSpec::new("reset-subdomain-freq-ratio", Group::Clock, "Restore the TopRels GPC:XBAR ratio to the devinit default 0.90 (raw 0xE660)")
                 },
             ),
             (Command::ResetTempLimit, CommandSpec::new("reset-temp-limit", Group::Thermal, "Reset NVAPI sensor limits")),
@@ -1417,6 +1427,20 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetSubdomainFreqRatio,
+                CommandSpec {
+                    adapters: &BOTH_BACKENDS,
+                    arity: (1, 1),
+                    options: Box::leak(Box::new([])),
+                    positionals: Box::leak(Box::new([PositionalArg::hyphen(
+                        "arg_ratio",
+                        "RATIO",
+                        "GPC:XBAR propagation ratio 0.70-1.20 (XBAR = ratio x GPC; e.g. 0.85 = -10% XBAR)",
+                    )])),
+                    ..CommandSpec::new("set-subdomain-freq-ratio", Group::Clock, "Set the TopRels GPC:XBAR propagation ratio (XBAR = ratio x GPC; XBAR down-clock trim). LIVE on Blackwell server 580.173.02: 0.70-0.90 applies instantly and reversibly; values above the devinit 0.9 are stored but engine-clamped (down-only policy). Dangerous policy write — rescales the whole XBAR interconnect")
+                },
+            ),
+            (
                 Command::SetTempLimit,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
@@ -1440,18 +1464,6 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "Fake temperature in Celsius the driver will see (DANGEROUS research tool)",
                 )])),
                     ..CommandSpec::new("set-temp-sim", Group::Thermal, "Fake the driver-visible GPU temperature in Celsius (DANGEROUS research tool; Extended->basic fallback; Secured-Overrides gated)")
-                },
-            ),
-            (
-                Command::SetTopRelsRatio,
-                CommandSpec {
-                    arity: (1, 1),
-                    positionals: Box::leak(Box::new([PositionalArg::free(
-                    "arg_ratio",
-                    "RATIO",
-                    "Relation ratio 0.7-1.2 (raw U16.16 = ratio*65536; 0.9 keeps the exact hardware literal 0xE660)",
-                )])),
-                    ..CommandSpec::new("set-top-rels-ratio", Group::Clock, "Write the TopRels clock-tree relation ratio (0xEF3D20EA; 50-series only). DANGEROUS driver-wide clock-tree write, no privilege gate; full snapshot/readback/rollback recipe inside. Edge semantics (GPC→XBAR vs MSVDD:memory) under adjudication — xocd audit §16.3")
                 },
             ),
             (
@@ -3701,6 +3713,28 @@ fn execute_target(
         Command::SetPstateGlobalFreqOffset => {
             let domain = option_domain(invocation, ClockDomain::Graphics)?;
             set_clock_offset(target, adapter, invocation, domain)
+        }
+        Command::SetSubdomainFreqRatio => {
+            let ratio: f64 = invocation.positionals[0]
+                .trim()
+                .parse()
+                .map_err(|e| CliError::new(format!("invalid ratio: {e}")))?;
+            let readback = run(target, SetNvapiTopRelsRatio { ratio })?.output;
+            Ok(json!({ "applied": true, "ratio": readback }))
+        }
+        Command::ResetSubdomainFreqRatio => {
+            let restored = run(target, ResetTopRelsRatioToDefault)?.output;
+            match restored {
+                Some(ratio) => Ok(json!({
+                    "applied": true,
+                    "ratio": ratio,
+                    "source": "driver-reported GetInfo default",
+                })),
+                None => Ok(json!({
+                    "applied": false,
+                    "note": "driver exposes no GetInfo default for this edge — pass an explicit ratio via set-subdomain-freq-ratio",
+                })),
+            }
         }
         Command::SetOverclockedPstates => {
             let enable = parse_bool(&invocation.positionals[0])?;
@@ -9362,6 +9396,8 @@ mod tests {
             | Command::GetAutoboostSupport
             | Command::GetEdid
             | Command::SetPstateGlobalFreqOffset
+            | Command::SetSubdomainFreqRatio
+            | Command::ResetSubdomainFreqRatio
             | Command::SetPstates20PrivateDelta
             | Command::SetOverclockedPstates
             | Command::SetPublicTgpPercent

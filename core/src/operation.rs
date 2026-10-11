@@ -1245,7 +1245,6 @@ impl GpuOperation for ResetLegacyGpcRailOvervoltLimit {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
 pub struct SetPstateClockOffset {
     pub pstate: PState,
     pub domain: ClockDomain,
@@ -2681,6 +2680,29 @@ impl GpuOperation for SetNvapiTopRelsRatio {
             .nvapi()?
             .set_top_rels_ratio(self.ratio)
             .map_err(Error::from)
+    }
+}
+
+/// Restore the TopRels GPC:XBAR ratio from the DRIVER-REPORTED default
+/// (GetInfo relation payload — the initial ratio the SKU/driver carries,
+/// not a hard-coded constant). Output `None` when the driver exposes no
+/// default for the edge (caller should surface "no default exposed").
+pub struct ResetTopRelsRatioToDefault;
+
+impl GpuOperation for ResetTopRelsRatioToDefault {
+    type Output = Option<f64>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetTopRelsRatioToDefault
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let Some(default) = gpu.top_rels_default_ratio().map_err(Error::from)? else {
+            return Ok(None);
+        };
+        let landed = gpu.set_top_rels_ratio(default).map_err(Error::from)?;
+        Ok(Some(landed))
     }
 }
 

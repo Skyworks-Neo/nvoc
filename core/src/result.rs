@@ -125,6 +125,10 @@ pub enum OperationKind {
     /// the exact hardware literal 0xE660). DANGEROUS driver-wide
     /// clock-tree write, 50-series only, full snapshot/rollback recipe.
     SetNvapiTopRelsRatio,
+    /// Restore the TopRels GPC:XBAR ratio from the DRIVER-REPORTED default
+    /// (GetInfo relation payload — not a hard-coded value). No-op output
+    /// None when the driver exposes no default for the edge.
+    ResetTopRelsRatioToDefault,
     SetNvapiVoltRailOffset,
     /// Set a volt-rail to an absolute target voltage (mV) by deriving the
     /// required µV offset from the live control/status snapshot. Shares the
