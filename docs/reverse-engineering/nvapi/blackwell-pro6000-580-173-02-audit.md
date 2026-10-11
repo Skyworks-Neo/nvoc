@@ -147,6 +147,8 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 3. 行为实验（slot2 -100MHz 负偏移，NVENC 负载下直测采样）：记录保持 -100000，GPC/XBAR 时钟 ±4MHz 噪声内纹丝不动——**GSP 收写但忽略，负偏移排除钳制解释**。
 4. slot0/1 本代为零保留平面（非零值被 nvoc 中间层 out-of-range 拒绝——我们自己的守卫，符合消费系实证的 2/3/4 平面映射），"legacy 平面挂接"假设作废。
 
+**Face-C（Client 0x0733E009）收官 2026-10-11**：真机 -1 的根因不在门禁——影子类型 census 显示 GPC 曲线 0..128 = type 1（实型）、XBAR 129..254 = type 0（空型），批写实型点仍 -1。反编译前置步骤 sub_37C80 定位：它遍历 **RM GET 0x20809029 返回的域 mask**（非调用方 mask），逐域经 sub_AC20（RTSS 位 mask→index 映射表）+ 归一化 switch（缺 5/0x13/0x1A..0x1E 等新代码）+ sub_180C0（结果为 0 → -1）——**本代新增测量域不在 shim 归一化表内 → 整个描述符预处理 -1 → Client SET 面结构性死亡**（与实测"测量索引 19 拒、26-30 拒"吻合）。载荷不可修， shim-internal。
+
 **结论：私有 V/F 全族（ClkDomains 槽面 + VF 点面）在服务器 SKU 上 = "记录面可写、行为面脱钩"，脱钩点在 GSP 策略层**（候选：policy Board selector 活动源不指向这些记录 / 记录→时钟树附接在 server SKU 上被剪断 / 需要 shim 之外的 commit 步骤）。GSP-RM 固件逆向（`reverse/linux-580.173.02/gsp_ga10x.bin`，75MB 未剥符号 RISC-V）已立项在建。nvoc 侧处置：服务器卡写面前提示 root + 写后行为校验（时钟实测位移）而非仅记录回读。
 
 **③ private vftable 缺失数据复盘**（645 × 488B 记录，`--dump-records` 活体）：
