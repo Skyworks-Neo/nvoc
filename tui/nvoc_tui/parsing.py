@@ -490,6 +490,14 @@ CURVE_META: dict[str, dict[str, Any]] = {
     # rail); there is no domain-global WRITE bit either.
     "gpc_pre_oc": {"label": "GPC PRE-OC", "class": "graphics", "domain_bit": None},
     "gpc_oc": {"label": "GPC OC", "class": "graphics", "domain_bit": None},
+    # Blackwell (RTX PRO 6000, 580.173.02) unpacks two more main curves:
+    # SYS (bank0 383..509, operator-pinned A/B 2026-10-12) and the PWR or
+    # UPROC curve (510..636 — range confirmed, identity A/B pending). SYS's
+    # MEASURE channel is bit 2 on the older generations, but the MSD lesson
+    # (bit 2 co-moves in the uncore band at a DIFFERENT value) applies — no
+    # verified Blackwell crosshair yet, so domain_bit stays None.
+    "sys": {"label": "SYS", "class": "fabric", "domain_bit": None},
+    "pwr_uproc": {"label": "PWR/UPROC", "class": "graphics", "domain_bit": None},
 }
 
 
@@ -526,7 +534,7 @@ def public_vfp_unsupported(gpc_err: str | None) -> bool:
 # 21 but its offset WRITE record is bit 5; MEM measures on bit 4 but
 # writes on bit 2. Conflating the two tables silently synthesizes from
 # the wrong domain's offset.
-WRITE_BIT_TO_CURVE: dict[int, str] = {0: "gpc", 1: "xbar", 5: "msd", 2: "mem"}
+WRITE_BIT_TO_CURVE: dict[int, str] = {0: "gpc", 1: "xbar", 3: "sys", 5: "msd", 2: "mem"}
 
 # The same table the other way round: curve id -> the WRITE bit whose domain
 # GLOBAL offset a curve reset also zeroes (curve-point offsets and domain

@@ -57,6 +57,11 @@ _CURVE_COLORS = {
     # axis authority only, and applies go through the paired-write call.
     "gpc_pre_oc": {"current": "#00ccff", "default": "#1f4e79"},
     "gpc_oc": {"current": "#00CC66", "default": "#004D25"},
+    # Blackwell (RTX PRO 6000, 580.173.02): SYS owns a main curve (bank0
+    # 383..509, operator-pinned 2026-10-12) — golden hue matches the SYS
+    # ext-slot overlay. PWR/UPROC (510..636): identity A/B pending, pink.
+    "sys": {"current": "#FFD24D", "default": "#7A6420"},
+    "pwr_uproc": {"current": "#FF4D94", "default": "#7A0F3D"},
 }
 # Display label + private-domain class for the raw-converted prior.
 # The third curve's attribution moved twice — HOST → SYS (voltage-lock)
@@ -85,6 +90,14 @@ _CURVE_META = {
     # through the paired-write call, not the raw-converted prior.
     "gpc_pre_oc": {"label": "GPC PRE-OC", "class": "graphics", "domain_bit": None},
     "gpc_oc": {"label": "GPC OC", "class": "graphics", "domain_bit": None},
+    # Blackwell unpacks two more main curves: SYS (bank0 383..509,
+    # operator-pinned A/B 2026-10-12) and the PWR or UPROC curve
+    # (510..636 — range confirmed, identity A/B pending). SYS's MEASURE
+    # channel is bit 2 on the older generations, but the MSD lesson (bit 2
+    # co-moves in the uncore band at a DIFFERENT value) applies — no
+    # verified Blackwell crosshair yet, so domain_bit stays None.
+    "sys": {"label": "SYS", "class": "fabric", "domain_bit": None},
+    "pwr_uproc": {"label": "PWR/UPROC", "class": "graphics", "domain_bit": None},
 }
 
 # ── Unknown-curve support ──
@@ -115,7 +128,7 @@ def _curve_meta_for(cid: str) -> dict:
 # The dual-plane GPC OC plane has NO known domain-global WRITE bit (the
 # old "mem"→bit2 attribution belonged to the pre-rename mislabel) — no
 # global reset is attempted for it.
-_CURVE_WRITE_BIT = {"gpc": 0, "xbar": 1, "msd": 5, "mem": 2}
+_CURVE_WRITE_BIT = {"gpc": 0, "xbar": 1, "sys": 3, "msd": 5, "mem": 2}
 
 # Reverse of _CURVE_WRITE_BIT for offset normalization (bit -> curve id).
 _WRITE_BIT_TO_CURVE = {bit: cid for cid, bit in _CURVE_WRITE_BIT.items()}

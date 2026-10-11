@@ -1270,12 +1270,16 @@ impl FabricDomain {
 
     /// Map a `vf_curve` segment's empirical domain hint into this space.
     /// `Gpc`, the Pascal server dual-plane pair (`GpcPreOc`/`GpcOc` — both
-    /// are GPC-physical planes of one curve), `Mem`/`Disp`/`Unknown` have
-    /// no fabric WRITE bit of their own.
+    /// are GPC-physical planes of one curve), `Mem`/`Disp`/`PwrUproc`/
+    /// `Unknown` have no fabric WRITE bit of their own.
     pub fn from_hint(hint: ClkVfDomainHint) -> Option<Self> {
         match hint {
             ClkVfDomainHint::Xbar => Some(FabricDomain::Xbar),
             ClkVfDomainHint::Msd => Some(FabricDomain::Msd),
+            // Blackwell promotes SYS to its own main curve (bank0 383..509)
+            // — exactly MSD's Ada move, so it leaves the ext roster the
+            // same way
+            ClkVfDomainHint::Sys => Some(FabricDomain::Sys),
             _ => None,
         }
     }
