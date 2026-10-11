@@ -19,17 +19,17 @@ include = [
 ]
 
 [features]
-# The stressor generation selectors mirror cli-stressor-cuda-rs: the bundled
+# The stressor generation selectors mirror cli-stressor-rs: the bundled
 # stressor must pick exactly one CUDA generation (cuda11 for R470-era drivers,
 # cuda12 otherwise), enforced by compile_error! in the stressor crate.
 default = ["stressor-bundled-cuda12"]
 stressor-bundled = [
-  "dep:cli-stressor-cuda-rs",
-  "cli-stressor-cuda-rs/cuda",
-  "cli-stressor-cuda-rs/vulkan",
+  "dep:cli-stressor-rs",
+  "cli-stressor-rs/cuda",
+  "cli-stressor-rs/vulkan",
 ]
-stressor-bundled-cuda11 = ["stressor-bundled", "cli-stressor-cuda-rs/cuda11"]
-stressor-bundled-cuda12 = ["stressor-bundled", "cli-stressor-cuda-rs/cuda12"]
+stressor-bundled-cuda11 = ["stressor-bundled", "cli-stressor-rs/cuda11"]
+stressor-bundled-cuda12 = ["stressor-bundled", "cli-stressor-rs/cuda12"]
 stressor-external = []
 
 [dependencies]
@@ -46,7 +46,7 @@ time = { workspace = true }
 colored = { workspace = true }
 indicatif = "0.18.4"
 once_cell = "1.21.4"
-cli-stressor-cuda-rs = { path = "../cli-stressor-cuda-rs", optional = true, default-features = false }
+cli-stressor-rs = { path = "../cli-stressor-rs", optional = true, default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_EventLog"] }

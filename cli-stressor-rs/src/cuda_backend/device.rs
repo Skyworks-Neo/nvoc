@@ -5,7 +5,7 @@ use std::ffi::{CStr, c_char};
 
 use cudarc::driver::sys as cuda_sys;
 
-use cli_stressor_cuda_rs::{BackendError, CudaDeviceEnumInfo, DeviceInfo, PciBusAddress};
+use cli_stressor_rs::{BackendError, CudaDeviceEnumInfo, DeviceInfo, PciBusAddress};
 
 /// Query the [`DeviceInfo`] (name / total memory / compute capability) for the
 /// CUDA device at `device_index`. Used by the backend constructor.
@@ -61,7 +61,26 @@ pub(super) fn query_device_info_for_index(device_index: u32) -> Result<DeviceInf
         name,
         total_mem_gb,
         compute_capability: Some((major, minor)),
+        l2_cache_bytes: fetch_l2_cache_bytes(device),
     })
+}
+
+/// L2 cache size in bytes (`CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE`). Present on
+/// every CUDA-capable driver this crate targets; `None` only if the
+/// attribute query itself fails.
+pub(super) fn fetch_l2_cache_bytes(device: i32) -> Option<u64> {
+    let mut l2 = 0i32;
+    unsafe {
+        let res = cuda_sys::cuDeviceGetAttribute(
+            &mut l2,
+            cuda_sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE,
+            device,
+        );
+        if res as u32 != 0 || l2 <= 0 {
+            return None;
+        }
+    }
+    Some(l2 as u64)
 }
 
 pub fn enumerate_cuda_devices() -> Result<Vec<CudaDeviceEnumInfo>, BackendError> {
@@ -139,6 +158,7 @@ pub fn enumerate_cuda_devices() -> Result<Vec<CudaDeviceEnumInfo>, BackendError>
             pci_bus,
             compute_capability,
             total_mem_gb,
+            l2_cache_bytes: fetch_l2_cache_bytes(device),
         });
     }
 
@@ -280,7 +300,6 @@ fn fetch_device_pci_bus(device: i32) -> Result<Option<PciBusAddress>, BackendErr
         .map_err(BackendError::Other)
 }
 
-#[cfg(feature = "vulkan")]
 pub(super) fn query_cuda_device_uuid(device_index: u32) -> Result<[u8; 16], BackendError> {
     let mut device = 0;
     unsafe {

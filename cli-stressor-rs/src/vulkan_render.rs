@@ -46,6 +46,8 @@ impl Default for VulkanRenderConfig {
             offscreen: false,
             rotate: true,
             particles: 262144,
+            queue_priority_low: false,
+            pulse: crate::pulse::PulseConfig::default(),
         }
     }
 }
@@ -560,6 +562,8 @@ pub fn run_render_loop(
             let pdevices = instance.enumerate_physical_devices()?;
             *pdevices.first().ok_or("no Vulkan physical devices")?
         };
+        // NOTE: standard Vulkan does not expose L2 cache size; the CUDA
+        // device attribute is the authoritative source (see cuda_backend::device).
 
         let surface_fn = if use_swapchain {
             Some(SurfaceInstance::new(&entry, &instance))
@@ -597,10 +601,24 @@ pub fn run_render_loop(
         if use_swapchain {
             device_exts.push(ash::khr::swapchain::NAME.as_ptr());
         }
+        // MODS-borrowed (vkstress.jse Registry 0x301fc9/0x301fd0 split): drop
+        // the render queue to LOW global priority so in-process background
+        // work (and other clients) win scheduling when contended. In-process
+        // only — RM-level cross-client priority has no public driver API.
         let queue_priorities = [1.0];
-        let queue_create_infos = [vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(queue_family)
-            .queue_priorities(&queue_priorities)];
+        let mut global_priority_info = vk::DeviceQueueGlobalPriorityCreateInfoEXT::default()
+            .global_priority(vk::QueueGlobalPriorityEXT::LOW);
+        let queue_create_infos = [if cfg.queue_priority_low {
+            device_exts.push(ash::ext::global_priority::NAME.as_ptr());
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(queue_family)
+                .queue_priorities(&queue_priorities)
+                .push_next(&mut global_priority_info)
+        } else {
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(queue_family)
+                .queue_priorities(&queue_priorities)
+        }];
         let device = instance.create_device(
             pdevice,
             &vk::DeviceCreateInfo::default()
@@ -1276,8 +1294,30 @@ pub fn run_render_loop(
         let mut image_idx = 0u32;
         let mut last_frame_instant = start;
         let mut last_frame_dt = 1.0f32 / 60.0;
+        // Duty-cycle power pulsing (MODS VkStressPulse borrow): off-window
+        // waits happen at the frame boundary so the burst phase submits
+        // frames back-to-back; the meter reports achieved duty/Hz next to
+        // FPS because frames longer than the pulse period saturate duty.
+        let pulse_state = crate::pulse::PulseState::starting_now();
+        let pulse_enabled = cfg.pulse.enabled();
+        let mut duty_meter = crate::pulse::DutyMeter::default();
+        let mut iter_start = start;
 
         while is_running.load(Ordering::SeqCst) {
+            // Pulse gate: inside an off-window, idle until the next burst
+            // window opens (recorded as off-time, no frame submitted).
+            if pulse_enabled {
+                let now = std::time::Instant::now();
+                if let Some(remaining) = pulse_state.off_remaining(&cfg.pulse, now) {
+                    crate::pulse::wait_until(now + remaining, cfg.pulse.spin_idle);
+                    duty_meter.record(false, iter_start.elapsed());
+                    iter_start = std::time::Instant::now();
+                    if !is_running.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    continue;
+                }
+            }
             if use_swapchain {
                 window.as_ref().unwrap().pump_messages()?;
 
@@ -1572,27 +1612,51 @@ pub fn run_render_loop(
             }
 
             frames += 1;
+            duty_meter.record(true, iter_start.elapsed());
+            iter_start = std::time::Instant::now();
             last_frame_dt = last_frame_instant.elapsed().as_secs_f32();
             last_frame_instant = std::time::Instant::now();
             let now = last_frame_instant;
             if now.duration_since(last_log) >= std::time::Duration::from_secs(3) {
                 let fps = frames as f64 / now.duration_since(last_log).as_secs_f64();
-                println!(
-                    "{}",
-                    stylize(
-                        &format!(
-                            "[VKGFX-H] {:>6.1}s | {:>6.1} fps ({:.2} ms/frame) | msaa={}x | iters={} | shells={}",
-                            start.elapsed().as_secs_f64(),
-                            fps,
-                            1000.0 / fps.max(1e-6),
-                            msaa_samples.as_raw(),
-                            cfg.iters,
-                            cfg.shells
-                        ),
-                        false
-                    )
-                );
+                if pulse_enabled {
+                    println!(
+                        "{}",
+                        stylize(
+                            &format!(
+                                "[VKGFX-H] {:>6.1}s | {:>6.1} fps ({:.2} ms/frame) | duty={:.1}% (cfg {:.0}%) | pulse={:.0} Hz | msaa={}x | iters={} | shells={}",
+                                start.elapsed().as_secs_f64(),
+                                fps,
+                                1000.0 / fps.max(1e-6),
+                                duty_meter.duty() * 100.0,
+                                cfg.pulse.duty_pct,
+                                duty_meter.avg_hz(),
+                                msaa_samples.as_raw(),
+                                cfg.iters,
+                                cfg.shells
+                            ),
+                            false
+                        )
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        stylize(
+                            &format!(
+                                "[VKGFX-H] {:>6.1}s | {:>6.1} fps ({:.2} ms/frame) | msaa={}x | iters={} | shells={}",
+                                start.elapsed().as_secs_f64(),
+                                fps,
+                                1000.0 / fps.max(1e-6),
+                                msaa_samples.as_raw(),
+                                cfg.iters,
+                                cfg.shells
+                            ),
+                            false
+                        )
+                    );
+                }
                 frames = 0;
+                duty_meter.reset();
                 last_log = now;
             }
         }

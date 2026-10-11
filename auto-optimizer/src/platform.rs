@@ -21,7 +21,7 @@ pub const fn default_test_exe_path() -> &'static str {
     }
     #[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
     {
-        "cli-stressor-cuda-rs"
+        "cli-stressor-rs"
     }
     #[cfg(not(any(feature = "stressor-bundled", feature = "stressor-external")))]
     {
@@ -125,7 +125,7 @@ mod tests {
         }
         #[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
         {
-            assert_eq!(default_test_exe_path(), "cli-stressor-cuda-rs");
+            assert_eq!(default_test_exe_path(), "cli-stressor-rs");
         }
     }
 }

@@ -1,8 +1,9 @@
+use crate::pulse::PulseConfig;
 use crate::runner::style::stylize;
 use crate::vulkan_render::run_render_loop;
 use anstream::eprintln;
 use ash::{Instance, vk};
-use cli_stressor_cuda_rs::PciBusAddress;
+use cli_stressor_rs::PciBusAddress;
 use std::ffi::CStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,6 +70,11 @@ pub struct VulkanRenderConfig {
     /// Compute->graphics particle pool size (Lumen/TSR-style SSBO ping-pong).
     /// 0 disables the stage.
     pub particles: u32,
+    /// Drop the render queue to LOW global priority (VK_EXT_global_priority)
+    /// so in-process/background work wins scheduling when contended.
+    pub queue_priority_low: bool,
+    /// Duty-cycle power pulsing (MODS VkStressPulse borrow).
+    pub pulse: PulseConfig,
 }
 
 pub struct VulkanGraphicsEngine {

@@ -9,7 +9,7 @@
 // non-CUDA CI job compiles this test target with `--no-default-features`.
 #![cfg(feature = "cuda")]
 
-use cli_stressor_cuda_rs::{Backend, VerifyConfig, cuda_backend};
+use cli_stressor_rs::{Backend, VerifyConfig, cuda_backend};
 
 #[test]
 #[ignore = "requires a CUDA device"]
@@ -38,9 +38,9 @@ fn intalu_host_reference_matches_kernel_on_live_gpu() {
     let mut backend =
         cuda_backend::CudaBackend::new_with_device(0).expect("CUDA device 0 must initialize");
     let info = backend.device_info();
-    let spec = cli_stressor_cuda_rs::PrecisionSpec {
+    let spec = cli_stressor_rs::PrecisionSpec {
         name: "INT32",
-        kind: cli_stressor_cuda_rs::PrecisionKind::INT32,
+        kind: cli_stressor_rs::PrecisionKind::INT32,
         tf32_enabled: None,
     };
     let cfg = VerifyConfig {
@@ -48,10 +48,10 @@ fn intalu_host_reference_matches_kernel_on_live_gpu() {
         self_test: false,
         ..VerifyConfig::default()
     };
-    let result = cli_stressor_cuda_rs::run_stress_mixed(
+    let result = cli_stressor_rs::run_stress_mixed(
         &mut backend,
         &[spec],
-        cli_stressor_cuda_rs::StressRunConfig {
+        cli_stressor_rs::StressRunConfig {
             matrix_sizes: &[256],
             fp64_matrix_sizes: &[256],
             duration_s: 5.0,
@@ -62,13 +62,15 @@ fn intalu_host_reference_matches_kernel_on_live_gpu() {
             transpose_prob: 0.0,
             base_seed: 42,
             minor_mixture_rate: 0.0,
-            kernel_mixture: &[cli_stressor_cuda_rs::KernelMixtureEntry {
-                kind: cli_stressor_cuda_rs::KernelType::IntAlu,
+            kernel_mixture: &[cli_stressor_rs::KernelMixtureEntry {
+                kind: cli_stressor_rs::KernelType::IntAlu,
                 weight: 1.0,
             }],
-            stream_mode: cli_stressor_cuda_rs::StreamMode::Single,
+            stream_mode: cli_stressor_rs::StreamMode::Single,
             kernel_param_overrides: &[],
             verify: cfg,
+            sdc_event_sink: None,
+            telemetry: None,
         },
         None,
     );
@@ -94,9 +96,9 @@ fn intalu_host_reference_matches_kernel_on_live_gpu() {
 fn memcpy_detector_counts_elements_on_live_gpu() {
     let mut backend =
         cuda_backend::CudaBackend::new_with_device(0).expect("CUDA device 0 must initialize");
-    let spec = cli_stressor_cuda_rs::PrecisionSpec {
+    let spec = cli_stressor_rs::PrecisionSpec {
         name: "FP32",
-        kind: cli_stressor_cuda_rs::PrecisionKind::FP32,
+        kind: cli_stressor_rs::PrecisionKind::FP32,
         tf32_enabled: Some(false),
     };
     let cfg = VerifyConfig {
@@ -104,10 +106,10 @@ fn memcpy_detector_counts_elements_on_live_gpu() {
         self_test: false,
         ..VerifyConfig::default()
     };
-    let result = cli_stressor_cuda_rs::run_stress_mixed(
+    let result = cli_stressor_rs::run_stress_mixed(
         &mut backend,
         &[spec],
-        cli_stressor_cuda_rs::StressRunConfig {
+        cli_stressor_rs::StressRunConfig {
             matrix_sizes: &[1024],
             fp64_matrix_sizes: &[1024],
             duration_s: 5.0,
@@ -118,13 +120,15 @@ fn memcpy_detector_counts_elements_on_live_gpu() {
             transpose_prob: 0.0,
             base_seed: 7,
             minor_mixture_rate: 0.0,
-            kernel_mixture: &[cli_stressor_cuda_rs::KernelMixtureEntry {
-                kind: cli_stressor_cuda_rs::KernelType::Memcpy,
+            kernel_mixture: &[cli_stressor_rs::KernelMixtureEntry {
+                kind: cli_stressor_rs::KernelType::Memcpy,
                 weight: 1.0,
             }],
-            stream_mode: cli_stressor_cuda_rs::StreamMode::Single,
+            stream_mode: cli_stressor_rs::StreamMode::Single,
             kernel_param_overrides: &[],
             verify: cfg,
+            sdc_event_sink: None,
+            telemetry: None,
         },
         None,
     );
@@ -143,12 +147,12 @@ fn gemm_output_semantics_discrimination() {
     // Decisive check: is the device C equal to row-major A*B, B*A, (A*B)^T,
     // or something else? This pins the semantics the sampled cross-check
     // kernel must use.
-    use cli_stressor_cuda_rs::{Backend, cpu_reference_f32, make_random_host_matrix};
+    use cli_stressor_rs::{Backend, cpu_reference_f32, make_random_host_matrix};
 
     let mut backend = cuda_backend::CudaBackend::new_with_device(0).unwrap();
-    let spec = cli_stressor_cuda_rs::PrecisionSpec {
+    let spec = cli_stressor_rs::PrecisionSpec {
         name: "FP32",
-        kind: cli_stressor_cuda_rs::PrecisionKind::FP32,
+        kind: cli_stressor_rs::PrecisionKind::FP32,
         tf32_enabled: Some(false),
     };
     let a_host = make_random_host_matrix(4, 1);
@@ -210,7 +214,7 @@ fn gemm_output_semantics_discrimination() {
 fn sampled_cross_check_minimal_repro() {
     // size=4 with distinct-value matrices; run the real gemm path's verify
     // via run_stress_mixed with gemm_samples=4 and print the outcome.
-    use cli_stressor_cuda_rs::{KernelMixtureEntry, KernelType, PrecisionKind, PrecisionSpec};
+    use cli_stressor_rs::{KernelMixtureEntry, KernelType, PrecisionKind, PrecisionSpec};
     let mut backend = cuda_backend::CudaBackend::new_with_device(0).unwrap();
     let spec = PrecisionSpec {
         name: "FP32",
@@ -223,10 +227,10 @@ fn sampled_cross_check_minimal_repro() {
         gemm_samples: 4,
         ..VerifyConfig::default()
     };
-    let result = cli_stressor_cuda_rs::run_stress_mixed(
+    let result = cli_stressor_rs::run_stress_mixed(
         &mut backend,
         &[spec],
-        cli_stressor_cuda_rs::StressRunConfig {
+        cli_stressor_rs::StressRunConfig {
             matrix_sizes: &[4],
             fp64_matrix_sizes: &[4],
             duration_s: 2.0,
@@ -241,9 +245,11 @@ fn sampled_cross_check_minimal_repro() {
                 kind: KernelType::Gemm,
                 weight: 1.0,
             }],
-            stream_mode: cli_stressor_cuda_rs::StreamMode::Single,
+            stream_mode: cli_stressor_rs::StreamMode::Single,
             kernel_param_overrides: &[],
             verify: cfg,
+            sdc_event_sink: None,
+            telemetry: None,
         },
         None,
     );
@@ -260,7 +266,7 @@ fn sampled_check_identity_diagnostic() {
     // A = identity, B[i][j] = i*10+j. Both I*B and B*I equal B, so a correct
     // checker reports zero mismatches in both orientations; a swapped-operand
     // bug still passes I*B but fails B*I; a layout bug fails both.
-    use cli_stressor_cuda_rs::SampleStats;
+    use cli_stressor_rs::SampleStats;
     let backend = cuda_backend::CudaBackend::new_with_device(0).unwrap();
     let engine = backend.verify_engine().expect("engine");
     let stream = backend.stream_handle();
@@ -306,7 +312,7 @@ fn sampled_check_identity_diagnostic() {
 fn sampled_check_random_full_gemmc_check() {
     // Random A/B with an exact CPU-computed C; run the FULL gemm_check
     // (stats pass + sampled pass) exactly like production.
-    use cli_stressor_cuda_rs::SampleStats;
+    use cli_stressor_rs::SampleStats;
     let backend = cuda_backend::CudaBackend::new_with_device(0).unwrap();
     let engine = backend.verify_engine().expect("engine");
     let stream = backend.stream_handle();

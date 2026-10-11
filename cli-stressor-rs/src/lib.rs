@@ -1,4 +1,4 @@
-extern crate self as cli_stressor_cuda_rs;
+extern crate self as cli_stressor_rs;
 
 // See the [features] table in Cargo.toml for the cuda11/cuda12 split.
 #[cfg(all(feature = "cuda11", feature = "cuda12"))]
@@ -27,9 +27,19 @@ use std::time::Instant;
 
 pub mod verify;
 pub use verify::{
-    DetectorStats, GemmStats, SampleStats, SelfTestCheck, SelfTestReport, VerdictClass,
-    VerifyConfig, VerifyReport, classify, dp4a_ref, intalu_ref_element, vexpected_host, vhash32,
+    DetectorStats, GemmStats, SampleStats, SdcEvent, SdcTickEvent, SelfTestCheck, SelfTestReport,
+    VerdictClass, VerifyConfig, VerifyReport, classify, dp4a_ref, intalu_ref_element,
+    vexpected_host, vhash32,
 };
+
+// Duty-cycle power pulsing (MODS VkStressPulse borrow): pure schedule math,
+// applied by the Vulkan render loop at frame boundaries.
+pub mod pulse;
+pub use pulse::{DutyMeter, PulseConfig, PulseMode, PulseState};
+
+// NVML-backed in-run telemetry (clock/temp/power) for SDC event context.
+pub mod telemetry;
+pub use telemetry::{Telemetry, TelemetrySample};
 
 // Heavy FurMark-style renderer lives in the lib so the bin target and the
 // runner share one type definition.
@@ -52,6 +62,14 @@ macro_rules! println {
         std::println!("{}", nvoc_cli_common::color::stylize(&msg, false));
     }};
 }
+
+// NVENC→NVDEC video-engine stress backend: runtime-loads the driver-shipped
+// video libraries (no ffmpeg); compiled only under --features video.
+// Declared after the `println!` macro so the engine's logging resolves it.
+#[cfg(feature = "video")]
+pub mod video_backend;
+#[cfg(feature = "video")]
+pub use video_backend::{VideoConfig, VideoEngine, VideoStats};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PrecisionKind {
@@ -182,7 +200,21 @@ pub struct StressResult {
     pub elements_produced: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+// Manual Debug: the SDC sink/telemetry fields are not Debug.
+impl std::fmt::Debug for StressRunConfig<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StressRunConfig")
+            .field("duration_s", &self.duration_s)
+            .field("warmup_iters", &self.warmup_iters)
+            .field("burst_iters", &self.burst_iters)
+            .field("base_seed", &self.base_seed)
+            .field("stream_mode", &self.stream_mode)
+            .field("verify", &self.verify)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct StressRunConfig<'a> {
     pub matrix_sizes: &'a [usize],
     pub fp64_matrix_sizes: &'a [usize],
@@ -198,6 +230,11 @@ pub struct StressRunConfig<'a> {
     pub stream_mode: StreamMode,
     pub kernel_param_overrides: &'a [KernelParamOverride],
     pub verify: VerifyConfig,
+    /// SDC event sink (op-level fault records enriched with telemetry).
+    /// `None` = events are aggregated as before but not streamed.
+    pub sdc_event_sink: Option<&'a dyn Fn(&SdcEvent)>,
+    /// Telemetry provider for SDC event context (None = NVML unavailable).
+    pub telemetry: Option<&'a Telemetry>,
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +242,40 @@ pub struct DeviceInfo {
     pub name: String,
     pub total_mem_gb: Option<f64>,
     pub compute_capability: Option<(i32, i32)>,
+    /// L2 cache size in bytes as reported by the driver (CUDA device
+    /// attribute; the Vulkan-only path uses VkPhysicalDeviceVulkan13Properties).
+    /// `None` = the driver did not report it.
+    pub l2_cache_bytes: Option<u64>,
+}
+
+/// Memory-pressure mode for the ride-on-load verify engine (borrowed from
+/// MODS VkStressFb's big-L2 / small-L2 split).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MemMode {
+    /// Resident-block working set derived from the reported L2 size
+    /// (0.75×L2, clamped 8–128 MiB); slab walk stays opt-in.
+    #[default]
+    Auto,
+    /// Same working-set derivation as [`MemMode::Auto`] (explicit spelling).
+    Resident,
+    /// Force the address-walk slab stream mode (the existing `--verify-slab`
+    /// behavior): the pattern windows sweep a VRAM-sized pool so checks
+    /// cover pages far beyond L2.
+    Stream,
+}
+
+/// Resident-block working set (in u32 words) for a given L2 size. The
+/// historical default is 64 MiB; the L2-derived working set targets ~3/4 of
+/// L2 so pattern checks stay cache-resident while the burst workload
+/// thrashes around them.
+pub fn resident_words_for_l2(l2_bytes: Option<u64>) -> usize {
+    const DEFAULT_WORDS: usize = 64 << 18; // 64 MiB / 4
+    const MIN_BYTES: usize = 8 << 20;
+    const MAX_BYTES: usize = 128 << 20;
+    match l2_bytes {
+        Some(l2) if l2 > 0 => ((l2 as usize) * 3 / 4).clamp(MIN_BYTES, MAX_BYTES) / 4,
+        _ => DEFAULT_WORDS,
+    }
 }
 
 impl DeviceInfo {
@@ -260,6 +331,7 @@ pub struct CudaDeviceEnumInfo {
     pub pci_bus: Option<PciBusAddress>,
     pub compute_capability: Option<(i32, i32)>,
     pub total_mem_gb: Option<f64>,
+    pub l2_cache_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -314,6 +386,11 @@ pub trait Backend {
     /// Resident-block periodic check (called per dispatch-loop op; the engine
     /// self-throttles to one check per interval).
     fn verify_tick(&self, _interval_s: f64) {}
+    /// Drain a structured resident-tick fault, if one fired since the last
+    /// call. Default: None (backends without the verify engine).
+    fn sdc_tick_fault(&self) -> Option<SdcTickEvent> {
+        None
+    }
     /// Exact INT8 GEMM validation: seeded host reference vs device result.
     /// Returns `(passed, failure_reason)`; Err only for infrastructure errors.
     fn validate_int8_exact(
@@ -1295,6 +1372,8 @@ pub fn run_stress_for_precision<B: Backend>(
         stream_mode: config.stream_mode,
         kernel_param_overrides: &effective_overrides,
         verify: config.verify,
+        sdc_event_sink: config.sdc_event_sink,
+        telemetry: config.telemetry,
     };
 
     while start.elapsed().as_secs_f64() < config.duration_s {
@@ -1531,6 +1610,8 @@ pub fn run_stress_mixed<B: Backend>(
         stream_mode: config.stream_mode,
         kernel_param_overrides: &effective_overrides,
         verify: config.verify,
+        sdc_event_sink: config.sdc_event_sink,
+        telemetry: config.telemetry,
     };
 
     while start.elapsed().as_secs_f64() < config.duration_s {
@@ -1614,7 +1695,7 @@ pub fn run_stress_mixed<B: Backend>(
             println!(
                 "[VERIFY] {:11} | {} | FAIL",
                 kernel_kind.as_str(),
-                detector_failed.unwrap_or_default()
+                detector_failed.as_deref().unwrap_or("")
             );
             if !effective_config.verify.continue_on_error {
                 break;
@@ -1623,6 +1704,48 @@ pub fn run_stress_mixed<B: Backend>(
 
         // Resident-block periodic check (self-throttled inside the engine).
         backend.verify_tick(effective_config.verify.resident_interval_s);
+
+        // SDC event stream: structured fault records with the telemetry
+        // snapshot taken at detection time (clock/temp/power context).
+        if let Some(sink) = effective_config.sdc_event_sink {
+            let unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let t_rel_ms = start.elapsed().as_millis() as u64;
+            if let Some(fault) = backend.sdc_tick_fault() {
+                sink(&SdcEvent {
+                    kind: "resident_tick",
+                    unix_ms,
+                    t_rel_ms,
+                    op: "resident".into(),
+                    seed: None,
+                    total_errors: Some(fault.total_errors),
+                    idx_min: Some(fault.idx_min),
+                    idx_max: Some(fault.idx_max),
+                    first_expected: Some(fault.first_expected),
+                    first_actual: Some(fault.first_actual),
+                    detail: None,
+                    telemetry: effective_config.telemetry.as_ref().and_then(|t| t.sample()),
+                });
+            }
+            if detector_failed.is_some() {
+                sink(&SdcEvent {
+                    kind: "burst_op",
+                    unix_ms,
+                    t_rel_ms,
+                    op: op_spec.name.to_string(),
+                    seed: Some(op_seed),
+                    total_errors: None,
+                    idx_min: None,
+                    idx_max: None,
+                    first_expected: None,
+                    first_actual: None,
+                    detail: detector_failed.clone(),
+                    telemetry: effective_config.telemetry.as_ref().and_then(|t| t.sample()),
+                });
+            }
+        }
 
         let flops = estimate_kernel_work_flops(kernel_kind, size, params.burst_iters) as f64;
         let inst_tflops = if op_elapsed > 0.0 {
@@ -1807,6 +1930,7 @@ mod tests {
             name: "OldGPU".into(),
             total_mem_gb: Some(4.0),
             compute_capability: Some((6, 1)), // Pascal
+            l2_cache_bytes: None,
         };
         for kind in [
             PrecisionKind::INT8,
@@ -1820,6 +1944,7 @@ mod tests {
             name: "MysteryGPU".into(),
             total_mem_gb: None,
             compute_capability: None,
+            l2_cache_bytes: None,
         };
         assert!(
             unknown

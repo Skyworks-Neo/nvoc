@@ -267,7 +267,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "cli-stressor-cuda-rs"
+name = "cli-stressor-rs"
 version = "0.3.0-alpha.1"
 dependencies = [
  "anstream",
@@ -275,8 +275,10 @@ dependencies = [
  "clap",
  "cudarc",
  "half",
+ "libloading 0.9.0",
  "matrixmultiply",
  "naga",
+ "nvml-wrapper",
  "nvoc-cli-common",
  "rand 0.10.3",
  "rand_distr 0.6.0",
@@ -1052,7 +1054,7 @@ version = "0.3.0-alpha.1"
 dependencies = [
  "anyhow",
  "clap",
- "cli-stressor-cuda-rs",
+ "cli-stressor-rs",
  "colored 3.1.1",
  "csv",
  "indicatif",

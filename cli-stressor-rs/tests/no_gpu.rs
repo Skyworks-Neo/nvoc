@@ -1,4 +1,4 @@
-use cli_stressor_cuda_rs::{
+use cli_stressor_rs::{
     DetectorStats, KernelType, StressResult, VerifyConfig, VerifyReport, choose_tolerance,
     classify, dp4a_ref, intalu_ref_element, parse_int_list, parse_kernel_mixture,
     parse_kernel_param_overrides, parse_kernel_type_list, parse_precision_mixture,
@@ -176,24 +176,21 @@ fn test_classify_precedence() {
     // data errors, then none.
     assert_eq!(
         classify(false, 0, 0, 0),
-        cli_stressor_cuda_rs::VerdictClass::SelfTestFailed
+        cli_stressor_rs::VerdictClass::SelfTestFailed
     );
     assert_eq!(
         classify(true, 0, 0, 2),
-        cli_stressor_cuda_rs::VerdictClass::ApiError
+        cli_stressor_rs::VerdictClass::ApiError
     );
     assert_eq!(
         classify(true, 0, 1, 0),
-        cli_stressor_cuda_rs::VerdictClass::MemoryError
+        cli_stressor_rs::VerdictClass::MemoryError
     );
     assert_eq!(
         classify(true, 3, 0, 0),
-        cli_stressor_cuda_rs::VerdictClass::DataError
+        cli_stressor_rs::VerdictClass::DataError
     );
-    assert_eq!(
-        classify(true, 0, 0, 0),
-        cli_stressor_cuda_rs::VerdictClass::None
-    );
+    assert_eq!(classify(true, 0, 0, 0), cli_stressor_rs::VerdictClass::None);
 }
 
 #[test]

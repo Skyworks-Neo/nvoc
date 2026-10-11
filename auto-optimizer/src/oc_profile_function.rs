@@ -55,7 +55,7 @@ fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> 
 #[cfg(all(not(feature = "stressor-bundled"), feature = "stressor-external"))]
 fn spawn_dynamic_load_process(cuda_device: Option<u32>) -> Result<Child, Error> {
     external_command(
-        "cli-stressor-cuda-rs",
+        "cli-stressor-rs",
         Some("dynamic-export"),
         None,
         45.0,

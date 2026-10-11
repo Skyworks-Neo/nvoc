@@ -1,11 +1,11 @@
 [package]
-name = "cli-stressor-cuda-rs"
+name = "cli-stressor-rs"
 version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 license = "Apache-2.0"
 
-description = "Rust CUDA GEMM stressor with validation sidecar"
+description = "GPU stressor (CUDA + Vulkan + video engines) with validation sidecar"
 
 [features]
 # CUDA driver-generation selector. cuda11 targets R470-era drivers (CUDA
@@ -18,6 +18,9 @@ cuda = ["dep:cudarc", "dep:half"]
 cuda11 = ["cuda", "cudarc/cuda-11040"]
 cuda12 = ["cuda", "cudarc/cuda-12090"]
 vulkan = ["ash", "dep:naga", "dep:windows-sys"]
+# NVENC→NVDEC video-engine sidecar: runtime-loads the driver-shipped video
+# libraries (nvEncodeAPI64/nvcuvid/nvcuda) — no build-time CUDA SDK linkage.
+video = ["dep:libloading"]
 
 [dependencies]
 nvoc-cli-common = { workspace = true }
@@ -31,6 +34,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
 anstream = "1.0.0"
+# In-run telemetry (clock/temp/power) for SDC event context; dlopens the
+# driver-shipped nvml.dll / libnvidia-ml.so.1 at runtime.
+nvml-wrapper = { workspace = true }
+# Video-engine sidecar (--features video): dlopens the driver-shipped
+# nvEncodeAPI64.dll / nvcuvid.dll / nvcuda.dll at runtime.
+libloading = { workspace = true, optional = true }
 cudarc = { version = "0.19.7", optional = true, features = ["f16","nvrtc"] }
 half = { version = "2.7.1", optional = true }
 ash = { version = "0.38", optional = true }

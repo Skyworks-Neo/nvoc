@@ -37,7 +37,7 @@ fn main() {
     // A bundled stress worker is still a separate OS process. The hidden argv
     // marker prevents the child from entering the optimizer command router.
     if std::env::args_os().any(|arg| arg == std::ffi::OsStr::new(stressor_process::WORKER_ARG)) {
-        cli_stressor_cuda_rs::runner::run_from_args();
+        cli_stressor_rs::runner::run_from_args();
         return;
     }
 

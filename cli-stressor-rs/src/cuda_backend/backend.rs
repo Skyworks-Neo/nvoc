@@ -8,9 +8,9 @@ use cudarc::driver::sys as cuda_sys;
 use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream};
 use half::{bf16, f16};
 
-use cli_stressor_cuda_rs::{
+use cli_stressor_rs::{
     Backend, BackendError, DetectorStats, DeviceInfo, HostMatrix, KernelPathRequest, KernelType,
-    PrecisionKind, PrecisionSpec,
+    MemMode, PrecisionKind, PrecisionSpec, SdcTickEvent, resident_words_for_l2,
 };
 
 use super::atomic::build_atomic_kernel;
@@ -19,7 +19,7 @@ use super::gemm::GemmPathConfig;
 use super::verify_kernels::VerifyEngine;
 
 #[cfg(feature = "vulkan")]
-use cli_stressor_cuda_rs::PciBusAddress;
+use cli_stressor_rs::PciBusAddress;
 
 #[cfg(feature = "vulkan")]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -42,6 +42,11 @@ pub struct CudaBackend {
     pub(super) intalu_fn: Option<CudaFunction>,
     /// Ride-on-load verification engine (None when NVRTC build failed).
     pub(super) verify: Option<VerifyEngine>,
+    /// Highest-priority stream the resident tick runs on (falls back to the
+    /// default stream when the driver reports no priority range).
+    pub(super) verify_stream: Arc<CudaStream>,
+    /// Memory-pressure mode the resident block was sized for.
+    pub(super) mem_mode: MemMode,
     /// Opt-in device-side stress-buffer generation (`--gpu-generate`).
     pub(super) gpu_generate: bool,
     pub(super) gpu_fill: Option<super::gpu_fill::GpuFillKernels>,
@@ -89,6 +94,17 @@ impl CudaBackend {
     }
 
     pub fn new_with_device(gpu_index: u32) -> Result<Self, BackendError> {
+        Self::new_with_device_and_mem_mode(gpu_index, MemMode::default())
+    }
+
+    /// Like [`Self::new_with_device`], but sizes the ride-on-load verify
+    /// engine's resident pattern block from the requested memory-pressure
+    /// mode (L2-derived working set for Auto/Resident, historical 64 MiB
+    /// for Stream — the slab walk is the amplifier there).
+    pub fn new_with_device_and_mem_mode(
+        gpu_index: u32,
+        mem_mode: MemMode,
+    ) -> Result<Self, BackendError> {
         unsafe {
             let res = cuda_sys::cuInit(0);
             if res as u32 != 0 {
@@ -101,6 +117,33 @@ impl CudaBackend {
         let ctx = CudaContext::new(gpu_index as usize)
             .map_err(|err| BackendError::Other(err.to_string()))?;
         let stream = ctx.default_stream();
+        // MODS-borrowed (vkstress.jse SCG priority split): the SDC check keeps
+        // its rhythm while the burst lanes saturate the GPU — the resident
+        // tick runs on a stream at the highest CUDA scheduling priority.
+        // In-process only: cross-client RM priority has no public API on the
+        // production driver (that needed MODS' registry keys via /dev/mods).
+        let verify_stream = match cudarc::driver::result::stream::get_priority_range() {
+            Ok((_least, greatest)) => match ctx.new_stream_with_priority(greatest) {
+                Ok(high) => {
+                    println!(
+                        "[VERIFY] resident tick on high-priority CUDA stream (priority {greatest})"
+                    );
+                    high
+                }
+                Err(err) => {
+                    println!(
+                        "Warning: priority stream creation failed, resident tick shares the default stream: {err}"
+                    );
+                    stream.clone()
+                }
+            },
+            Err(err) => {
+                println!(
+                    "Warning: stream priority range unavailable, resident tick shares the default stream: {err}"
+                );
+                stream.clone()
+            }
+        };
         let stream2 = stream
             .fork()
             .map_err(|err| BackendError::Other(err.to_string()))?;
@@ -144,7 +187,25 @@ impl CudaBackend {
         // kernels, not WDDM pressure — fixed, slab runs clean in the triple
         // mix.)
         let verify_slab_pct: u32 = 0;
-        let verify = match VerifyEngine::build(&ctx, &info, 3, verify_slab_pct) {
+        let resident_words = match mem_mode {
+            MemMode::Auto | MemMode::Resident => resident_words_for_l2(info.l2_cache_bytes),
+            MemMode::Stream => resident_words_for_l2(None),
+        };
+        if let Some(l2) = info.l2_cache_bytes {
+            println!(
+                "[VERIFY] mem-mode {:?}: L2 = {} MiB, resident block = {} KiB",
+                mem_mode,
+                l2 / 1024 / 1024,
+                resident_words * 4 / 1024
+            );
+        } else {
+            println!(
+                "[VERIFY] mem-mode {:?}: L2 size unavailable, resident block = {} KiB (default)",
+                mem_mode,
+                resident_words * 4 / 1024
+            );
+        }
+        let verify = match VerifyEngine::build(&ctx, &info, 3, verify_slab_pct, resident_words) {
             Ok(engine) => Some(engine),
             Err(err) => {
                 println!(
@@ -166,6 +227,8 @@ impl CudaBackend {
             _intalu_module: intalu_module,
             intalu_fn,
             verify,
+            verify_stream,
+            mem_mode,
             gpu_generate: false,
             gpu_fill: None,
             info,
@@ -191,9 +254,27 @@ impl CudaBackend {
         Ok(CudaDeviceIdentity { uuid, pci_bus })
     }
 
+    /// CUDA device UUID (for NVML device matching in the telemetry sampler).
+    pub fn device_uuid(&self) -> Result<[u8; 16], BackendError> {
+        super::device::query_cuda_device_uuid(self.device_index)
+    }
+
     /// The ride-on-load verification engine, when built successfully.
     pub fn verify_engine(&self) -> Option<&VerifyEngine> {
         self.verify.as_ref()
+    }
+
+    /// Memory-pressure mode the resident block was sized for.
+    pub fn mem_mode(&self) -> MemMode {
+        self.mem_mode
+    }
+
+    /// Resident-block working set in u32 words (0 when verify is disabled).
+    pub fn resident_words(&self) -> usize {
+        self.verify
+            .as_ref()
+            .map(|engine| engine.resident_words())
+            .unwrap_or(0)
     }
 
     /// The default stream (diagnostics).
@@ -203,7 +284,7 @@ impl CudaBackend {
 
     /// Run the detector injection self-test and return its report. None when
     /// the engine failed to build (detectors disabled).
-    pub fn run_verify_self_test(&self) -> Option<cli_stressor_cuda_rs::SelfTestReport> {
+    pub fn run_verify_self_test(&self) -> Option<cli_stressor_rs::SelfTestReport> {
         let engine = self.verify.as_ref()?;
         engine.run_self_test();
         engine.take_self_test()
@@ -572,8 +653,22 @@ impl Backend for CudaBackend {
 
     fn verify_tick(&self, interval_s: f64) {
         if let Some(engine) = &self.verify {
-            engine.tick(&self.stream, interval_s);
+            // Resident tick only touches its own block (filled + synced at
+            // build), so the high-priority stream is race-free here.
+            engine.tick(&self.verify_stream, interval_s);
         }
+    }
+
+    fn sdc_tick_fault(&self) -> Option<SdcTickEvent> {
+        let fault = self.verify.as_ref()?.take_tick_fault()?;
+        Some(SdcTickEvent {
+            total_errors: fault.total_errors,
+            idx_min: fault.idx_min,
+            idx_max: fault.idx_max,
+            first_expected: fault.first_expected,
+            first_actual: fault.first_actual,
+            unix_ms: fault.unix_ms,
+        })
     }
 
     fn validate_int8_exact(

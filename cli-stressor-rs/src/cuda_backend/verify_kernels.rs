@@ -17,7 +17,7 @@ use cudarc::driver::{
 };
 use cudarc::nvrtc::{CompileOptions, compile_ptx_with_opts};
 
-use cli_stressor_cuda_rs::{
+use cli_stressor_rs::{
     BackendError, DetectorStats, DeviceInfo, GemmStats, SampleStats, SelfTestCheck, SelfTestReport,
     VerifyReport,
 };
@@ -29,8 +29,13 @@ use super::kernels::load_kernel;
 const STATS_GRID_CAP: u32 = 4096;
 /// Self-test scratch size in u32 words (4 MiB, far above the 0xADBA index).
 const SAMPLE_SCRATCH_WORDS: usize = 1 << 20;
-/// Resident pattern block: 64 MiB, filled once, re-read per tick.
-const RESIDENT_WORDS: usize = 64 << 18; // 64 MiB / 4
+/// Resident pattern block: filled once, re-read per tick. Sized at build
+/// time from the L2-derived working set ([`cli_stressor_rs::resident_words_for_l2`]);
+/// historical default 64 MiB when the L2 size is unknown.
+const DEFAULT_RESIDENT_WORDS: usize = 64 << 18; // 64 MiB / 4
+/// Hard clamp for the L2-derived resident size (1 MiB .. 256 MiB in words).
+const RESIDENT_MIN_WORDS: usize = 1 << 18; // 1 MiB / 4
+const RESIDENT_MAX_WORDS: usize = 256 << 18; // 256 MiB / 4
 const RESIDENT_SEED: u64 = 0x5EED_0001;
 /// Address-walk slab minimum useful size (windows below this are pointless).
 const SLAB_MIN_BYTES: usize = 64 << 20; // 64 MiB
@@ -325,8 +330,20 @@ pub(super) fn lane_seed(seed: u64, lane: usize) -> u64 {
 }
 
 // SAFETY: the device-copy marker impls for VerifyReport/GemmStats/SampleStats
-// live in the defining module (`cli_stressor_cuda_rs::verify`) so they count
+// live in the defining module (`cli_stressor_rs::verify`) so they count
 // as local under the crate's `extern crate self` alias.
+
+/// Structured first-fault record from a resident-tick check (host-side only;
+/// the kernel keeps writing the aggregate VerifyReport).
+#[derive(Debug, Clone)]
+pub(super) struct TickFault {
+    pub total_errors: u64,
+    pub idx_min: u64,
+    pub idx_max: u64,
+    pub first_expected: u32,
+    pub first_actual: u32,
+    pub unix_ms: u64,
+}
 
 pub struct VerifyEngine {
     _module: Arc<CudaModule>,
@@ -348,7 +365,12 @@ pub struct VerifyEngine {
     /// Resident pattern block: filled once, re-read at each tick — faults it
     /// reports are retention/disturbance flips under the live workload.
     resident: CudaSlice<u32>,
+    /// Word length of `resident` (runtime-sized from the L2 working set).
+    resident_words: usize,
     last_tick: RefCell<Option<std::time::Instant>>,
+    /// First fault observed by the resident tick, in structured form (the
+    /// host drains it into an SdcEvent with telemetry attached).
+    last_tick_fault: RefCell<Option<TickFault>>,
     /// Address-walk slab: one large allocation covering a configurable share
     /// of VRAM. Memset/memcpy windows slide across it so the pattern sweeps
     /// different physical pages every op (UE5 camera-turn stimulus).
@@ -370,6 +392,7 @@ impl VerifyEngine {
         info: &DeviceInfo,
         lane_count: usize,
         slab_pct: u32,
+        resident_words: usize,
     ) -> Result<Self, BackendError> {
         let arch = nvrtc_arch_for(info);
         let arch_static: &'static str = Box::leak(arch.into_boxed_str());
@@ -410,19 +433,28 @@ impl VerifyEngine {
         let scratch = stream
             .alloc_zeros::<u32>(SAMPLE_SCRATCH_WORDS)
             .map_err(|err| BackendError::Other(err.to_string()))?;
+        // 0 = caller has no L2 information either; fall back to the
+        // historical 64 MiB block.
+        let resident_words = if resident_words == 0 {
+            DEFAULT_RESIDENT_WORDS
+        } else {
+            resident_words
+        }
+        .clamp(RESIDENT_MIN_WORDS, RESIDENT_MAX_WORDS)
+        .max(1);
         let resident = stream
-            .alloc_zeros::<u32>(RESIDENT_WORDS)
+            .alloc_zeros::<u32>(resident_words)
             .map_err(|err| BackendError::Other(err.to_string()))?;
         // Fill once; ticks only re-read (retention/disturbance semantics).
         {
             let seed = RESIDENT_SEED;
             let mode = 0u32;
-            let cfg = LaunchConfig::for_num_elems(RESIDENT_WORDS as u32);
+            let cfg = LaunchConfig::for_num_elems(resident_words as u32);
             unsafe {
                 stream
                     .launch_builder(&fill_fn)
                     .arg(&resident)
-                    .arg(&(RESIDENT_WORDS as u64))
+                    .arg(&(resident_words as u64))
                     .arg(&seed)
                     .arg(&mode)
                     .launch(cfg)
@@ -436,7 +468,7 @@ impl VerifyEngine {
         // Address-walk slab: DISABLED at build; --verify-slab calls
         // enable_slab_walk() after backend construction (lazy allocation).
         let slab_bytes = if slab_pct > 0 {
-            Self::compute_slab_bytes(ctx, slab_pct)
+            Self::compute_slab_bytes(ctx, slab_pct, resident_words)
         } else {
             0
         };
@@ -462,10 +494,12 @@ impl VerifyEngine {
             sample_stats: RefCell::new(sample_stats),
             scratch,
             resident,
+            resident_words,
             slab: RefCell::new(slab),
             slab_cursor: Cell::new(0),
             slab_bytes: Cell::new(slab_actual),
             last_tick: RefCell::new(None),
+            last_tick_fault: RefCell::new(None),
             drained: RefCell::new(DetectorStats::default()),
             failure: RefCell::new(None),
             self_test: RefCell::new(None),
@@ -1105,14 +1139,27 @@ impl VerifyEngine {
             *last = Some(std::time::Instant::now());
         }
         if report.total_errors > 0 {
+            // Structured fault record for the SDC event stream (drained by
+            // the dispatch loop, enriched with telemetry host-side).
+            *self.last_tick_fault.borrow_mut() = Some(TickFault {
+                total_errors: report.total_errors as u64,
+                idx_min: report.idx_min as u64,
+                idx_max: report.idx_max as u64,
+                first_expected: report.first_exp,
+                first_actual: report.first_act,
+                unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+            });
             // Refill so the next tick counts only NEW flips.
             let mode = 0u32;
-            let cfg = LaunchConfig::for_num_elems(RESIDENT_WORDS as u32);
+            let cfg = LaunchConfig::for_num_elems(self.resident_words as u32);
             unsafe {
                 let _ = stream
                     .launch_builder(&self.fill_fn)
                     .arg(&self.resident)
-                    .arg(&(RESIDENT_WORDS as u64))
+                    .arg(&(self.resident_words as u64))
                     .arg(&RESIDENT_SEED)
                     .arg(&mode)
                     .launch(cfg);
@@ -1128,20 +1175,30 @@ impl VerifyEngine {
             .synchronize()
             .map_err(|err| BackendError::Other(err.to_string()))?;
         let report = self.read_report(stream, 0)?;
-        self.absorb_pattern(&report, RESIDENT_WORDS as u64, done, "resident verify");
+        self.absorb_pattern(&report, self.resident_words as u64, done, "resident verify");
         Ok(report)
+    }
+
+    /// Word length of the resident pattern block.
+    pub(super) fn resident_words(&self) -> usize {
+        self.resident_words
+    }
+
+    /// Drain the pending resident-tick fault record, if any.
+    pub(super) fn take_tick_fault(&self) -> Option<TickFault> {
+        self.last_tick_fault.borrow_mut().take()
     }
 
     /// Slab budget: pct% of total VRAM (capped at 2 GiB) minus what the
     /// engine already holds. On 8 GB cards a 4 GB slab starves WDDM/driver
     /// reserves — the cap is mandatory.
-    fn compute_slab_bytes(ctx: &Arc<CudaContext>, pct: u32) -> usize {
+    fn compute_slab_bytes(ctx: &Arc<CudaContext>, pct: u32, resident_words: usize) -> usize {
         const SLAB_MAX_BYTES: usize = 2 << 30;
         if pct == 0 {
             return 0;
         }
         let total = ctx.total_mem().unwrap_or(0);
-        let held = (RESIDENT_WORDS + SAMPLE_SCRATCH_WORDS) * 4;
+        let held = (resident_words + SAMPLE_SCRATCH_WORDS) * 4;
         ((total / 100) * pct as usize)
             .saturating_sub(held)
             .min(total.saturating_sub(held))
@@ -1170,7 +1227,7 @@ impl VerifyEngine {
         if self.slab_bytes.get() > 0 {
             return;
         }
-        let slab_bytes = Self::compute_slab_bytes(ctx, pct);
+        let slab_bytes = Self::compute_slab_bytes(ctx, pct, self.resident_words);
         if slab_bytes < SLAB_MIN_BYTES {
             return;
         }
