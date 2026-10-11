@@ -545,8 +545,13 @@ struct Args {
     gpu_uuid: Option<String>,
 
     /// List CUDA GPUs (PCI-sorted index, CUDA index, PCI bus, UUID) and exit
+    #[arg(long = "get-cuda-uuid-list", default_value_t = false)]
+    get_cuda_uuid_list: bool,
+
+    /// Resolve the GPU-selection hints to the PCI-sorted Vulkan device index
+    /// and exit (the index space --gpu-index addresses in Vulkan-only runs)
     #[arg(long, default_value_t = false)]
-    list_gpus: bool,
+    get_vulkan_index: bool,
 }
 
 #[cfg(feature = "cuda")]
@@ -654,7 +659,8 @@ struct FileConfig {
     gpu_index: Option<u32>,
     pci_bus: Option<String>,
     gpu_uuid: Option<String>,
-    list_gpus: Option<bool>,
+    #[serde(alias = "list_gpus")]
+    get_cuda_uuid_list: Option<bool>,
 }
 
 #[cfg(feature = "cuda")]
@@ -897,7 +903,7 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "gpu_index",
         "pci_bus",
         "gpu_uuid",
-        "list_gpus",
+        "get_cuda_uuid_list",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -1038,8 +1044,8 @@ fn apply_file_config_to_args(
     if let (true, Some(v)) = (!cli_set.contains("gpu_uuid"), &parsed.gpu_uuid) {
         args.gpu_uuid = Some(v.clone());
     }
-    if let (true, Some(v)) = (!cli_set.contains("list_gpus"), parsed.list_gpus) {
-        args.list_gpus = v;
+    if let (true, Some(v)) = (!cli_set.contains("get_cuda_uuid_list"), parsed.get_cuda_uuid_list) {
+        args.get_cuda_uuid_list = v;
     }
     Ok(())
 }
@@ -1511,7 +1517,8 @@ fn render_grouped_help() -> String {
             ("--gpu-index <N>", "GPU index (PCI-bus-sorted)"),
             ("--gpu-uuid <UUID>", "select GPU by UUID"),
             ("--pci-bus <ADDR>", "select GPU by PCI address"),
-            ("--list-gpus", "list CUDA devices and exit"),
+            ("--get-cuda-uuid-list", "list CUDA devices (UUID) and exit"),
+            ("--get-vulkan-index", "selected GPU's Vulkan index, then exit"),
             ("--json-out <PATH>", "machine-readable verdict JSON"),
             ("--sdc-log <PATH>", "JSONL SDC events + telemetry"),
             ("--config/--profile", "runtime TOML / built-in profile"),
@@ -1519,6 +1526,34 @@ fn render_grouped_help() -> String {
     );
     text.push_str("\nRun `cli-stressor-rs --help` for the complete option list.\n");
     text
+}
+
+/// `--get-vulkan-index`: resolve the CLI GPU hints to the PCI-sorted Vulkan
+/// device index and exit (query flag; never runs a load).
+fn handle_get_vulkan_index(args: &Args) -> ! {
+    #[cfg(feature = "vulkan")]
+    {
+        let selection = match build_vulkan_device_selection(args) {
+            Ok(sel) => sel,
+            Err(err) => {
+                eprintln!("{}", stylize(&format!("GPU selection failed: {err}"), true));
+                std::process::exit(2);
+            }
+        };
+        match cli_stressor_rs::vulkan_gfx_stressor::get_vulkan_device_index(selection) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{}", stylize(&format!("get-vulkan-index failed: {err}"), true));
+                std::process::exit(2);
+            }
+        }
+    }
+    #[cfg(not(feature = "vulkan"))]
+    {
+        let _ = args;
+        eprintln!("{}", stylize("--get-vulkan-index requires --features vulkan", true));
+        std::process::exit(2);
+    }
 }
 
 /// True when the process was invoked with no arguments at all.
@@ -1533,6 +1568,9 @@ pub fn run_from_args() {
         return;
     }
     let (mut args, cli_set) = parse_args_with_cli_sources();
+    if args.get_vulkan_index {
+        handle_get_vulkan_index(&args);
+    }
     // --config reads a user-supplied runtime file, whereas --profile selects
     // one of the TOML documents compiled into the binary above.
     let file_config = match (&args.config, &args.profile) {
@@ -1615,7 +1653,7 @@ pub fn run_from_args() {
         verify_cfg.self_test = false;
     }
 
-    if args.list_gpus {
+    if args.get_cuda_uuid_list {
         match print_cuda_gpu_list() {
             Ok(()) => std::process::exit(0),
             Err(err) => {
@@ -2467,6 +2505,14 @@ pub fn run_from_args() {
         return;
     }
     let args = Args::parse();
+    if args.get_vulkan_index {
+        handle_get_vulkan_index(&args);
+    }
+    #[cfg(not(feature = "cuda"))]
+    if args.get_cuda_uuid_list {
+        eprintln!("{}", stylize("--get-cuda-uuid-list requires --features cuda", true));
+        std::process::exit(2);
+    }
 
     // Video-only mode works without CUDA (the video engine owns its own
     // CUDA context via the driver API).
@@ -2532,6 +2578,13 @@ pub fn run_from_args() {
         return;
     }
     let args = Args::parse();
+    if args.get_vulkan_index {
+        handle_get_vulkan_index(&args);
+    }
+    if args.get_cuda_uuid_list {
+        eprintln!("{}", stylize("--get-cuda-uuid-list requires --features cuda", true));
+        std::process::exit(2);
+    }
 
     // Video-only mode is the one engine that runs without the cuda/vulkan
     // features (the video feature loads its own driver libraries).

@@ -218,6 +218,50 @@ pub fn select_gpu_by_sorted_index(
     Ok(*pdevice)
 }
 
+/// `--get-vulkan-index`: resolve the CLI GPU hints (UUID / PCI bus / sorted
+/// index) to a physical device and print its position in the PCI-sorted
+/// enumeration — the same index space `--gpu-index` addresses in Vulkan-only
+/// runs. Query-only: creates a bare instance, no device, no load.
+pub fn get_vulkan_device_index(selection: VulkanDeviceSelection) -> Result<(), String> {
+    let entry = unsafe { ash::Entry::load() }.map_err(|err| format!("Vulkan loader: {err}"))?;
+    let instance: Instance = unsafe {
+        entry
+            .create_instance(&vk::InstanceCreateInfo::default(), None)
+            .map_err(|err| format!("Vulkan instance creation failed: {err}"))?
+    };
+    let target = selection.resolve(&instance)?;
+
+    let pdevices = unsafe {
+        instance
+            .enumerate_physical_devices()
+            .map_err(|err| format!("failed to enumerate Vulkan physical devices: {err}"))?
+    };
+    let mut entries: Vec<(Option<PciBusAddress>, usize, String)> = Vec::new();
+    for (raw, pdevice) in pdevices.iter().enumerate() {
+        let (name, _uuid, uuid_hex, pci) =
+            unsafe { query_vulkan_device_identity(&instance, *pdevice) }
+                .map_err(|err| format!("failed to query device identity: {err}"))?;
+        entries.push((pci, raw, format!("{name} | uuid={uuid_hex}")));
+    }
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by(|&a, &b| match (&entries[a].0, &entries[b].0) {
+        (Some(x), Some(y)) => {
+            (x.domain, x.bus, x.device, x.function).cmp(&(y.domain, y.bus, y.device, y.function))
+        }
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.cmp(&b),
+    });
+
+    let position = order
+        .iter()
+        .position(|&e| pdevices[e] == target)
+        .ok_or_else(|| "resolved device missing from enumeration".to_string())?;
+    let (_, _, label) = &entries[order[position]];
+    println!("Vulkan device index: {position} ({label})");
+    Ok(())
+}
+
 pub fn select_gpu_by_cuda_identity(
     instance: &Instance,
     target_cuda_uuid: [u8; 16],
