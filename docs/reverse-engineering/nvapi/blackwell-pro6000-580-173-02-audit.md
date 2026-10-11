@@ -162,7 +162,7 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 | +0x100 / +0x104 | 0..1080 / 0..820000 | 7 distinct（组级 min/max 类） |
 | **其余 111/122 dword** | **恒零** | **含读侧的 V_cur/F_cur 列** |
 
-判读：(a) V_cur/F_cur 空列 = 驱动在此构建上**不维护 current 镜像**——静态表（GetStatus 面）只暴露 DEF 曲线 + 电压梯；offset 列（读侧算 F_cur−F_def）因此恒不可读。这不是读 bug，是数据模型事实。(b) 当前/偏移面在 **CONTROL 面**（255 点 × 36B Get/SetControl）——该面读回逐字有效（root 实验证实）。两个面不要混。(c) Turing "全填充" vs GB202 稀疏 = 表由 GSP 重建而非 VBIOS 镜像的旁证。(d) type 12/13 + shim 词表 0x0B/0x10 + ClkDomains rec+0=0x0F —— 本驱动的记录子型宇宙比 NvpwrControl 的 0x0F marker 更宽，跨代解读须按 (驱动, 子型) 二元组。
+判读：(a) V_cur/F_cur 空列 = GetStatus 面不维护 current 镜像。**(c1) 修正 2026-10-11 用户实验：offset 列并非读侧算术——它来自 Control 面回读且在 GB202 上工作正常**（mode0 +100 写入后回读 +100.0）。(b) VF 写回实际有三张面：GetStatus 静态表（488B×645，只读）；**PRIVATE Control 面**（0xFEC00D04，4MB，2 bank×2048 点×1060B，TYPE@0/MODE@36/VALUE@56，bank0 用户子型 {0,1,3,4,7,8,12,13}）= CLI set-private-vftable-* 所用；**Client 面**（0x0733E009，9248B，255×36B，ver1 verbatim/ver2 缩放）= nvoc 仅 GET 用，SET 行为未测（probe 已备）。(c2) **mode1"烂掉"根因 = `set_delta` 只写 VALUE@+56 的低 2 字节（i16 截断）+ mode1 是 delta 语义读侧渲染为空**——Blackwell mode1 若需全 u32 控制字则 nvoc 打包方式错误。(d) type 12/13 + shim 词表 0x0B/0x10 + ClkDomains rec+0=0x0F —— 记录子型宇宙比 NvpwrControl 的 0x0F marker 更宽，跨代解读须按 (驱动, 子型) 二元组。(c) Turing "全填充" vs GB202 稀疏 = 表由 GSP 重建而非 VBIOS 镜像的旁证。(d) type 12/13 + shim 词表 0x0B/0x10 + ClkDomains rec+0=0x0F —— 本驱动的记录子型宇宙比 NvpwrControl 的 0x0F marker 更宽，跨代解读须按 (驱动, 子型) 二元组。
 
 ## 文档裁决记录（对既有文档的修订指令）
 
