@@ -166,6 +166,14 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 
 判读：(a) V_cur/F_cur 空列 = GetStatus 面不维护 current 镜像。**(c1) 修正 2026-10-11 用户实验：offset 列并非读侧算术——它来自 Control 面回读且在 GB202 上工作正常**（mode0 +100 写入后回读 +100.0）。(b) VF 写回实际有三张面：GetStatus 静态表（488B×645，只读）；**PRIVATE Control 面**（0xFEC00D04，4MB，2 bank×2048 点×1060B，TYPE@0/MODE@36/VALUE@56，bank0 用户子型 {0,1,3,4,7,8,12,13}）= CLI set-private-vftable-* 所用；**Client 面**（0x0733E009，9248B，255×36B，ver1 verbatim/ver2 缩放）= nvoc 仅 GET 用，SET 行为未测（probe 已备）。(c2) **mode1"烂掉"根因 = `set_delta` 只写 VALUE@+56 的低 2 字节（i16 截断）+ mode1 是 delta 语义读侧渲染为空**——Blackwell mode1 若需全 u32 控制字则 nvoc 打包方式错误。(d) type 12/13 + shim 词表 0x0B/0x10 + ClkDomains rec+0=0x0F —— 记录子型宇宙比 NvpwrControl 的 0x0F marker 更宽，跨代解读须按 (驱动, 子型) 二元组。(c) Turing "全填充" vs GB202 稀疏 = 表由 GSP 重建而非 VBIOS 镜像的旁证。(d) type 12/13 + shim 词表 0x0B/0x10 + ClkDomains rec+0=0x0F —— 本驱动的记录子型宇宙比 NvpwrControl 的 0x0F marker 更宽，跨代解读须按 (驱动, 子型) 二元组。
 
+## TopRels 比率路径 — 第一条活写面（2026-10-11，v3 实验收官）
+
+**TopRels SetControl（0xEF3D20EA）是本卡第一条行为活写的 VF 族控制面**：
+- **下行自由**：ratio 0.9→0.8 → XBAR 即时 1943±4（0.799×GPC）；→0.7 → 1692±3（0.696×）；恢复 0.9 → 2184（0.900 分毫不差）。即时生效、可逆、无转换延迟（H2 转换触发假设不成立——不需 GPC 重频）。
+- **上行钳死**：0.95/1.0 写入落表（回读精确 0xF333/0x10000）但 XBAR 钉在 0.898×——上限钳在 devinit 比率（服务器"只降不升"策略风格）。细粒度上扫（0.905/0.91/…）可绘制精确钳制边界（未做）。
+- 工程意义：**XBAR 降频（策略级）真通道** + nvpwrcontrol §4.4 SetControl 首次真机验证 + "比率记录 Blackwell 特有"二次证实。
+- 写法（本卡实测要点）：TopRels CONTROL 0x1075C，**seed 仅 +4=0xFF**（616.92 式全量种子 -104 被拒，`top_rels_control_seeded()` 的 seed_mask 是旧代配方需绕开），ratio dword @rest 0x64（abs 0x68），ver1 0x1075C。v2 失败教训：up-walk-only 会把"钳死"误判为"惰性"——**行为实验必须双向**。
+
 ## GSP-RM 固件逆向报告（2026-10-11，gsp_rm_inner.elf 全量分析）
 
 资产：`reverse/linux-580.173.02/gsp_rm_inner.elf.i64`（168MB 完整 IDA 库，27,985 函数，~4s 可开）+ `probe/gsp_rm_decompiles/` 27 个反编译文件。地址桥接：内层 ELF 逐字嵌入外层 bundle 偏移 0x1A1040，LOAD1（代码+rodata）outer_vaddr = inner_vaddr + 0xA1000。注意 `gsp_ga10x.bin.i64`（304MB）实为**零分析**（loader 输出，0 函数）——真身是内层 ELF。idalib 30s 空闲超时会杀死大库加载，绕法 = 直接批驱动 idapro.open_database()（内层全量分析 2005s 单线程）。
