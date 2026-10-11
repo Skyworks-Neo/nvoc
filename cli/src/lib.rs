@@ -878,8 +878,8 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ResetSubdomainFreqRatio,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
-                    options: Box::leak(Box::new(["slot"])),
-                    ..CommandSpec::new("reset-subdomain-freq-ratio", Group::Clock, "Restore the TopRels GPC:XBAR ratio to the devinit default 0.90 (raw 0xE660)")
+                    options: Box::leak(Box::new(["src", "dst", "index", "force"])),
+                    ..CommandSpec::new("reset-subdomain-freq-ratio", Group::Clock, "Restore the addressed TopRels relation ratio to the DRIVER-REPORTED default (GetInfo payload — 0xE660 = 0.90 on Blackwell GPC:XBAR). --src/--dst (default GPC=0 -> XBAR=1) or --index address the relation; an un-enabled ratio arm (live control record = 0) is refused unless --force")
                 },
             ),
             (Command::ResetTempLimit, CommandSpec::new("reset-temp-limit", Group::Thermal, "Reset NVAPI sensor limits")),
@@ -1431,13 +1431,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["slot"])),
+                    options: Box::leak(Box::new(["src", "dst", "index", "force"])),
                     positionals: Box::leak(Box::new([PositionalArg::hyphen(
                         "arg_ratio",
                         "RATIO",
                         "GPC:XBAR propagation ratio 0.70-1.20 (XBAR = ratio x GPC; e.g. 0.85 = -10% XBAR)",
                     )])),
-                    ..CommandSpec::new("set-subdomain-freq-ratio", Group::Clock, "Set the TopRels GPC:XBAR propagation ratio (XBAR = ratio x GPC; XBAR down-clock trim). LIVE on Blackwell server 580.173.02: 0.70-0.90 applies instantly and reversibly; values above the devinit 0.9 are stored but engine-clamped (down-only policy). Dangerous policy write — rescales the whole XBAR interconnect")
+                    ..CommandSpec::new("set-subdomain-freq-ratio", Group::Clock, "Set the TopRels GPC:XBAR propagation ratio (XBAR = ratio x GPC; XBAR down-clock trim). LIVE on Blackwell server 580.173.02: 0.70-0.90 applies instantly and reversibly; values above the devinit 0.9 are stored but engine-clamped (down-only policy). Gates: zero ratio and non-carrier relations are hard-rejected; an un-enabled ratio arm (live control record = 0) or a ratio below the lowest tested landing (0x1199) requires --force. Dangerous policy write — rescales the whole XBAR interconnect")
                 },
             ),
             (
@@ -2334,7 +2334,22 @@ fn command_specific_arg(name: &'static str) -> Arg {
         "force" => Arg::new("force")
             .long("force")
             .action(ArgAction::SetTrue)
-            .help("set-power-command: bypass the safety envelope (board default × 2, floor 1 W). The write still only moves the echo layer (GET/NVML/nvidia-smi readback), not load-time enforcement"),
+            .help("set-power-command: bypass the safety envelope (board default × 2, floor 1 W). The write still only moves the echo layer (GET/NVML/nvidia-smi readback), not load-time enforcement. set/reset-subdomain-freq-ratio: override the soft gates — write an un-enabled ratio arm (live control record = 0) or a ratio below the lowest tested landing (0x1199). Never overrides the zero-ratio or non-carrier hard rejects"),
+        "src" => Arg::new("src")
+            .long("src")
+            .value_name("DOMAIN")
+            .action(ArgAction::Set)
+            .help("subdomain-freq-ratio: source domain of the TopRels edge (default 0 = GPC)"),
+        "dst" => Arg::new("dst")
+            .long("dst")
+            .value_name("DOMAIN")
+            .action(ArgAction::Set)
+            .help("subdomain-freq-ratio: destination domain of the TopRels edge (default 1 = XBAR)"),
+        "index" => Arg::new("index")
+            .long("index")
+            .value_name("IDX")
+            .action(ArgAction::Set)
+            .help("subdomain-freq-ratio: address the TopRels relation by table index directly (overrides --src/--dst; see get-subdomain-freq-ratio --table)"),
         "kmd" => Arg::new("kmd")
             .long("kmd")
             .action(ArgAction::SetTrue)
@@ -3729,6 +3744,7 @@ fn execute_target(
                     src,
                     dst,
                     index,
+                    force: invocation.options.contains_key("force"),
                 },
             )?
             .output;
@@ -3758,6 +3774,7 @@ fn execute_target(
                     src,
                     dst,
                     index,
+                    force: invocation.options.contains_key("force"),
                 },
             )?
             .output;
@@ -6949,7 +6966,7 @@ fn execute_set_power_command_kmd(
     {
         let _ = invocation;
         let _ = command;
-        return Err(CliError::new("--kmd is Windows-only"));
+        Err(CliError::new("--kmd is Windows-only"))
     }
     #[cfg(windows)]
     {

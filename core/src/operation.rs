@@ -2713,19 +2713,28 @@ impl GpuOperation for ResetTopRelsRatioToDefault {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        let gpu = target.nvapi()?;
-        let Some(default) = gpu.top_rels_default_ratio(0).map_err(Error::from)? else {
+        let Some(default) = target
+            .nvapi()?
+            .top_rels_default_ratio()
+            .map_err(Error::from)?
+        else {
             return Ok(None);
         };
-        let landed = gpu.set_top_rels_ratio_slot(0, (default * 65536.0).round() as u32).map_err(Error::from)?;
-        Ok(landed.map(|raw| raw as f64 / 65536.0))
+        let landed = target
+            .nvapi()?
+            .set_top_rels_ratio(default)
+            .map_err(Error::from)?;
+        Ok(Some(landed))
     }
 }
 
 /// Set one TopRels control slot's GPC:XBAR ratio (XBAR = ratio × GPC).
-/// Slots: 0 = engine-tracked active ratio; 10-13 = regime-variant stores
-/// (all five land verbatim; only 0 is behavioral on 580.173.02). Ratio
-/// clamped 0.7..=1.2 by nvapi-rs (0.9 = the 0xE660 literal).
+/// Slots: 0 = engine-tracked active ratio; 10-13 = regime-variant stores.
+/// ALL five land verbatim at the record level, but the HAZARD matrix is
+/// live-proven on 580.173.02: writing 0 to slot 0 HANGS the GPU, and
+/// writing to a non-carrier edge (GetInfo payload == 1) HANGS the GPU.
+/// Gate ladder (see run): hard rejects for those, soft reject below the
+/// lowest experimentally-landed ratio unless --force.
 #[derive(Clone, Copy, Debug)]
 pub struct SetSubdomainFreqRatio {
     pub ratio: f64,
@@ -2734,36 +2743,14 @@ pub struct SetSubdomainFreqRatio {
     pub src: u32,
     pub dst: u32,
     pub index: Option<usize>,
+    /// Overrides the soft below-tested-envelope rejection. Never overrides
+    /// the zero-ratio or non-carrier hard rejects.
+    pub force: bool,
 }
 
-impl GpuOperation for SetSubdomainFreqRatio {
-    type Output = Option<u32>; // landed raw; None = not retained
-
-    fn kind(&self) -> OperationKind {
-        OperationKind::SetSubdomainFreqRatio
-    }
-
-    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        let gpu = target.nvapi()?;
-        // 40-series/Ada shape: the control record exists but the ratio slot
-        // reads 0 (no ratio carrier on this generation) — a write would be
-        // silently ignored, so surface that instead of a pointless RM write.
-        let slot = self.slot(gpu)?;
-        if gpu.top_rels_ratio_slot(slot).map_err(Error::from)? == Some(0) {
-            return Err(Error::Custom(format!(
-                "TopRels ratio relation {} reads 0 (no ratio carrier on this generation) — write face not applicable",
-                slot
-            )));
-        }
-        let ratio = if (self.ratio - 0.9).abs() < f64::EPSILON {
-            0xE660
-        } else {
-            (self.ratio * 65536.0).round() as u32
-        };
-        gpu.set_top_rels_ratio_slot(slot, ratio)
-            .map_err(Error::from)
-    }
-}
+/// The lowest ratio experimentally landed on this card (0x1199 = 0.0687,
+/// envelope probe; clock clamped to the 884 MHz XBAR floor — no hang).
+pub const TOPRELS_MIN_TESTED_RAW: u32 = 0x1199;
 
 impl SetSubdomainFreqRatio {
     /// Effective relation index: explicit --index wins; else resolve
@@ -2778,6 +2765,64 @@ impl SetSubdomainFreqRatio {
                 self.src, self.dst
             ))
         })
+    }
+}
+
+impl GpuOperation for SetSubdomainFreqRatio {
+    type Output = Option<u32>; // landed raw; None = not retained
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetSubdomainFreqRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // HARD gate 1 — zero ratio hangs the GPU (clock-tree div-by-zero
+        // class failure; live-confirmed by the operator).
+        let gpu = target.nvapi()?;
+        let ratio = if (self.ratio - 0.9).abs() < f64::EPSILON {
+            0xE660
+        } else {
+            (self.ratio * 65536.0).round() as u32
+        };
+        if ratio == 0 {
+            return Err(Error::Custom(
+                "zero ratio hangs the GPU — refusing unconditionally".into(),
+            ));
+        }
+
+        // HARD gate 2 — non-carrier edge (GetInfo payload 0 or 1 = edge
+        // marker without a ratio carrier): writes there hang the GPU
+        // (operator-confirmed on the sibling slots).
+        let slot = self.slot(gpu)?;
+        let carrier = gpu
+            .top_rels_default_ratio_at(slot)
+            .map_err(Error::from)?;
+        if carrier.unwrap_or(0) <= 1 {
+            return Err(Error::Custom(format!(
+                "TopRels relation {slot} carries no ratio (GetInfo payload {}) — write face not applicable",
+                carrier.unwrap_or(0)
+            )));
+        }
+
+        // SOFT gate 1 — un-enabled ratio arm: the relation carries a default
+        // but its live control record reads 0. Writing a dormant arm is
+        // untested enable territory — --force required.
+        let live = gpu.top_rels_ratio_at(slot).map_err(Error::from)?;
+        if live.unwrap_or(0) == 0 && !self.force {
+            return Err(Error::Custom(format!(
+                "TopRels relation {slot} ratio arm is not enabled (live record = 0) — pass --force to write it"
+            )));
+        }
+
+        // SOFT gate 2 — below the lowest experimentally-landed ratio: --force
+        // overrides (values 0x1..0x1198 are untested territory).
+        if ratio < TOPRELS_MIN_TESTED_RAW && !self.force {
+            return Err(Error::Custom(format!(
+                "ratio {ratio:#x} is below the lowest tested landing (0x1199) — pass --force to override"
+            )));
+        }
+
+        gpu.set_top_rels_ratio_at(slot, ratio).map_err(Error::from)
     }
 }
 
@@ -2802,12 +2847,16 @@ impl GpuOperation for QueryTopRelsRelations {
 }
 
 /// Reset one TopRels control slot to the DRIVER-REPORTED default (GetInfo
-/// relation payload for that slot — not a hard-coded constant).
+/// relation payload for that slot — not a hard-coded constant). An
+/// un-enabled ratio arm (live control record = 0) is refused unless
+/// `force` — restoring a default onto a dormant arm is still an
+/// untested enable write.
 #[derive(Clone, Copy, Debug)]
 pub struct ResetSubdomainFreqRatio {
     pub src: u32,
     pub dst: u32,
     pub index: Option<usize>,
+    pub force: bool,
 }
 
 impl ResetSubdomainFreqRatio {
@@ -2833,11 +2882,20 @@ impl GpuOperation for ResetSubdomainFreqRatio {
         let Some(default) = gpu.top_rels_default_ratio_at(slot).map_err(Error::from)? else {
             return Ok(None);
         };
-        if default == 0 {
-            // ratio carrier absent on this generation (40-series/Ada shape)
+        if default <= 1 {
+            // payload 0 = no carrier, 1 = bare edge marker (40-series/Ada
+            // shape): there is no ratio default to restore on this edge
             return Ok(None);
         }
-        gpu.set_top_rels_ratio_slot(slot, default).map_err(Error::from)
+        // Un-enabled arm: the live control record reads 0. Writing the
+        // default onto a dormant arm is an enable write — --force only.
+        let live = gpu.top_rels_ratio_at(slot).map_err(Error::from)?;
+        if live.unwrap_or(0) == 0 && !self.force {
+            return Err(Error::Custom(format!(
+                "TopRels relation {slot} ratio arm is not enabled (live record = 0) — pass --force to write it"
+            )));
+        }
+        gpu.set_top_rels_ratio_at(slot, default).map_err(Error::from)
     }
 }
 
