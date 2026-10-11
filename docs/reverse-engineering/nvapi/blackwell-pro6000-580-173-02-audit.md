@@ -166,6 +166,20 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 
 判读：(a) V_cur/F_cur 空列 = GetStatus 面不维护 current 镜像。**(c1) 修正 2026-10-11 用户实验：offset 列并非读侧算术——它来自 Control 面回读且在 GB202 上工作正常**（mode0 +100 写入后回读 +100.0）。(b) VF 写回实际有三张面：GetStatus 静态表（488B×645，只读）；**PRIVATE Control 面**（0xFEC00D04，4MB，2 bank×2048 点×1060B，TYPE@0/MODE@36/VALUE@56，bank0 用户子型 {0,1,3,4,7,8,12,13}）= CLI set-private-vftable-* 所用；**Client 面**（0x0733E009，9248B，255×36B，ver1 verbatim/ver2 缩放）= nvoc 仅 GET 用，SET 行为未测（probe 已备）。(c2) **mode1"烂掉"根因 = `set_delta` 只写 VALUE@+56 的低 2 字节（i16 截断）+ mode1 是 delta 语义读侧渲染为空**——Blackwell mode1 若需全 u32 控制字则 nvoc 打包方式错误。(d) type 12/13 + shim 词表 0x0B/0x10 + ClkDomains rec+0=0x0F —— 记录子型宇宙比 NvpwrControl 的 0x0F marker 更宽，跨代解读须按 (驱动, 子型) 二元组。(c) Turing "全填充" vs GB202 稀疏 = 表由 GSP 重建而非 VBIOS 镜像的旁证。(d) type 12/13 + shim 词表 0x0B/0x10 + ClkDomains rec+0=0x0F —— 本驱动的记录子型宇宙比 NvpwrControl 的 0x0F marker 更宽，跨代解读须按 (驱动, 子型) 二元组。
 
+## GSP-RM 固件逆向报告（2026-10-11，gsp_rm_inner.elf 全量分析）
+
+资产：`reverse/linux-580.173.02/gsp_rm_inner.elf.i64`（168MB 完整 IDA 库，27,985 函数，~4s 可开）+ `probe/gsp_rm_decompiles/` 27 个反编译文件。地址桥接：内层 ELF 逐字嵌入外层 bundle 偏移 0x1A1040，LOAD1（代码+rodata）outer_vaddr = inner_vaddr + 0xA1000。注意 `gsp_ga10x.bin.i64`（304MB）实为**零分析**（loader 输出，0 函数）——真身是内层 ELF。idalib 30s 空闲超时会杀死大库加载，绕法 = 直接批驱动 idapro.open_database()（内层全量分析 2005s 单线程）。
+
+**核心答案（症状根因，固件级）**：CLK_DOMAINS SET（0x2080D01C → impl 0x110D944，46,766B 单体函数）与 VF_POINTS SET（0x2080D02D → impl 0x10E4208，21,438B）都是**纯记录存储器**：boardobjgrp 实例构造 → vtbl+40 解码+存入 → 返回 NV_OK。**没有任何对时钟/perf 引擎的调用、无变更序列调度、无通知**——存储记录的唯一消费者就是 GET impl 本身（即我们的回读）。脱钩是固件结构性的：DOMAINS/VF 组是控制面的读写模型，引擎侧限制在另一个对象图。服务器卡上两张门（root+7608 对象 +1245 使能字节、容器 +377 调试模式字节）都通过 → 写入粘住，行为为零，by construction。
+
+**引擎侧真策略对象图**（assert 字符串锚定）：softFloor.c 模块 sub_178FA54 评估 perf-CF 对象，TOP 选择器 **clkPropTopIdx**（+866/+868）挂在 PERF-CF softFloor 对象上——**任何 RM 控制 SET 面都不可达**（Windows 审计的 PowerRoot-top 等价物，在 GSP 内确认不可达）。PMGR：sub_175F24C（pwr 通道校验，先于 softFloor 评估——功率策略约束时钟下限）、sub_178F120（TGP iface：fbPolicy/corePolicy/tgt/floor/ceilingPolicyRelIdx）、WORKLOAD_DIE_2X/PHYSICAL_SINGLE_2X 策略——Windows 功率策略对象模型的 GSP 等价物存在，**选择器 devinit 时构造**。
+
+**宿主侧杠杆（注册表键，init 时读取——唯一能进引擎的实验面）**：`RmPerfCfOverride`、`RmPerfCfPolicyOverrides`、`RmPerfCfControllersOverrides`、`RMExtPerfControl`、`RmPerfChangeSeqOverride`、`RmPerfLimitsOverride`、`RmVFPointCheckIgnore`、`RmClkControllersOverride`、`AllowMaxPerf`、`RmBootGspRmWithBoostClocks` 等（固件内明文串）。服务器卡最有希望的实验杠杆 = **RmVFPointCheckIgnore + RmPerfCfPolicyOverrides**（经 NVreg_RegistryDwords / /proc/driver/nvidia/params 传入，需 root + 模块重载或重启）。
+
+**perf 原因注册表**（mission 4）：两处 32B 记录注册表 {name, kind 0xFF01..0xFF0B, seqIdx, limitId, typeFlag}——Registry A @0x1DEB548 119 条（POWERMIZER=32、ECC_MAX=144、CUDA_MAX=152、RATED_TDP_MAX/MIN=136/133、OOB_CLOCK_LIMIT=142/143、FORCED=130、OVERCLOCK=77…）、Registry B ~0x1DEC3E8（PERFORMANCE_CAP0/1、PERF_CF_CONTROLLER_{GPC,DRAM,NVD,XBAR,PCIE}_{MIN,MAX}、POWERMIZER_HARD…）。NVAPI 位变换（bit 0x20 归因）在宿主侧 libnvidia-api.so——待查其 limits 响应解析器（.i64 已在盘）。
+
+**遗留**（按价值排序）：①CLK 模块（0x10DF000-0x1120000）+ PERF 簇（0x1740000-0x17B0000，含 softFloor 调用者 0x178F684/0x1AFAA4C）穷举 root+7408 槽 544/545/600 的读取者——彻底钉死"引擎永不读这些组"（已采样路径全为控制面，穷举未完成）；②NVOC 类厂表 off_4161248 枚举 → 找 root+7408 表的写入者（root ctor）；③PRIVATE 面 0xFEC00D04 不在 NV2080 类表——按 method 0x0D04/0xFEC0 扫其它类分派表；④libnvidia-api.so.i64 查 reasonId→NVAPI 位映射（关 bit 0x20）；⑤活体对照 /proc/driver/nvidia/params + nvidia-smi -q -d PERFORMANCE 的 RmPerfCf* 默认值（服务器 vs 消费 616.92）。
+
 ## 文档裁决记录（对既有文档的修订指令）
 
 1. `nvpwrcontrol-blackwell-tuner-audit.md` §4.3：裁决为**读法 A**（index 语义）；工具的 "XBAR physical"= SYS；§9.3 裁决协议可关闭。
