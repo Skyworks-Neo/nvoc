@@ -19,7 +19,7 @@ use nvoc_core::{
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
     QueryNvapiTopRelsRatio, QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits,
-    QuerySubdomainFreqRatioSlot,
+    QueryTopRelsRelations,
     QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
     QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo,
     QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
@@ -3719,16 +3719,26 @@ fn execute_target(
                 .trim()
                 .parse()
                 .map_err(|e| CliError::new(format!("invalid ratio: {e}")))?;
-            let slot = option_one(invocation, "slot")
-                .map(|s| s.parse::<usize>())
-                .transpose()
-                .map_err(|e| CliError::new(format!("invalid --slot: {e}")))?
-                .unwrap_or(0);
-            let landed = run(target, SetSubdomainFreqRatio { ratio, slot })?.output;
+            let src = option_u32(invocation, "src")?.unwrap_or(0);
+            let dst = option_u32(invocation, "dst")?.unwrap_or(1);
+            let index = option_usize(invocation, "index")?;
+            let landed = run(
+                target,
+                SetSubdomainFreqRatio {
+                    ratio,
+                    src,
+                    dst,
+                    index,
+                },
+            )?
+            .output;
             match landed {
                 Some(raw) => Ok(json!({
                     "applied": true,
-                    "slot": slot,
+                    "relation": match index {
+                        Some(i) => json!(i),
+                        None => json!(format!("src={src} dst={dst}")),
+                    },
                     "raw": raw,
                     "ratio": raw as f64 / 65536.0,
                 })),
@@ -3739,16 +3749,25 @@ fn execute_target(
             }
         }
         Command::ResetSubdomainFreqRatio => {
-            let slot = option_one(invocation, "slot")
-                .map(|s| s.parse::<usize>())
-                .transpose()
-                .map_err(|e| CliError::new(format!("invalid --slot: {e}")))?
-                .unwrap_or(0);
-            let landed = run(target, ResetSubdomainFreqRatio { slot })?.output;
+            let src = option_u32(invocation, "src")?.unwrap_or(0);
+            let dst = option_u32(invocation, "dst")?.unwrap_or(1);
+            let index = option_usize(invocation, "index")?;
+            let landed = run(
+                target,
+                ResetSubdomainFreqRatio {
+                    src,
+                    dst,
+                    index,
+                },
+            )?
+            .output;
             match landed {
                 Some(raw) => Ok(json!({
                     "applied": true,
-                    "slot": slot,
+                    "relation": match index {
+                        Some(i) => json!(i),
+                        None => json!(format!("src={src} dst={dst}")),
+                    },
                     "raw": raw,
                     "ratio": raw as f64 / 65536.0,
                 })),
@@ -4474,32 +4493,37 @@ fn execute_target(
             Ok(Value::Object(output))
         }
         Command::GetTopRelsRatio => {
-            let Some((offset, raw)) = run(target, QueryNvapiTopRelsRatio)?.output else {
-                return Ok(
-                    json!({"supported": false, "note": "TopRels control answers on 50-series only (Pascal/Turing -103, Ampere/Ada -1)"}),
-                );
-            };
-            // slot inventory: 0 = engine-tracked active ratio; 10-13 =
-            // regime-variant stores (writable, engine-inert on 580.173.02).
-            // Exposed so users discover set/reset-subdomain-freq-ratio --slot.
-            let mut slots = serde_json::Map::new();
-            for slot in [0usize, 10, 11, 12, 13] {
-                if let Some(raw) =
-                    run(target, QuerySubdomainFreqRatioSlot { slot })?.output
-                {
-                    slots.insert(
-                        slot.to_string(),
-                        json!({ "raw": raw, "ratio": raw as f64 / 65536.0 }),
-                    );
-                }
+            // full relation table (GetInfo): idx, src, dst, dir, default
+            let relations = run(target, QueryTopRelsRelations)?.output;
+            let mut out = serde_json::Map::new();
+            if !relations.is_empty() {
+                let rows: Vec<Value> = relations
+                    .iter()
+                    .map(|(idx, src, dst, dir, payload)| {
+                        json!({
+                            "index": idx,
+                            "src": src,
+                            "dst": dst,
+                            "dir": dir,
+                            "default_raw": payload,
+                            "default_ratio": *payload as f64 / 65536.0,
+                        })
+                    })
+                    .collect();
+                out.insert("relations".into(), json!(rows));
             }
-            Ok(json!({
-                "offset": offset,
-                "raw": raw,
-                "raw_hex": format!("{raw:#x}"),
-                "ratio": raw as f64 / 65536.0,
-                "slots": slots,
-            }))
+            let Some((offset, raw)) = run(target, QueryNvapiTopRelsRatio)?.output else {
+                out.insert(
+                    "control".into(),
+                    json!({"supported": false, "note": "TopRels control answers on 50-series only (Pascal/Turing -103, Ampere-only -1 live; Pascal/Turing -103)"}),
+                );
+                return Ok(Value::Object(out));
+            };
+            out.insert("offset".into(), json!(offset));
+            out.insert("raw".into(), json!(raw));
+            out.insert("raw_hex".into(), json!(format!("{raw:#x}")));
+            out.insert("ratio".into(), json!(raw as f64 / 65536.0));
+            Ok(Value::Object(out))
         }
         Command::SetTopRelsRatio => {
             let ratio: f64 = invocation.positionals[0]
@@ -8256,6 +8280,26 @@ fn parse_edid_hex(raw: &str) -> CliResult<Vec<u8>> {
                 .map_err(|_| CliError::new(format!("invalid EDID hex byte at offset {index}")))
         })
         .collect()
+}
+
+fn option_usize(invocation: &Invocation, name: &str) -> CliResult<Option<usize>> {
+    match option_one(invocation, name) {
+        Some(raw) => raw
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|e| CliError::new(format!("invalid --{name}: {e}"))),
+        None => Ok(None),
+    }
+}
+
+fn option_u32(invocation: &Invocation, name: &str) -> CliResult<Option<u32>> {
+    match option_one(invocation, name) {
+        Some(raw) => raw
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|e| CliError::new(format!("invalid --{name}: {e}"))),
+        None => Ok(None),
+    }
 }
 
 fn option_one<'a>(invocation: &'a Invocation, name: &str) -> Option<&'a str> {

@@ -15,8 +15,8 @@ use super::result::{
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 use ::nvapi::hi::{
-    ClockDomain, CoolerPolicy, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
-    SensorThrottle, VfPoint,
+    ClockDomain, CoolerPolicy, Gpu, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState,
+    Percentage, SensorThrottle, VfPoint,
 };
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 
@@ -2683,6 +2683,22 @@ impl GpuOperation for SetNvapiTopRelsRatio {
     }
 }
 
+/// Resolve a (src, dst) domain pair to the TopRels relation index whose
+/// GetInfo edge matches. First match wins (the five GPC:XBAR ratio slots
+/// share the same (0,1) pair — the engine-tracked active one is idx 0).
+pub fn resolve_toprels_relation(
+    gpu: &Gpu,
+    src: u32,
+    dst: u32,
+) -> Result<Option<usize>, Error> {
+    for (idx, rsrc, rdst, _dir, _payload) in gpu.top_rels_relations().map_err(Error::from)? {
+        if rsrc == src && rdst == dst {
+            return Ok(Some(idx));
+        }
+    }
+    Ok(None)
+}
+
 /// Restore the TopRels GPC:XBAR ratio from the DRIVER-REPORTED default
 /// (GetInfo relation payload — the initial ratio the SKU/driver carries,
 /// not a hard-coded constant). Output `None` when the driver exposes no
@@ -2713,7 +2729,11 @@ impl GpuOperation for ResetTopRelsRatioToDefault {
 #[derive(Clone, Copy, Debug)]
 pub struct SetSubdomainFreqRatio {
     pub ratio: f64,
-    pub slot: usize,
+    /// Relation addressing: --src/--dst resolve to the relation index via
+    /// GetInfo (default GPC=0 -> XBAR=1); --index addresses it directly.
+    pub src: u32,
+    pub dst: u32,
+    pub index: Option<usize>,
 }
 
 impl GpuOperation for SetSubdomainFreqRatio {
@@ -2728,10 +2748,11 @@ impl GpuOperation for SetSubdomainFreqRatio {
         // 40-series/Ada shape: the control record exists but the ratio slot
         // reads 0 (no ratio carrier on this generation) — a write would be
         // silently ignored, so surface that instead of a pointless RM write.
-        if gpu.top_rels_ratio_slot(self.slot).map_err(Error::from)? == Some(0) {
+        let slot = self.slot(gpu)?;
+        if gpu.top_rels_ratio_slot(slot).map_err(Error::from)? == Some(0) {
             return Err(Error::Custom(format!(
-                "TopRels ratio slot {} reads 0 (no ratio carrier on this generation) — write face not applicable",
-                self.slot
+                "TopRels ratio relation {} reads 0 (no ratio carrier on this generation) — write face not applicable",
+                slot
             )));
         }
         let ratio = if (self.ratio - 0.9).abs() < f64::EPSILON {
@@ -2739,19 +2760,34 @@ impl GpuOperation for SetSubdomainFreqRatio {
         } else {
             (self.ratio * 65536.0).round() as u32
         };
-        gpu.set_top_rels_ratio_slot(self.slot, ratio)
+        gpu.set_top_rels_ratio_slot(slot, ratio)
             .map_err(Error::from)
     }
 }
 
-/// Read one TopRels control slot's ratio (raw U16.16; slots 0/10-13).
-#[derive(Clone, Copy, Debug)]
-pub struct QuerySubdomainFreqRatioSlot {
-    pub slot: usize,
+impl SetSubdomainFreqRatio {
+    /// Effective relation index: explicit --index wins; else resolve
+    /// (src, dst) via the GetInfo relation table (first match).
+    pub fn slot(&self, gpu: &Gpu) -> Result<usize, Error> {
+        if let Some(idx) = self.index {
+            return Ok(idx);
+        }
+        resolve_toprels_relation(gpu, self.src, self.dst)?.ok_or_else(|| {
+            Error::Custom(format!(
+                "no TopRels relation matches src={} dst={} — see get-subdomain-freq-ratio --table",
+                self.src, self.dst
+            ))
+        })
+    }
 }
 
-impl GpuOperation for QuerySubdomainFreqRatioSlot {
-    type Output = Option<u32>;
+/// Full TopRels relation table (GetInfo): index, src, dst, dir, default
+/// payload per populated relation.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryTopRelsRelations;
+
+impl GpuOperation for QueryTopRelsRelations {
+    type Output = Vec<(usize, u32, u32, u32, u32)>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QuerySubdomainFreqRatioSlot
@@ -2760,7 +2796,7 @@ impl GpuOperation for QuerySubdomainFreqRatioSlot {
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         target
             .nvapi()?
-            .top_rels_ratio_slot(self.slot)
+            .top_rels_relations()
             .map_err(Error::from)
     }
 }
@@ -2769,7 +2805,19 @@ impl GpuOperation for QuerySubdomainFreqRatioSlot {
 /// relation payload for that slot — not a hard-coded constant).
 #[derive(Clone, Copy, Debug)]
 pub struct ResetSubdomainFreqRatio {
-    pub slot: usize,
+    pub src: u32,
+    pub dst: u32,
+    pub index: Option<usize>,
+}
+
+impl ResetSubdomainFreqRatio {
+    fn slot(&self, gpu: &Gpu) -> Result<usize, Error> {
+        if let Some(idx) = self.index {
+            return Ok(idx);
+        }
+        resolve_toprels_relation(gpu, self.src, self.dst)?
+            .ok_or_else(|| Error::Custom("no matching TopRels relation".into()))
+    }
 }
 
 impl GpuOperation for ResetSubdomainFreqRatio {
@@ -2781,15 +2829,15 @@ impl GpuOperation for ResetSubdomainFreqRatio {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let gpu = target.nvapi()?;
-        let Some(default) = gpu.top_rels_default_ratio(self.slot).map_err(Error::from)? else {
+        let slot = self.slot(gpu)?;
+        let Some(default) = gpu.top_rels_default_ratio_at(slot).map_err(Error::from)? else {
             return Ok(None);
         };
-        if default == 0.0 {
+        if default == 0 {
             // ratio carrier absent on this generation (40-series/Ada shape)
             return Ok(None);
         }
-        let raw = (default * 65536.0).round() as u32;
-        gpu.set_top_rels_ratio_slot(self.slot, raw).map_err(Error::from)
+        gpu.set_top_rels_ratio_slot(slot, default).map_err(Error::from)
     }
 }
 
