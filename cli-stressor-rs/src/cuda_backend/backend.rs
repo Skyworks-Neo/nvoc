@@ -671,6 +671,13 @@ impl Backend for CudaBackend {
         })
     }
 
+    fn verify_tick_stats(&self) -> (u64, u64) {
+        self.verify
+            .as_ref()
+            .map(|engine| engine.tick_stats())
+            .unwrap_or((0, 0))
+    }
+
     fn validate_int8_exact(
         &mut self,
         size: usize,

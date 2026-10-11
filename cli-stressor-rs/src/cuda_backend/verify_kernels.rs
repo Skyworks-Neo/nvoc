@@ -368,6 +368,9 @@ pub struct VerifyEngine {
     /// Word length of `resident` (runtime-sized from the L2 working set).
     resident_words: usize,
     last_tick: RefCell<Option<std::time::Instant>>,
+    /// Resident-tick accounting (verdict / run summary).
+    tick_count: Cell<u64>,
+    tick_bytes: Cell<u64>,
     /// First fault observed by the resident tick, in structured form (the
     /// host drains it into an SdcEvent with telemetry attached).
     last_tick_fault: RefCell<Option<TickFault>>,
@@ -499,6 +502,8 @@ impl VerifyEngine {
             slab_cursor: Cell::new(0),
             slab_bytes: Cell::new(slab_actual),
             last_tick: RefCell::new(None),
+            tick_count: Cell::new(0),
+            tick_bytes: Cell::new(0),
             last_tick_fault: RefCell::new(None),
             drained: RefCell::new(DetectorStats::default()),
             failure: RefCell::new(None),
@@ -1134,6 +1139,16 @@ impl VerifyEngine {
             return;
         }
         let report = result.expect("checked");
+        let ticks = self.tick_count.get() + 1;
+        self.tick_count.set(ticks);
+        self.tick_bytes
+            .set(self.tick_bytes.get() + self.resident_words as u64 * 4);
+        if ticks == 1 {
+            println!(
+                "[VERIFY] resident check #1: {} MiB compared (L2-derived block)",
+                self.resident_words * 4 / 1024 / 1024
+            );
+        }
         {
             let mut last = self.last_tick.borrow_mut();
             *last = Some(std::time::Instant::now());
@@ -1187,6 +1202,11 @@ impl VerifyEngine {
     /// Drain the pending resident-tick fault record, if any.
     pub(super) fn take_tick_fault(&self) -> Option<TickFault> {
         self.last_tick_fault.borrow_mut().take()
+    }
+
+    /// (tick count, total bytes compared) across the run.
+    pub(super) fn tick_stats(&self) -> (u64, u64) {
+        (self.tick_count.get(), self.tick_bytes.get())
     }
 
     /// Slab budget: pct% of total VRAM (capped at 2 GiB) minus what the

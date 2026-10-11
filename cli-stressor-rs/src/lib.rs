@@ -391,6 +391,11 @@ pub trait Backend {
     fn sdc_tick_fault(&self) -> Option<SdcTickEvent> {
         None
     }
+    /// (resident-tick count, total bytes compared) for the run summary.
+    /// Default: (0, 0) (backends without the verify engine).
+    fn verify_tick_stats(&self) -> (u64, u64) {
+        (0, 0)
+    }
     /// Exact INT8 GEMM validation: seeded host reference vs device result.
     /// Returns `(passed, failure_reason)`; Err only for infrastructure errors.
     fn validate_int8_exact(
