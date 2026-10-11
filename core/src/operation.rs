@@ -15,8 +15,8 @@ use super::result::{
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 use ::nvapi::hi::{
-    ClockDomain, CoolerPolicy, Gpu, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState,
-    Percentage, SensorThrottle, VfPoint,
+    ClockDomain, CoolerPolicy, Gpu, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
+    SensorThrottle, VfPoint,
 };
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 
@@ -2686,11 +2686,7 @@ impl GpuOperation for SetNvapiTopRelsRatio {
 /// Resolve a (src, dst) domain pair to the TopRels relation index whose
 /// GetInfo edge matches. First match wins (the five GPC:XBAR ratio slots
 /// share the same (0,1) pair — the engine-tracked active one is idx 0).
-pub fn resolve_toprels_relation(
-    gpu: &Gpu,
-    src: u32,
-    dst: u32,
-) -> Result<Option<usize>, Error> {
+pub fn resolve_toprels_relation(gpu: &Gpu, src: u32, dst: u32) -> Result<Option<usize>, Error> {
     for (idx, rsrc, rdst, _dir, _payload) in gpu.top_rels_relations().map_err(Error::from)? {
         if rsrc == src && rdst == dst {
             return Ok(Some(idx));
@@ -2794,9 +2790,7 @@ impl GpuOperation for SetSubdomainFreqRatio {
         // marker without a ratio carrier): writes there hang the GPU
         // (operator-confirmed on the sibling slots).
         let slot = self.slot(gpu)?;
-        let carrier = gpu
-            .top_rels_default_ratio_at(slot)
-            .map_err(Error::from)?;
+        let carrier = gpu.top_rels_default_ratio_at(slot).map_err(Error::from)?;
         if carrier.unwrap_or(0) <= 1 {
             return Err(Error::Custom(format!(
                 "TopRels relation {slot} carries no ratio (GetInfo payload {}) — write face not applicable",
@@ -2902,7 +2896,8 @@ impl GpuOperation for ResetSubdomainFreqRatio {
                 "TopRels relation {slot} ratio arm is not enabled (live record = 0) — pass --force to write it"
             )));
         }
-        gpu.set_top_rels_ratio_at(slot, default).map_err(Error::from)
+        gpu.set_top_rels_ratio_at(slot, default)
+            .map_err(Error::from)
     }
 }
 
