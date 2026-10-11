@@ -132,6 +132,38 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 - Msd 归属、双标签、空闲漂浮解释三项全部获得负载态交叉证实；域 21 案卷彻底关闭。
 - 顺带发现并修复：Utils(22) 直测可测（定频 107.9-108.0）但 GetAllClocks 槽恒零——pynvoc `normalize_status` 现对 FCLK 域集中 GetAllClocks 缺席的域做 `QueryNvapiClkDomainFreqsBatch` 回退直测，TUI FCLK 行从 5 域恢复到 6 域（+UTILS）。
 
+## VF 控制面服务器卡行为定性（2026-10-11，root 实验 + shim 全解）
+
+**用户报告的三个症状**（private vftable 列空、mode0/1 不生效、slot2/3/4 不生效）逆向收官：
+
+**① shim 合同全解**（nv-api-580 反编译，本轮新知识）：
+- VF SetControl（0x0733E009，sub_38B80）：版本 0x12420(ver1)/0x22420(ver2)；255 点 × 36B 记录 {[+0] clock_type 门禁, [+20] freqDeltaKHz 值}；按 GET 现状表（3B 步长）的 entry type 门禁——type 0/2/4 要求 caller [+0]==1、type 1/3/5/6/7 要求 0，违规 -1；**ver2 走整数缩放 `landed = value × (100 / 描述符除数)`**；RM GET 0x2080902A / SET 0x2080D02D。
+- ClkDomains SetControl（0xD14B69CF，sub_2CA70）：V1 0x10964 / V2 0x261A4；rec[0] 经 sub_9E60 映射 wire 子型（恒等×域表：0→1 … 10→11、15→16）；wire 11 拷 caller dwords 67..74、wire 16 拷 69..76（+8B 移位）、wire 2/4..10 拷 67..71、**其余 wire 类型静默不拷**；RM SET 0x2080D01C。
+- nvoc 写路径对两条合同全部合规（v2_marshalable 含 15、set_value 槽位在窗内、ver2 默认已走缩放路径）。
+
+**② 真机判读链**：
+1. 非 root：ClkDomains SET 直接 `-137 INVALID_USER_PRIVILEGE`（RM `os_is_administrator()` = `NV_IS_SUSER()` = root，ogkm os-interface.c:378）——**第一道门，服务器卡新限制**（消费 50 系同路径无此门）。
+2. root：ClkDomains SET ok（slot2=50000 落表回读）、VF 点 SET ok（**`Ok(50000)` = 内置读回断言通过 → ver2 落表值逐字=输入，除数=100，缩放假设出局**）、VF reset 645 点全通。
+3. 行为实验（slot2 -100MHz 负偏移，NVENC 负载下直测采样）：记录保持 -100000，GPC/XBAR 时钟 ±4MHz 噪声内纹丝不动——**GSP 收写但忽略，负偏移排除钳制解释**。
+4. slot0/1 本代为零保留平面（非零值被 nvoc 中间层 out-of-range 拒绝——我们自己的守卫，符合消费系实证的 2/3/4 平面映射），"legacy 平面挂接"假设作废。
+
+**结论：私有 V/F 全族（ClkDomains 槽面 + VF 点面）在服务器 SKU 上 = "记录面可写、行为面脱钩"，脱钩点在 GSP 策略层**（候选：policy Board selector 活动源不指向这些记录 / 记录→时钟树附接在 server SKU 上被剪断 / 需要 shim 之外的 commit 步骤）。GSP-RM 固件逆向（`reverse/linux-580.173.02/gsp_ga10x.bin`，75MB 未剥符号 RISC-V）已立项在建。nvoc 侧处置：服务器卡写面前提示 root + 写后行为校验（时钟实测位移）而非仅记录回读。
+
+**③ private vftable 缺失数据复盘**（645 × 488B 记录，`--dump-records` 活体）：
+
+| 槽位 | 内容 | 状态 |
+|---|---|---|
+| +0x000 | entry type 判别字 | **12/13（0x0C/0x0D）** — 新子型，落在 shim 词表 0x0B 与 0x10 之间 |
+| +0x024 | freq kHz 静态曲线 | 312 distinct（135..12481） |
+| +0x058 | volt µV 电压梯 | 127 distinct（450000..1240000，逐点） |
+| +0x0F0 / +0x0F4 | +0x024 / +0x058 的镜像 | 在 |
+| +0x02C / +0x040 | 打包字段 | 7 / 11 distinct（域组标签类） |
+| +0x038 / +0x04C | freq-like 镜像对（11 distinct） | pstate-bin 类 |
+| +0x100 / +0x104 | 0..1080 / 0..820000 | 7 distinct（组级 min/max 类） |
+| **其余 111/122 dword** | **恒零** | **含读侧的 V_cur/F_cur 列** |
+
+判读：(a) V_cur/F_cur 空列 = 驱动在此构建上**不维护 current 镜像**——静态表（GetStatus 面）只暴露 DEF 曲线 + 电压梯；offset 列（读侧算 F_cur−F_def）因此恒不可读。这不是读 bug，是数据模型事实。(b) 当前/偏移面在 **CONTROL 面**（255 点 × 36B Get/SetControl）——该面读回逐字有效（root 实验证实）。两个面不要混。(c) Turing "全填充" vs GB202 稀疏 = 表由 GSP 重建而非 VBIOS 镜像的旁证。(d) type 12/13 + shim 词表 0x0B/0x10 + ClkDomains rec+0=0x0F —— 本驱动的记录子型宇宙比 NvpwrControl 的 0x0F marker 更宽，跨代解读须按 (驱动, 子型) 二元组。
+
 ## 文档裁决记录（对既有文档的修订指令）
 
 1. `nvpwrcontrol-blackwell-tuner-audit.md` §4.3：裁决为**读法 A**（index 语义）；工具的 "XBAR physical"= SYS；§9.3 裁决协议可关闭。
