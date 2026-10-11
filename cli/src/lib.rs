@@ -19,6 +19,7 @@ use nvoc_core::{
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
     QueryNvapiTopRelsRatio, QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits,
+    QuerySubdomainFreqRatioSlot,
     QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
     QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo,
     QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
