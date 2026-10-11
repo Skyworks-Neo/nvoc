@@ -231,10 +231,45 @@ tier2_unbind_flr_rebind() {
   return 1
 }
 
+# GPU wedged BELOW the driver: the NVRM usage count pins the PCI device
+# because the driver cannot tear down a GPU that stopped answering (the
+# RC watchdog is the teardown attempt failing). No unload or PCI trick
+# can clear it — only a host reboot re-initializes GSP-RM from scratch.
+gpu_wedged_below_driver() {
+  local since
+  since="$(date -d '10 minutes ago' '+[%s.%6N]' 2>/dev/null || true)"
+  local wedged recent
+  wedged=$(dmesg 2>/dev/null | grep -ci 'RC watchdog: GPU is probably locked' || true)
+  recent=$(dmesg -T 2>/dev/null | grep -i "non-zero usage count.*$gpu_pci" | tail -n 1 || true)
+  (( wedged >= 3 )) && [[ -n "$recent" ]]
+}
+
+finish_wedged() {
+  echo
+  echo "=== Final state ==="
+  echo "Recent NVRM/Xid lines:"
+  dmesg 2>/dev/null | grep -Ei 'NVRM|Xid' | tail -n 15 || true
+  report_holders
+  restore_persistenced
+  echo "RECOVERY: IMPOSSIBLE FROM THE HOST —"
+  echo "  $gpu_pci is wedged below the driver (RC watchdog hard lock + non-zero"
+  echo "  usage count pinning the PCI device). Every tier above is structurally"
+  echo "  unable to touch it: the driver cannot release or unload over a GPU"
+  echo "  that stopped answering. HOST REBOOT REQUIRED"
+  echo "  (if the card is still wedged after a warm reboot, power-cycle the host)."
+  exit 3
+}
+
 tier3_remove_rescan() {
   echo "=== Tier 3: PCI remove + rescan ==="
-  run_deadline "$TIMEOUT_SYSFS" "remove $gpu_pci" -- \
-    bash -c "echo '$gpu_pci' > '/sys/bus/pci/devices/$gpu_pci/remove'" || true
+  local remove_ok=0
+  if run_deadline "$TIMEOUT_SYSFS" "remove $gpu_pci" -- \
+      bash -c "echo '$gpu_pci' > '/sys/bus/pci/devices/$gpu_pci/remove'"; then
+    remove_ok=1
+  fi
+  if (( ! remove_ok )) && gpu_wedged_below_driver; then
+    finish_wedged
+  fi
   sleep 1
   run_deadline "$TIMEOUT_SYSFS" "PCI rescan" -- \
     bash -c "echo 1 > '/sys/bus/pci/rescan'" || true
@@ -256,6 +291,10 @@ tier3_remove_rescan() {
 
 tier4_module_reload() {
   echo "=== Tier 4: full nvidia module reload (hits every GPU on the host) ==="
+  if gpu_wedged_below_driver; then
+    echo "  skipped: modules are pinned by the wedged GPU (unload provably fails)"
+    return 2
+  fi
   local -a removed=()
   local m r
   for m in nvidia_peermem nvidia_uvm nvidia_drm nvidia_modeset nvidia; do
@@ -342,4 +381,5 @@ if tier1_nvml_reset; then finish_ok; fi
 if tier2_unbind_flr_rebind; then finish_ok; fi
 if tier3_remove_rescan; then finish_ok; fi
 if tier4_module_reload; then finish_ok; fi
+if gpu_wedged_below_driver; then finish_wedged; fi
 finish_fail
