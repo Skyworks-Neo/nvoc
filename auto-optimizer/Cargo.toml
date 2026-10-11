@@ -27,6 +27,7 @@ stressor-bundled = [
   "dep:cli-stressor-rs",
   "cli-stressor-rs/cuda",
   "cli-stressor-rs/vulkan",
+  "cli-stressor-rs/video",
 ]
 stressor-bundled-cuda11 = ["stressor-bundled", "cli-stressor-rs/cuda11"]
 stressor-bundled-cuda12 = ["stressor-bundled", "cli-stressor-rs/cuda12"]

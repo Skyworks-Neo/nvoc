@@ -27,10 +27,10 @@ pub fn run(target: RunTarget, passthrough: &[String]) -> Res<()> {
             util::run(&mut command)
         }
         RunTarget::Stressor => {
-            util::step("launching CUDA stressor (default cuda12 build + vulkan)");
+            util::step("launching CUDA stressor (default cuda12 build + vulkan,video)");
             let mut command = Command::new("cargo");
             command
-                .args(["run", "-p", "cli-stressor-rs", "--features", "vulkan"])
+                .args(["run", "-p", "cli-stressor-rs", "--features", "vulkan,video"])
                 .current_dir(&root);
             push_cargo_passthrough(&mut command, passthrough);
             util::run(&mut command)

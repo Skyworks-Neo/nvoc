@@ -104,12 +104,13 @@ fn build_packages(args: &BuildArgs) -> Res<()> {
     Ok(())
 }
 
-/// Feature arguments appended when building the CUDA stressor crate. Vulkan is
-/// always on to match the `stressor-bundled` dependency edge and release.yml.
+/// Feature arguments appended when building the CUDA stressor crate. Vulkan
+/// and video are always on to match the `stressor-bundled` dependency edge,
+/// release.yml, and the crate's own default features.
 pub fn stressor_feature_args(cuda: CudaMode) -> Vec<&'static str> {
     match cuda {
-        CudaMode::Cuda12 => vec!["--features", "vulkan"],
-        CudaMode::Cuda11 => vec!["--no-default-features", "--features", "cuda11,vulkan"],
+        CudaMode::Cuda12 => vec!["--features", "vulkan,video"],
+        CudaMode::Cuda11 => vec!["--no-default-features", "--features", "cuda11,vulkan,video"],
         CudaMode::Off => vec!["--no-default-features"],
     }
 }
@@ -117,9 +118,9 @@ pub fn stressor_feature_args(cuda: CudaMode) -> Vec<&'static str> {
 /// Whole-tree `--exclude` list for the requested CUDA mode. cuda12 keeps every
 /// member in one invocation: the stressor's direct member selection (default
 /// cuda12) and the optimizer's bundled activation unify to the same
-/// {cuda12, vulkan} unit, so the workspace step builds the standalone binary
-/// itself. cuda11/none must drop both CUDA crates or the workspace selection's
-/// default cuda12 features would poison the tail's cuda11 units.
+/// {cuda12, vulkan, video} unit, so the workspace step builds the standalone
+/// binary itself. cuda11/none must drop both CUDA crates or the workspace
+/// selection's default cuda12 features would poison the tail's cuda11 units.
 pub fn workspace_excludes(cuda: CudaMode) -> Vec<&'static str> {
     match cuda {
         CudaMode::Cuda12 => vec![],
