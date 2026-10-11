@@ -129,6 +129,8 @@ pub enum OperationKind {
     /// (GetInfo relation payload — not a hard-coded value). No-op output
     /// None when the driver exposes no default for the edge.
     ResetTopRelsRatioToDefault,
+    SetSubdomainFreqRatio,
+    ResetSubdomainFreqRatio,
     SetNvapiVoltRailOffset,
     /// Set a volt-rail to an absolute target voltage (mV) by deriving the
     /// required µV offset from the live control/status snapshot. Shares the

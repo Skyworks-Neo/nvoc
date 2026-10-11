@@ -45,8 +45,7 @@ use nvoc_core::{
     fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
     query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
-    sync_memory_pstate_as_p0,
-};
+    sync_memory_pstate_as_p0, SetSubdomainFreqRatio, ResetSubdomainFreqRatio,};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::macros::format_description;
@@ -878,7 +877,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ResetSubdomainFreqRatio,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
-                    options: Box::leak(Box::new([])),
+                    options: Box::leak(Box::new(["slot"])),
                     ..CommandSpec::new("reset-subdomain-freq-ratio", Group::Clock, "Restore the TopRels GPC:XBAR ratio to the devinit default 0.90 (raw 0xE660)")
                 },
             ),
@@ -1431,7 +1430,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     arity: (1, 1),
-                    options: Box::leak(Box::new([])),
+                    options: Box::leak(Box::new(["slot"])),
                     positionals: Box::leak(Box::new([PositionalArg::hyphen(
                         "arg_ratio",
                         "RATIO",
@@ -3719,20 +3718,42 @@ fn execute_target(
                 .trim()
                 .parse()
                 .map_err(|e| CliError::new(format!("invalid ratio: {e}")))?;
-            let readback = run(target, SetNvapiTopRelsRatio { ratio })?.output;
-            Ok(json!({ "applied": true, "ratio": readback }))
-        }
-        Command::ResetSubdomainFreqRatio => {
-            let restored = run(target, ResetTopRelsRatioToDefault)?.output;
-            match restored {
-                Some(ratio) => Ok(json!({
+            let slot = option_one(invocation, "slot")
+                .map(|s| s.parse::<usize>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --slot: {e}")))?
+                .unwrap_or(0);
+            let landed = run(target, SetSubdomainFreqRatio { ratio, slot })?.output;
+            match landed {
+                Some(raw) => Ok(json!({
                     "applied": true,
-                    "ratio": ratio,
-                    "source": "driver-reported GetInfo default",
+                    "slot": slot,
+                    "raw": raw,
+                    "ratio": raw as f64 / 65536.0,
                 })),
                 None => Ok(json!({
                     "applied": false,
-                    "note": "driver exposes no GetInfo default for this edge — pass an explicit ratio via set-subdomain-freq-ratio",
+                    "note": "driver did not retain the value",
+                })),
+            }
+        }
+        Command::ResetSubdomainFreqRatio => {
+            let slot = option_one(invocation, "slot")
+                .map(|s| s.parse::<usize>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --slot: {e}")))?
+                .unwrap_or(0);
+            let landed = run(target, ResetSubdomainFreqRatio { slot })?.output;
+            match landed {
+                Some(raw) => Ok(json!({
+                    "applied": true,
+                    "slot": slot,
+                    "raw": raw,
+                    "ratio": raw as f64 / 65536.0,
+                })),
+                None => Ok(json!({
+                    "applied": false,
+                    "note": "driver did not retain the value",
                 })),
             }
         }

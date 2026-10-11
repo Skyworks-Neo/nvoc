@@ -63,6 +63,7 @@ pub use operation::{
     SetNvapiEccConfiguration, SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative,
     SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
     SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetSubdomainFreqRatio, ResetSubdomainFreqRatio,
     SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
     SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate,
     SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,

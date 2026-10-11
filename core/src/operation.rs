@@ -2698,11 +2698,65 @@ impl GpuOperation for ResetTopRelsRatioToDefault {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         let gpu = target.nvapi()?;
-        let Some(default) = gpu.top_rels_default_ratio().map_err(Error::from)? else {
+        let Some(default) = gpu.top_rels_default_ratio(0).map_err(Error::from)? else {
             return Ok(None);
         };
-        let landed = gpu.set_top_rels_ratio(default).map_err(Error::from)?;
-        Ok(Some(landed))
+        let landed = gpu.set_top_rels_ratio_slot(0, (default * 65536.0).round() as u32).map_err(Error::from)?;
+        Ok(landed.map(|raw| raw as f64 / 65536.0))
+    }
+}
+
+/// Set one TopRels control slot's GPC:XBAR ratio (XBAR = ratio × GPC).
+/// Slots: 0 = engine-tracked active ratio; 10-13 = regime-variant stores
+/// (all five land verbatim; only 0 is behavioral on 580.173.02). Ratio
+/// clamped 0.7..=1.2 by nvapi-rs (0.9 = the 0xE660 literal).
+#[derive(Clone, Copy, Debug)]
+pub struct SetSubdomainFreqRatio {
+    pub ratio: f64,
+    pub slot: usize,
+}
+
+impl GpuOperation for SetSubdomainFreqRatio {
+    type Output = Option<u32>; // landed raw; None = not retained
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetSubdomainFreqRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let ratio = if (self.ratio - 0.9).abs() < f64::EPSILON {
+            0xE660
+        } else {
+            (self.ratio * 65536.0).round() as u32
+        };
+        target
+            .nvapi()?
+            .set_top_rels_ratio_slot(self.slot, ratio)
+            .map_err(Error::from)
+    }
+}
+
+/// Reset one TopRels control slot to the DRIVER-REPORTED default (GetInfo
+/// relation payload for that slot — not a hard-coded constant).
+#[derive(Clone, Copy, Debug)]
+pub struct ResetSubdomainFreqRatio {
+    pub slot: usize,
+}
+
+impl GpuOperation for ResetSubdomainFreqRatio {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetSubdomainFreqRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let Some(default) = gpu.top_rels_default_ratio(self.slot).map_err(Error::from)? else {
+            return Ok(None);
+        };
+        let raw = (default * 65536.0).round() as u32;
+        gpu.set_top_rels_ratio_slot(self.slot, raw).map_err(Error::from)
     }
 }
 
