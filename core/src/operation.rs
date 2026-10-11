@@ -2827,22 +2827,29 @@ impl GpuOperation for SetSubdomainFreqRatio {
 }
 
 /// Full TopRels relation table (GetInfo): index, src, dst, dir, default
-/// payload per populated relation.
+/// payload, and the LIVE GetControl ratio per populated relation (the
+/// regime-variant slots 10-13 carry non-zero live records even though only
+/// slot 0 is engine-tracked).
 #[derive(Clone, Copy, Debug)]
 pub struct QueryTopRelsRelations;
 
 impl GpuOperation for QueryTopRelsRelations {
-    type Output = Vec<(usize, u32, u32, u32, u32)>;
+    type Output = Vec<(usize, u32, u32, u32, u32, Option<u32>)>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QuerySubdomainFreqRatioSlot
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
-        target
-            .nvapi()?
-            .top_rels_relations()
-            .map_err(Error::from)
+        let gpu = target.nvapi()?;
+        let relations = gpu.top_rels_relations().map_err(Error::from)?;
+        Ok(relations
+            .into_iter()
+            .map(|(idx, src, dst, dir, payload)| {
+                let live = gpu.top_rels_ratio_at(idx).unwrap_or(None);
+                (idx, src, dst, dir, payload, live)
+            })
+            .collect())
     }
 }
 

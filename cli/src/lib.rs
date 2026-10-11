@@ -4516,7 +4516,7 @@ fn execute_target(
             if !relations.is_empty() {
                 let rows: Vec<Value> = relations
                     .iter()
-                    .map(|(idx, src, dst, dir, payload)| {
+                    .map(|(idx, src, dst, dir, payload, live)| {
                         json!({
                             "index": idx,
                             "src": src,
@@ -4524,6 +4524,8 @@ fn execute_target(
                             "dir": dir,
                             "default_raw": payload,
                             "default_ratio": *payload as f64 / 65536.0,
+                            "live_raw": live,
+                            "live_ratio": live.map(|r| r as f64 / 65536.0),
                         })
                     })
                     .collect();
