@@ -176,6 +176,8 @@ GetControl seed A（+4=0xFF 工具式种子）status=0，比率 **raw=0xE660 (0.
 
 **v4 包络测绘（同日）**：记录面无限制（0.0687..1.0 全部落表逐字精确）；引擎行为 = **XBAR = ratio × GPC，钳制于 [~884MHz 频率下限， 0.9 devinit 上限墙]**——0.30/0.0687/0.075 实测均 0.364（884-885MHz 频率钳而非比率钳）；0.9062/0.9102/0.9141/0.95/1.0 落表但时钟钉死 0.897-0.900。H2（转换触发）彻底否定：包括跨负载转换在内全部即时应用。上钳制点 = devinit 比率本身，细边界待扫。
 
+**0.9 恒定写矩阵收官（`pro6000_slot_vf_matrix_live`）**：xbar slot2 ±100MHz、slot3 ±100mV、slot4 ±100 raw、VF 点 180..189 mode0 +50MHz、mode1 raw 1000——**全部落表（逐字回读）、全部行为惰性**（XBAR 2177-2186 噪声带，电压恒 960.0mV，GPC 恒 2426-2436）。两次 bank0 复位 645 点全通。服务器卡最终定性：**唯一行为活写的 VF 族通道 = TopRels 比率（下向自由、上行钳 devinit 0.9）；其余全部记录面**。
+
 ## GSP-RM 固件逆向报告（2026-10-11，gsp_rm_inner.elf 全量分析）
 
 资产：`reverse/linux-580.173.02/gsp_rm_inner.elf.i64`（168MB 完整 IDA 库，27,985 函数，~4s 可开）+ `probe/gsp_rm_decompiles/` 27 个反编译文件。地址桥接：内层 ELF 逐字嵌入外层 bundle 偏移 0x1A1040，LOAD1（代码+rodata）outer_vaddr = inner_vaddr + 0xA1000。注意 `gsp_ga10x.bin.i64`（304MB）实为**零分析**（loader 输出，0 函数）——真身是内层 ELF。idalib 30s 空闲超时会杀死大库加载，绕法 = 直接批驱动 idapro.open_database()（内层全量分析 2005s 单线程）。
