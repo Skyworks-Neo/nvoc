@@ -205,6 +205,21 @@ pub fn check_identity(expected: &GpuIdentity, actual: &GpuIdentity) -> IdentityC
     }
 }
 
+/// Live identity read for a target: NVAPI `GpuInfo` fingerprint plus the
+/// NVML UUID / driver version (both best-effort — the degraded path is part
+/// of the returned identity, never an error).
+pub fn live_identity(
+    target: &crate::target::GpuTarget<'_>,
+) -> Result<(::nvapi::hi::GpuInfo, GpuIdentity), crate::Error> {
+    let info = crate::operation::run(target, crate::operation::QueryGpuInfo)?.output;
+    let nvml = target.nvml().ok();
+    let uuid = nvml.and_then(|nvml| crate::nvml::query_nvml_uuid(nvml, target.id.0));
+    let driver_version = nvml.and_then(|nvml| nvml.sys_driver_version().ok());
+    let pci_address = Some(format!("bus-{}", target.id.pci_bus()));
+    let identity = capture_fingerprint(&info, uuid, driver_version, pci_address);
+    Ok((info, identity))
+}
+
 /// Directory-safe slug for a UUID: keep `A-Za-z0-9-_.`, fold everything else
 /// to `-`, collapse runs, trim. Falls back to `gpu-unknown` when empty.
 pub fn uuid_slug(uuid: &str) -> String {

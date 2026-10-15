@@ -3,10 +3,10 @@ use clap::{
     builder::{PossibleValue, PossibleValuesParser},
 };
 use nvoc_core::profile::{
-    ApplyOptions, ApplyPlan, DomainKind, DomainOutcome, ImportPolicy, PlanOptions,
-    PowerWattsBounds, ProfileDoc, ProfileStore, SettingsBackup, build_plan, capture_backup_now,
-    capture_baseline, capture_domains, capture_fingerprint, execute_profile, export_package,
-    import_package, new_profile_doc, read_package_file, restore_backup, write_package,
+    ApplyOptions, ApplyPlan, DomainKind, DomainOutcome, ImportPolicy, PlanOptions, ProfileDoc,
+    ProfileStore, build_plan, capture_backup_now, capture_baseline, capture_domains,
+    execute_profile, export_package, import_package, new_profile_doc, read_package_file,
+    restore_backup, write_package,
 };
 use nvoc_core::{
     BackendSet, ClearEdid, ClkVfDomainHint, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
@@ -766,6 +766,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::ProfileApply,
                 CommandSpec {
+                    arity: (1, 1),
                     options: Box::leak(Box::new(["dry-run", "no-verify", "no-rollback", "rebase", "profile-root"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_name",
@@ -2422,6 +2423,10 @@ fn collect_named_options(
             | "verbose"
             | "temporary"
             | "immediate"
+            | "dry-run"
+            | "no-verify"
+            | "no-rollback"
+            | "rebase"
             | "freq-mode"
             | "raw"
             | "raw-converted"
@@ -2917,10 +2922,10 @@ fn execute_target(
         Command::ProfileSave => {
             let name = invocation.positionals[0].trim().to_owned();
             let store = profile_store(invocation)?;
-            let (info, identity) = profile_live_identity(target)?;
+            let (_, identity) = profile_live_identity(target)?;
             let domains_wanted = parse_domain_selection(invocation)?;
             let settings = run(target, QueryGpuSettings)?.output;
-            let context = profile_capture_context(target, &info, identity);
+            let context = profile_capture_context(target, identity);
             let domains = capture_domains(&settings, &domains_wanted);
             if domains.present().is_empty() {
                 return Err(CliError::new(
@@ -3052,7 +3057,7 @@ fn execute_target(
                     "no backup-last.json for this GPU: nothing to restore (apply a profile first)",
                 )
             })?;
-            let domains = backup_domains(&backup);
+            let domains = nvoc_core::profile::backup_domains(&backup);
             if domains.is_empty() {
                 return Err(CliError::new(
                     "backup-last.json carries no restorable domains",
@@ -8012,54 +8017,17 @@ fn profile_store(invocation: &Invocation) -> CliResult<ProfileStore> {
     }
 }
 
-/// Live identity for profile binding: NVAPI `GpuInfo` for the fingerprint,
-/// NVML for the UUID and driver version (both best-effort — the degraded
-/// path is reported, never hidden).
 fn profile_live_identity(
     target: &GpuTarget<'_>,
 ) -> CliResult<(nvoc_core::GpuInfo, nvoc_core::profile::GpuIdentity)> {
-    let info = run(target, QueryGpuInfo)?.output;
-    let nvml = target.nvml().ok();
-    let uuid = nvml.and_then(|nvml| nvoc_core::nvml::query_nvml_uuid(nvml, target.id.0));
-    let driver_version = nvml.and_then(|nvml| nvml.sys_driver_version().ok());
-    let pci_address = Some(format!("bus-{}", target.id.pci_bus()));
-    let identity = capture_fingerprint(&info, uuid, driver_version, pci_address);
-    Ok((info, identity))
+    nvoc_core::profile::live_identity(target).map_err(|e| CliError::new(e.to_string()))
 }
 
-/// Best-effort capture context: power bounds via NVML, fan curves via NVAPI.
 fn profile_capture_context(
     target: &GpuTarget<'_>,
-    info: &nvoc_core::GpuInfo,
     identity: nvoc_core::profile::GpuIdentity,
 ) -> nvoc_core::profile::CaptureContext {
-    let power = target
-        .nvml()
-        .ok()
-        .and_then(|nvml| nvoc_core::nvml::query_nvml_power_watts(nvml, target.id.0))
-        .map(|(min, current, max)| PowerWattsBounds {
-            min: Some(min as u32),
-            current: current as u32,
-            max: Some(max as u32),
-        });
-    let fan_curves = run(target, GetFanCurves)
-        .map(|report| {
-            report
-                .output
-                .iter()
-                .map(|curve| nvoc_core::profile::FanCurveReadoutRecord {
-                    index: curve.index,
-                    points: curve.points.iter().map(|p| (*p).into()).collect(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let _ = info;
-    nvoc_core::profile::CaptureContext {
-        identity,
-        power,
-        fan_curves,
-    }
+    nvoc_core::profile::capture_context(target, identity)
 }
 
 fn parse_domain_selection(invocation: &Invocation) -> CliResult<Vec<DomainKind>> {
@@ -8083,30 +8051,6 @@ fn parse_domain_selection(invocation: &Invocation) -> CliResult<Vec<DomainKind>>
             })
             .collect(),
     }
-}
-
-/// Domains a backup snapshot can restore, in apply order.
-fn backup_domains(backup: &SettingsBackup) -> Vec<DomainKind> {
-    let mut domains = Vec::new();
-    if !backup.settings.pstate_deltas.is_empty() {
-        domains.push(DomainKind::ClockOffsets);
-    }
-    if backup.settings.vfp.is_some() {
-        domains.push(DomainKind::PublicVftable);
-    }
-    if backup.settings.voltage_boost.is_some() || !backup.settings.overvolt.is_empty() {
-        domains.push(DomainKind::Voltage);
-    }
-    if backup.power_watts.is_some() {
-        domains.push(DomainKind::Power);
-    }
-    if !backup.settings.sensor_limits.is_empty() {
-        domains.push(DomainKind::Thermal);
-    }
-    if !backup.fan_curves.is_empty() {
-        domains.push(DomainKind::Fan);
-    }
-    domains
 }
 
 fn plan_json(plan: &ApplyPlan) -> Value {

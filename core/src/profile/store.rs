@@ -123,6 +123,13 @@ impl ProfileStore {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
+            // Well-known snapshot files are not slots; they have their own
+            // accessors and a different schema.
+            if path.file_name().and_then(|n| n.to_str()) == Some(STOCK_FILE)
+                || path.file_name().and_then(|n| n.to_str()) == Some(BACKUP_LAST_FILE)
+            {
+                continue;
+            }
             match self.read_doc(&path) {
                 Ok(doc) if doc.kind == PROFILE_KIND && doc.schema_version == SCHEMA_VERSION => {
                     out.push(Ok(doc));
@@ -341,7 +348,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
 }
 
 /// RFC3339 UTC timestamp for `created_utc`/`updated_utc` fields.
-pub(crate) fn now_utc() -> Result<String, Error> {
+pub fn now_utc() -> Result<String, Error> {
     let now = time::OffsetDateTime::now_utc();
     let formatted = now
         .format(&time::format_description::well_known::Rfc3339)
