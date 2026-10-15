@@ -9,6 +9,7 @@ pub mod legacy_vbios_parser;
 mod nvapi;
 pub mod nvml;
 pub mod operation;
+pub mod profile;
 pub mod result;
 pub mod target;
 mod types;
