@@ -13,6 +13,9 @@ nvapi = { workspace = true }
 serde = { workspace = true }
 nvml-wrapper = { workspace = true }
 quick-error = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
 # nvml.rs dlopens libnvml.so / nvml.dll by path on every platform.
 libloading = { workspace = true }
 
