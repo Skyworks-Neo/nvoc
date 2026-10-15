@@ -9,16 +9,26 @@
 //!
 //! - [`schema`] — versioned JSON documents (slot / package / backup)
 //! - [`identity`] — GPU binding and the apply-time verdict matrix
+//! - [`capture`] — pure snapshot → document conversion
+//! - [`plan`] / [`compat`] — pre-flight verdicts (nothing applies unplanned)
 //! - [`store`] — on-disk layout (one directory per GPU, atomic writes)
 
+pub mod capture;
+pub mod compat;
 pub mod identity;
+pub mod plan;
 pub mod schema;
 pub mod store;
 
+pub use capture::{
+    capture_backup, capture_baseline, capture_domains, new_profile_doc, CaptureContext,
+};
+pub use compat::domain_unsupported_reason;
 pub use identity::{
     capture_fingerprint, check_identity, compare_fingerprints, uuid_slug, FingerprintDiff,
     IdentityCheck,
 };
+pub use plan::{build_plan, ApplyPlan, DomainVerdict, PlanOptions};
 pub use schema::{
     empty_gpu_settings, BaselineBlock, DomainKind, FanCurvePointRecord, FanCurveReadoutRecord,
     FanSettings, LockedClocks, PackageRejection, PowerSettings, PowerWattsBounds, ProfileDoc,
