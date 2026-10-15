@@ -28,16 +28,17 @@ pub mod store;
 mod tests;
 
 pub use apply::{
-    ApplyOptions, ApplyReport, DomainOutcome, POWER_VERIFY_TOLERANCE_W, capture_backup_now,
-    execute_profile, restore_backup,
+    ApplyOptions, ApplyReport, DomainOutcome, POWER_VERIFY_TOLERANCE_W, backup_domains,
+    capture_backup_now, execute_profile, restore_backup,
 };
 pub use capture::{
-    CaptureContext, capture_backup, capture_baseline, capture_domains, new_profile_doc,
+    CaptureContext, capture_backup, capture_baseline, capture_context, capture_domains,
+    new_profile_doc,
 };
 pub use compat::domain_unsupported_reason;
 pub use identity::{
     FingerprintDiff, IdentityCheck, capture_fingerprint, check_identity, compare_fingerprints,
-    uuid_slug,
+    live_identity, uuid_slug,
 };
 pub use package::{
     ImportPolicy, PackageImport, export_package, import_package, parse_package, read_package_file,
@@ -51,4 +52,4 @@ pub use schema::{
     PowerWattsBounds, ProfileDoc, ProfileDomains, ProfilePackage, SCHEMA_VERSION, SettingsBackup,
     ValidationRecord, VoltageSettings, empty_gpu_settings,
 };
-pub use store::{ACTIVE_MARKER_FILE, BACKUP_LAST_FILE, ProfileStore, STOCK_FILE};
+pub use store::{ACTIVE_MARKER_FILE, BACKUP_LAST_FILE, ProfileStore, STOCK_FILE, now_utc};

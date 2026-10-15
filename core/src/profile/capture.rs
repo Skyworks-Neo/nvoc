@@ -132,6 +132,41 @@ pub fn with_validation(mut doc: ProfileDoc, record: ValidationRecord) -> Profile
     doc
 }
 
+/// Best-effort out-of-band reads for a target: power bounds via NVML and
+/// fan curves via NVAPI. Absent backends simply leave the fields empty —
+/// the degradation is visible in the context, never an error.
+pub fn capture_context(
+    target: &crate::target::GpuTarget<'_>,
+    identity: GpuIdentity,
+) -> CaptureContext {
+    let power = target
+        .nvml()
+        .ok()
+        .and_then(|nvml| crate::nvml::query_nvml_power_watts(nvml, target.id.0))
+        .map(|(min, current, max)| PowerWattsBounds {
+            min: Some(min as u32),
+            current: current as u32,
+            max: Some(max as u32),
+        });
+    let fan_curves = crate::operation::run(target, crate::operation::GetFanCurves)
+        .map(|report| {
+            report
+                .output
+                .iter()
+                .map(|curve| FanCurveReadoutRecord {
+                    index: curve.index,
+                    points: curve.points.iter().map(|p| (*p).into()).collect(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    CaptureContext {
+        identity,
+        power,
+        fan_curves,
+    }
+}
+
 /// Convenience for tests and callers that start from "all empty".
 pub fn empty_settings() -> GpuSettings {
     empty_gpu_settings()

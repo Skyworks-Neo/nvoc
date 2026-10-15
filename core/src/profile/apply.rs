@@ -587,6 +587,30 @@ pub fn capture_backup_now(
     Ok(backup)
 }
 
+/// Domains a backup snapshot can restore, in apply order.
+pub fn backup_domains(backup: &SettingsBackup) -> Vec<DomainKind> {
+    let mut domains = Vec::new();
+    if !backup.settings.pstate_deltas.is_empty() {
+        domains.push(DomainKind::ClockOffsets);
+    }
+    if backup.settings.vfp.is_some() {
+        domains.push(DomainKind::PublicVftable);
+    }
+    if backup.settings.voltage_boost.is_some() || !backup.settings.overvolt.is_empty() {
+        domains.push(DomainKind::Voltage);
+    }
+    if backup.power_watts.is_some() {
+        domains.push(DomainKind::Power);
+    }
+    if !backup.settings.sensor_limits.is_empty() {
+        domains.push(DomainKind::Thermal);
+    }
+    if !backup.fan_curves.is_empty() {
+        domains.push(DomainKind::Fan);
+    }
+    domains
+}
+
 /// Replay a snapshot's stored values for the requested domains — the
 /// `profile restore-last` path. Restores what the snapshot carries; domains
 /// the snapshot cannot express are reported in the notes, never silently
