@@ -395,6 +395,8 @@ pub struct SettingsBackup {
     pub kind: String,
     pub captured_utc: String,
     pub gpu: GpuIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub settings: GpuSettings,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fan_curves: Vec<FanCurveReadoutRecord>,
@@ -409,6 +411,7 @@ impl SettingsBackup {
             kind: BACKUP_KIND.to_owned(),
             captured_utc: now_utc,
             gpu: identity,
+            note: None,
             settings: empty_gpu_settings(),
             fan_curves: Vec::new(),
             power_watts: None,
