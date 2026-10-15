@@ -46,9 +46,9 @@ pub use package::{
 pub use plan::{ApplyPlan, DomainVerdict, PlanOptions, build_plan};
 pub use schema::{
     BACKUP_KIND, BaselineBlock, DOMAIN_APPLY_ORDER, DomainKind, FanCurvePointRecord,
-    FanCurveReadoutRecord, FanSettings, LockedClocks, MAX_PACKAGE_PROFILES, PACKAGE_KIND,
-    PROFILE_KIND, PackageRejection, PowerSettings, PowerWattsBounds, ProfileDoc, ProfileDomains,
-    ProfilePackage, SCHEMA_VERSION, SettingsBackup, ValidationRecord, VoltageSettings,
-    empty_gpu_settings,
+    FanCurveReadoutRecord, FanSettings, GpuFingerprint, GpuIdentity, LockedClocks,
+    MAX_PACKAGE_PROFILES, PACKAGE_KIND, PROFILE_KIND, PackageRejection, PowerSettings,
+    PowerWattsBounds, ProfileDoc, ProfileDomains, ProfilePackage, SCHEMA_VERSION, SettingsBackup,
+    ValidationRecord, VoltageSettings, empty_gpu_settings,
 };
 pub use store::{ACTIVE_MARKER_FILE, BACKUP_LAST_FILE, ProfileStore, STOCK_FILE};
