@@ -197,13 +197,26 @@ def test_normalize_status_json_output() -> None:
 
 
 def test_normalize_status_json_output_with_vfp_lock() -> None:
+    # vfp_locks entries are ACTIVE ClockLockEntry objects: frequency/voltage
+    # bounds carry lock_value, PstateSelect pins carry select_pstate.
     output = """
     [
       {
         "voltage": 650000,
         "vfp_locks": {
-          "GPU": {
-            "voltage": 850000
+          "Voltage": {
+            "limit": "Voltage",
+            "mode": "manual-voltage",
+            "lock_value": {"Voltage": 850000},
+            "select_pstate": null,
+            "clock": "Graphics"
+          },
+          "PstateSelectUpper": {
+            "limit": "PstateSelectUpper",
+            "mode": "pstate-select",
+            "lock_value": null,
+            "select_pstate": 5,
+            "clock": "Graphics"
           }
         }
       }
@@ -215,6 +228,7 @@ def test_normalize_status_json_output_with_vfp_lock() -> None:
     assert parsed["voltage_mv"] == 650.0
     assert parsed["vfp_locked"] is True
     assert parsed["vfp_lock_mv"] == 850.0
+    assert parsed["vfp_lock_pins"] == ["P5"]
     assert "voltage_locked" not in parsed
 
 

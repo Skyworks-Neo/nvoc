@@ -120,20 +120,27 @@ def _normalize_status_json(value: dict[str, Any]) -> dict[str, Any]:
         if total_gpu_power is not None:
             normalized["power_w"] = total_gpu_power
 
-    # Status JSON exposes VFP lock state as a map of active lock bounds.
-    # A non-empty map means some VFP lock is currently active.
+    # Status JSON exposes VFP lock state as a map of ACTIVE lock entries
+    # (mode != none): frequency/voltage bounds carry lock_value, PstateSelect
+    # pins carry select_pstate. A non-empty map means some lock is active.
     vfp_locks = value.get("vfp_locks")
     if isinstance(vfp_locks, dict):
         normalized["vfp_locked"] = bool(vfp_locks)
         for lock in vfp_locks.values():
             if not isinstance(lock, dict):
                 continue
-            voltage = _as_float(lock.get("Voltage"))
+            pin = lock.get("select_pstate")
+            if isinstance(pin, int):
+                normalized.setdefault("vfp_lock_pins", []).append(f"P{pin}")
+                continue
+            lock_value = lock.get("lock_value")
+            if not isinstance(lock_value, dict):
+                continue
+            voltage = _as_float(lock_value.get("Voltage"))
             if voltage is None:
-                voltage = _as_float(lock.get("voltage"))
+                voltage = _as_float(lock_value.get("voltage"))
             if voltage is not None:
                 normalized["vfp_lock_mv"] = voltage / 1000.0
-                break
 
     return _normalize_status_lock_fields(normalized)
 

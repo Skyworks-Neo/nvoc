@@ -1,6 +1,5 @@
 use nvapi::hi::{
-    Celsius, ClockDomain, ClockLockValue, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState,
-    Percentage,
+    Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
 };
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
@@ -1024,14 +1023,40 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     // low-frequency info-path read (mirroring the power-limit cache) could
     // restore them if a consumer needs them.
     // (previously: target_nvml_device + pcie_throughput/replay_counter/link_gen)
+    // Entries carry their mode: PstateSelect pins surface as vfp_lock_pstate,
+    // ManualFrequency as vfp_lock_khz, ManualVoltage as vfp_lock_mv (the old
+    // code took the FIRST numeric display, mislabeling a frequency lock as mV).
     map.insert(
         "vfp_locked".into(),
         bool_value(!status.vfp_locks.is_empty()),
     );
     for lock in status.vfp_locks.values() {
-        if let Some(ClockLockValue::Voltage(uv)) = lock.lock_value {
-            map.insert("vfp_lock_mv".into(), f64_value(f64::from(uv.0) / 1000.0));
-            break;
+        match lock.mode {
+            nvoc_core::ClockLockMode::PstateSelect => {
+                if let Some(p) = lock.select_pstate {
+                    let pins = map
+                        .entry("vfp_lock_pins".to_string())
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    if let Value::Array(pin_list) = pins {
+                        pin_list.push(text(format!("P{p}")));
+                    }
+                }
+            }
+            nvoc_core::ClockLockMode::ManualFrequency => {
+                if let Some(v) = lock.lock_value
+                    && let Some(khz) = first_number_in_display(v)
+                {
+                    map.insert("vfp_lock_khz".into(), f64_value(khz));
+                }
+            }
+            nvoc_core::ClockLockMode::ManualVoltage => {
+                if let Some(v) = lock.lock_value
+                    && let Some(mv) = first_number_in_display(v)
+                {
+                    map.insert("vfp_lock_mv".into(), f64_value(mv));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1223,7 +1248,12 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
 
     let mut locks = Map::new();
     for (id, lock) in &settings.vfp_locks {
-        if let Some(value) = lock.lock_value {
+        if lock.mode == nvoc_core::ClockLockMode::PstateSelect {
+            locks.insert(
+                id.to_string(),
+                text(format!("pin P{}", lock.select_pstate.unwrap_or(0))),
+            );
+        } else if let Some(value) = lock.lock_value {
             locks.insert(id.to_string(), text(value));
         }
     }
