@@ -6,6 +6,8 @@ mod gpu_type;
 
 pub use gpu::nvapi_init_attempted;
 pub mod legacy_vbios_parser;
+pub mod macos_rm;
+pub use macos_rm::{QueryMacosRmInfo, QueryMacosRmStatus};
 mod nvapi;
 pub mod nvml;
 pub mod operation;

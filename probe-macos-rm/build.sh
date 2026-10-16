@@ -6,7 +6,8 @@
 # struct/constant in the Tier-A battery is the authoritative one by
 # construction. Cloning it is one command (see README).
 #
-#   ./build.sh              # build ./probe-macos-rm
+#   sh build.sh             # build ./probe-macos-rm-idle (no GPU workloads)
+#   PROFILE=full sh build.sh # unrestricted suite, for suitable hardware only
 #   LINT=1 ./build.sh       # off-target lint build (IOKit stubbed; needs any
 #                           # POSIX C compiler, not just clang)
 set -e
@@ -25,14 +26,19 @@ UNIX="$OGKM/src/nvidia/arch/nvalloc/unix/include"
 
 CC="${CC:-cc}"
 CFLAGS="-std=c11 -O2 -Wall -Wextra -Wno-unused-parameter"
-INCS="-I$SDK -I$UNIX"
-OUT=probe-macos-rm
+PROFILE="${PROFILE:-idle}"
+case "$PROFILE" in
+    idle) IDLE_ONLY=1; OUT="${OUT:-probe-macos-rm-idle}" ;;
+    full) IDLE_ONLY=0; OUT="${OUT:-probe-macos-rm}" ;;
+    *) echo "error: PROFILE must be idle or full" >&2; exit 2 ;;
+esac
+set -- "-I$SDK" "-I$UNIX" "-DNVX_IDLE_ONLY=$IDLE_ONLY"
 
 SRCS="src/main.c src/nvx_xnu.c src/nvx_rm.c src/nvx_suite.c"
 
-if [ "$LINT" = "1" ]; then
+if [ "${LINT:-0}" = "1" ]; then
     # Off-target syntax/type check: IOKit layer compiles as stubs.
-    $CC $CFLAGS -DNVX_LINT -fsyntax-only $INCS $SRCS
+    "$CC" $CFLAGS -DNVX_LINT -fsyntax-only "$@" $SRCS
     echo "lint build OK"
     exit 0
 fi
@@ -42,5 +48,5 @@ case "$(uname -s)" in
     *) echo "error: real build requires macOS (IOKit); use LINT=1 elsewhere" >&2; exit 1 ;;
 esac
 
-$CC $CFLAGS $INCS $SRCS -o "$OUT" -framework IOKit -framework CoreFoundation
-echo "built ./$OUT"
+"$CC" $CFLAGS "$@" $SRCS -o "$OUT" -framework IOKit -framework CoreFoundation
+echo "built $OUT (profile $PROFILE)"

@@ -1090,10 +1090,12 @@ dependencies = [
 name = "nvoc-core"
 version = "0.3.0-alpha.1"
 dependencies = [
+ "cc",
  "libloading 0.9.0",
  "nvapi",
  "nvml-wrapper",
  "quick-error",
+ "serde",
  "serde_json",
  "windows-sys 0.61.2",
 ]

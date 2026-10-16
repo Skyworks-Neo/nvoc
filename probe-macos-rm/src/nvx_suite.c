@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #include "nvos.h"
 #include "nvstatus.h"
@@ -107,9 +108,11 @@ void nvx_emit(nvx_ctx *c, const char *id, const char *name,
 static int rusd_copy(const volatile NvU64 *ts, const void *field, void *dst, size_t sz)
 {
     NvU64 t0 = *ts;
+    atomic_thread_fence(memory_order_acquire);
     if (t0 == RUSD_TIMESTAMP_INVALID || t0 == RUSD_TIMESTAMP_WRITE_IN_PROGRESS)
         return -1;
     memcpy(dst, (const void *)field, sz);
+    atomic_thread_fence(memory_order_acquire);
     NvU64 t1 = *ts;
     return (t0 == t1 && RUSD_SEQ_DATA_VALID(t0)) ? 0 : -1;
 }
@@ -160,6 +163,13 @@ void nvx_sample_once(nvx_ctx *c, const char *tag)
         RUSD_POWER_LIMITS pl;
         RUSD_FAN_COOLER_STATUS fan;
         RUSD_PERF_DEVICE_UTILIZATION util;
+        RUSD_CLK_PUBLIC_DOMAIN_INFOS clocks;
+        if (rusd_copy(&sd->clkPublicDomainInfos.lastModifiedTimestamp,
+                      &sd->clkPublicDomainInfos, &clocks, sizeof clocks) == 0) {
+            gpc = clocks.info[RUSD_CLK_PUBLIC_DOMAIN_GRAPHICS].actualClkKHz;
+            dram = clocks.info[RUSD_CLK_PUBLIC_DOMAIN_MEMORY].actualClkKHz;
+            s2 = 0;
+        }
         if (rusd_copy(&sd->temperatures[RUSD_TEMPERATURE_TYPE_GPU].lastModifiedTimestamp,
                       &sd->temperatures[RUSD_TEMPERATURE_TYPE_GPU], &t, sizeof t) == 0)
             { tempC_x256 = (long)t.temperature; haveRusd = 1; } /* NvTemp = SFXP24.8 */
@@ -423,7 +433,10 @@ int nvx_stage1(nvx_ctx *c, NvU32 gpuId)
     /* Memory smoke: BAR1 mapping of a sysmem + a vidmem allocation with a
      * write/readback pattern — the NV01_MEMORY_* -> MAP_MEMORY -> mmap path
      * the channel smoke and any future pushbuffer work depends on. */
-    if (mem_smoke(c, 0) == 0 && mem_smoke(c, 1) == 0)
+    if (NVX_IDLE_ONLY)
+        nvx_emit(c, "V1.9", "memory-smoke", 0, NVX_V_SKIP,
+                 "idle-only build: memory smoke disabled");
+    else if (mem_smoke(c, 0) == 0 && mem_smoke(c, 1) == 0)
         nvx_emit(c, "V1.9", "memory-smoke", 0, NVX_V_OK,
                  "sysmem+vidmem 64KB mapped, pattern verified");
     else
@@ -462,8 +475,8 @@ static void item_fb_info(nvx_ctx *c)
                  "ram %uMB usable %uMB bar1 %uMB avail %uMB l2 %uKB heap %uKB mappable %uKB ramtype 0x%x (NVK-proven path)",
                  p.fbInfoList[0].data >> 10, p.fbInfoList[1].data >> 10,
                  p.fbInfoList[2].data >> 10, p.fbInfoList[3].data >> 10,
-                 p.fbInfoList[4].data, p.fbInfoList[6].data >> 10,
-                 p.fbInfoList[7].data >> 10, p.fbInfoList[5].data);
+                 p.fbInfoList[4].data >> 10, p.fbInfoList[6].data,
+                 p.fbInfoList[7].data, p.fbInfoList[5].data);
     } else {
         nvx_emit(c, "V2.1", "fb-get-info-v2", st, NVX_V_REJECTED, "-");
     }
@@ -519,21 +532,13 @@ static void item_gpumon(nvx_ctx *c)
     static NV2080_CTRL_PERF_GET_GPUMON_PERFMON_UTIL_SAMPLES_V2_PARAMS p;
     memset(&p, 0, sizeof p);
     p.type = NV2080_CTRL_GPUMON_SAMPLE_TYPE_PERFMON_UTIL;
-    p.bufSize = (NvU32)sizeof(NV2080_CTRL_PERF_GPUMON_PERFMON_UTIL_SAMPLE);
+    p.bufSize = (NvU32)sizeof p.samples;
     p.count = NV2080_CTRL_PERF_GPUMON_SAMPLE_COUNT_PERFMON_UTIL;
     NvU32 st = SUBCTL(c, NV2080_CTRL_CMD_PERF_GET_GPUMON_PERFMON_UTIL_SAMPLES_V2, &p);
-    NvU32 grRaw = 0;
-    if (st == 0 && p.tracker > 0 && p.tracker <= p.count) {
-        /* newest entry sits before the tracker in the ring; base(u64) is
-         * dwords 0..1, fb 2..3, gr 4..5 — dword 5 is the GR util value on
-         * the RUSD layout; print raw for on-device confirmation */
-        NvU32 *dw = (NvU32 *)&p.samples[(p.tracker - 1) % p.count];
-        grRaw = dw[5];
-    }
     nvx_emit(c, "V2.6", "gpumon-util-samples-v2", st,
              st == 0 ? NVX_V_OK : NVX_V_REJECTED,
-             st == 0 ? "tracker %u  grRaw=0x%08x" : "-",
-             st == 0 ? p.tracker : 0, st == 0 ? grRaw : 0);
+             st == 0 ? "tracker %u count %u buffer %u bytes (ring interpretation pending; use RUSD for utilization)" : "-",
+             st == 0 ? p.tracker : 0, st == 0 ? p.count : 0, st == 0 ? p.bufSize : 0);
 }
 
 static void item_pmumon(nvx_ctx *c)
@@ -652,41 +657,40 @@ static void item_rusd(nvx_ctx *c)
         return;
     }
     NvU32 st = 0;
+    NV00DE_ALLOC_PARAMETERS ap;
+    memset(&ap, 0, sizeof ap);
+    ap.polledDataMask = NVX_RUSD_POLL_MASK;
     NvHandle hRusd = nvx_rm_alloc(c->ctl_fd, c->hClient, c->hSubdevice,
                                   0xcafe0003, NVX_CLASS_USER_SHARED_DATA,
-                                  NULL, 0, &st); /* alloc without poll params first */
+                                  &ap, sizeof ap, &st);
     if (!hRusd) {
         nvx_emit(c, "V2.12", "rusd-page", st, NVX_V_REJECTED,
                  "NV00DE alloc rejected");
         return;
     }
 
-    /* retry with poll mask so polled sections are populated */
-    NvHandle hRusd2 = 0;
-    NV00DE_ALLOC_PARAMETERS ap;
-    memset(&ap, 0, sizeof ap);
-    ap.polledDataMask = NVX_RUSD_POLL_MASK;
-    hRusd2 = nvx_rm_alloc(c->ctl_fd, c->hClient, c->hSubdevice,
-                          0xcafe0004, NVX_CLASS_USER_SHARED_DATA,
-                          &ap, sizeof ap, &st);
-    NvHandle use = hRusd2 ? hRusd2 : hRusd;
-
     NvU64 len = 0;
-    void *page = nvx_map_memory(c->ctl_fd, c->dev_fd, c->hClient, c->hSubdevice,
-                                use, 0x1000, &len);
+    /* RUSD is SYSMEM: RM binds its mapping context to the control fd. */
+    void *page = nvx_map_memory_readonly(c->ctl_fd, c->ctl_fd, c->hClient, c->hSubdevice,
+                                         hRusd, sizeof(NV00DE_SHARED_DATA), &len, &st);
     if (!page) {
-        nvx_emit(c, "V2.12", "rusd-page", 0, NVX_V_REJECTED,
-                 "NV00DE alloc ok (0x%08x) but MAP_MEMORY/mmap failed — RUSD read path unsupported on kext",
-                 use);
-        nvx_rm_free(c->ctl_fd, c->hClient, c->hSubdevice, hRusd2);
+        nvx_emit(c, "V2.12", "rusd-page", st, NVX_V_REJECTED,
+                 "NV00DE alloc ok (0x%08x) but read-only mapping failed (RM status or transport/IOKit failure)",
+                 hRusd);
         nvx_rm_free(c->ctl_fd, c->hClient, c->hSubdevice, hRusd);
+        return;
+    }
+    if (len < sizeof(NV00DE_SHARED_DATA)) {
+        nvx_emit(c, "V2.12", "rusd-page", 0, NVX_V_REJECTED,
+                 "mapping too short: %llu bytes, need %zu",
+                 (unsigned long long)len, sizeof(NV00DE_SHARED_DATA));
         return;
     }
     c->rusd = page;
     c->rusd_len = len;
     nvx_emit(c, "V2.12", "rusd-page", 0, NVX_V_OK,
-             "NV00DE 0x%08x mapped at %p len %lluKB — poll mask 0x%x (temp/pwr/fan/clock path alive)",
-             use, page, (unsigned long long)(len >> 10), NVX_RUSD_POLL_MASK);
+             "NV00DE 0x%08x mapped at %p len %lluKB — poll mask 0x%x (field validity checked separately)",
+             hRusd, page, (unsigned long long)(len >> 10), NVX_RUSD_POLL_MASK);
 
     /* Full RUSD readout: every polled section with a stable timestamp. */
     {
@@ -747,15 +751,17 @@ static void item_rusd(nvx_ctx *c)
             smKHz  = clks.info[RUSD_CLK_PUBLIC_DOMAIN_SM].actualClkKHz;
         }
 
-        nvx_emit(c, "V2.12b", "rusd-readout", 0, NVX_V_OK,
+        int valid = tbuf[0] || fanMax >= 0 || instMW >= 0 || avgMW >= 0 ||
+                    enforcedMW >= 0 || tgpmW >= 0 || pstate != 0xffffffffu ||
+                    gpcKHz || memKHz || smKHz;
+        nvx_emit(c, "V2.12b", "rusd-readout", 0, valid ? NVX_V_OK : NVX_V_SKIP,
                  "temp[%s] pstate %u gpc %u mem %u sm %u kHz inst %ld avg %ld mW "
                  "limit %ld tgp %ld mW fan %ld rpm",
                  tbuf, pstate, gpcKHz, memKHz, smKHz,
                  instMW, avgMW, enforcedMW, tgpmW, fanMax);
     }
 
-    /* leave both objects alive for stage 3/4 sampling; freed in main teardown */
-    if (hRusd2 && hRusd) nvx_rm_free(c->ctl_fd, c->hClient, c->hSubdevice, hRusd);
+    /* Keep the page alive for stage 3/4 sampling; connection teardown reclaims it. */
 }
 
 int nvx_stage2(nvx_ctx *c)
@@ -775,8 +781,15 @@ int nvx_stage2(nvx_ctx *c)
     item_bios_sku(c);
     item_bus(c);
     item_perf_levels(c);
-    item_i2c_probe(c);
-    item_legacy_probes(c);
+    if (NVX_IDLE_ONLY) {
+        nvx_emit(c, "V2.16", "i2c-read-buffer", 0, NVX_V_SKIP,
+                 "idle-only build: I2C reachability probe disabled");
+        nvx_emit(c, "V2.legacy", "legacy-probes", 0, NVX_V_SKIP,
+                 "idle-only build: legacy command probes disabled");
+    } else {
+        item_i2c_probe(c);
+        item_legacy_probes(c);
+    }
     item_rusd(c);
     return 0;
 }
@@ -811,6 +824,11 @@ void nvx_restore_run(void)
 
 int nvx_stage3(nvx_ctx *c)
 {
+    if (NVX_IDLE_ONLY) {
+        nvx_emit(c, "V3", "writes", 0, NVX_V_GATED,
+                 "idle-only build: all performance writes disabled");
+        return -1;
+    }
     if (!c->hSubdevice) {
         nvx_emit(c, "V3", "writes", 0, NVX_V_SKIP, "RM chain not open");
         return -1;
@@ -998,6 +1016,11 @@ static void smoke_free_buf(nvx_ctx *c, struct nvx_buf *b)
 
 int nvx_stage5(nvx_ctx *c)
 {
+    if (NVX_IDLE_ONLY) {
+        nvx_emit(c, "V5", "channel-smoke", 0, NVX_V_GATED,
+                 "idle-only build: GPU channel submission disabled");
+        return -1;
+    }
     if (!c->hSubdevice || c->dev_fd < 0) {
         nvx_emit(c, "V5", "channel-smoke", 0, NVX_V_SKIP,
                  "needs RM chain + device connection");

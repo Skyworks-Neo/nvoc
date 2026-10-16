@@ -7,7 +7,7 @@
 <a id="english"></a>
 ## English
 
-NVOC is a monorepo for NVIDIA GPU overclocking and stability tools. The stack centers on a Rust command-line optimizer that controls NVIDIA GPUs through NVAPI / NVML, uses CUDA or OpenCL stress workloads to validate stability, and exposes GUI, TUI, and service frontends for different operating environments.
+NVOC is a monorepo for NVIDIA GPU overclocking and stability tools. The stack centers on a Rust command-line optimizer that controls NVIDIA GPUs through NVAPI / NVML, uses CUDA or OpenCL stress workloads to validate stability, and exposes GUI, TUI, and service frontends for different operating environments. Rust core and `nvoc-cli` also provide a native, read-only [macOS RM backend](docs/design/macos-rm-backend.md) for NullMoth device discovery and RUSD telemetry queries; macOS overclocking is not yet implemented.
 
 Overclocking can crash the display driver, reset the GPU, or make a machine unstable. Run write operations only when you understand the target GPU, driver, cooling, and recovery path.
 

@@ -57,7 +57,14 @@ int nvx_open(int ctl)
         return -1;
     }
     uint64_t in = (uint64_t)fd;
-    IOConnectCallScalarMethod(conn, SEL_BINDFD, &in, 1, NULL, NULL);
+    kern_return_t kr = IOConnectCallScalarMethod(conn, SEL_BINDFD, &in, 1, NULL, NULL);
+    if (kr != KERN_SUCCESS) {
+        fprintf(stderr, "nvx: bind fd -> kr 0x%08x\n", kr);
+        close(fd);
+        IOServiceClose(conn);
+        errno = EIO;
+        return -1;
+    }
     gConn[fd] = conn;
     return fd;
 }
@@ -89,9 +96,12 @@ int nvx_esc(int fd, uint32_t cmd, void *data, uint32_t size)
     return 0;
 }
 
-void *nvx_map_memory(int ctl_fd, int dev_fd, NvHandle hClient, NvHandle hDevice,
-                     NvHandle hMemory, NvU64 size, NvU64 *out_len)
+static void *map_memory(int ctl_fd, int dev_fd, NvHandle hClient, NvHandle hDevice,
+                         NvHandle hMemory, NvU64 size, NvU64 *out_len,
+                         NvU32 flags, NvU32 *status)
 {
+    if (out_len) *out_len = 0;
+    if (status) *status = UINT32_MAX;
     io_connect_t devConn = conn_of(dev_fd);
     if (!devConn || !conn_of(ctl_fd)) { errno = EBADF; return NULL; }
 
@@ -101,8 +111,12 @@ void *nvx_map_memory(int ctl_fd, int dev_fd, NvHandle hClient, NvHandle hDevice,
     m.params.hDevice = hDevice;
     m.params.hMemory = hMemory;
     m.params.length  = size;
+    m.params.flags = flags;
     m.fd = dev_fd;
-    if (nvx_esc(ctl_fd, NV_ESC_RM_MAP_MEMORY, &m, sizeof m) != 0 || m.params.status != 0) {
+    if (nvx_esc(ctl_fd, NV_ESC_RM_MAP_MEMORY, &m, sizeof m) != 0)
+        return NULL;
+    if (m.params.status != 0) {
+        if (status) *status = m.params.status;
         fprintf(stderr, "nvx: MAP_MEMORY status 0x%x\n", m.params.status);
         return NULL;
     }
@@ -115,7 +129,21 @@ void *nvx_map_memory(int ctl_fd, int dev_fd, NvHandle hClient, NvHandle hDevice,
         return NULL;
     }
     if (out_len) *out_len = (NvU64)len;
+    if (status) *status = 0;
     return (void *)(uintptr_t)addr;
+}
+
+void *nvx_map_memory(int ctl_fd, int dev_fd, NvHandle hClient, NvHandle hDevice,
+                     NvHandle hMemory, NvU64 size, NvU64 *out_len)
+{
+    return map_memory(ctl_fd, dev_fd, hClient, hDevice, hMemory, size, out_len, 0, NULL);
+}
+
+void *nvx_map_memory_readonly(int ctl_fd, int dev_fd, NvHandle hClient, NvHandle hDevice,
+                              NvHandle hMemory, NvU64 size, NvU64 *out_len, NvU32 *status)
+{
+    return map_memory(ctl_fd, dev_fd, hClient, hDevice, hMemory, size, out_len,
+                      NVOS33_FLAGS_ACCESS_READ_ONLY, status);
 }
 
 void nvx_unmap_memory(void *addr, size_t len)
@@ -124,6 +152,14 @@ void nvx_unmap_memory(void *addr, size_t len)
     /* The device connection is closed by nvx_close, which tears the mapping
      * down; v1 does not track individual mappings (suite, not a library). */
     (void)addr;
+}
+
+int nvx_unmap_memory_fd(int fd, void *addr)
+{
+    io_connect_t conn = conn_of(fd);
+    if (!conn) return EBADF;
+    return IOConnectUnmapMemory64(conn, 0, mach_task_self(),
+                                  (mach_vm_address_t)(uintptr_t)addr) == KERN_SUCCESS ? 0 : EIO;
 }
 
 #else /* !__APPLE__ || NVX_LINT — off-target stubs, compile-check only */
@@ -143,5 +179,14 @@ void *nvx_map_memory(int ctl_fd, int dev_fd, NvHandle hClient, NvHandle hDevice,
     return NULL;
 }
 void nvx_unmap_memory(void *addr, size_t len) { (void)addr; (void)len; }
+int nvx_unmap_memory_fd(int fd, void *addr) { (void)fd; (void)addr; return EINVAL; }
+
+void *nvx_map_memory_readonly(int ctl_fd, int dev_fd, NvHandle hClient, NvHandle hDevice,
+                              NvHandle hMemory, NvU64 size, NvU64 *out_len, NvU32 *status)
+{
+    if (out_len) *out_len = 0;
+    if (status) *status = UINT32_MAX;
+    return nvx_map_memory(ctl_fd, dev_fd, hClient, hDevice, hMemory, size, out_len);
+}
 
 #endif

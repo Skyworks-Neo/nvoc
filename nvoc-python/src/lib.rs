@@ -350,6 +350,11 @@ impl InventoryCache {
             BackendSet::Both => &mut self.both,
             BackendSet::Nvapi => &mut self.nvapi,
             BackendSet::Nvml => &mut self.nvml,
+            BackendSet::MacosRm => {
+                return Err(invalid_value(
+                    "macOS RM is currently exposed through Rust core and nvoc-cli",
+                ));
+            }
         };
         if slot.is_none() {
             *slot = Some(Arc::new(SyncInventory(
@@ -362,12 +367,17 @@ impl InventoryCache {
     /// 强制重新发现指定集并更新缓存（discover_gpus 的显式刷新入口）。
     /// 刷新会替换槽位；仍在途的旧快照查询由 Arc 引用计数保活，安全。
     fn refresh(&mut self, backends: BackendSet) -> PyResult<Arc<SyncInventory>> {
-        let fresh = discover_targets(backends).map_err(to_py_err)?;
         let slot = match backends {
             BackendSet::Both => &mut self.both,
             BackendSet::Nvapi => &mut self.nvapi,
             BackendSet::Nvml => &mut self.nvml,
+            BackendSet::MacosRm => {
+                return Err(invalid_value(
+                    "macOS RM is currently exposed through Rust core and nvoc-cli",
+                ));
+            }
         };
+        let fresh = discover_targets(backends).map_err(to_py_err)?;
         *slot = Some(Arc::new(SyncInventory(fresh)));
         Ok(slot.as_ref().expect("slot just filled").clone())
     }

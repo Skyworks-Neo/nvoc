@@ -2,6 +2,13 @@
 
 `nvoc-cli` is a focused command-line wrapper over `nvoc-core`.
 
+On x86_64 macOS with NullMoth, the native `macos-rm` backend is selected by
+default (or explicitly with `--macos-rm`). It currently supports `get-gpu-list`,
+`get-info` and `get-status` (P-state plus RUSD telemetry). Missing telemetry is `null` with
+reasons; settings writes are unavailable. See [build instructions and exact
+coverage](../docs/design/macos-rm-backend.md). The NVAPI/NVML matrices below do
+not describe macOS RM support.
+
 ## Compatibility Overview (Interface × GPU Generation / Basic Functions)
 
 This matrix is the canonical compatibility reference for NVOC backend commands exposed by `nvoc-cli`. Autoscan-specific rows describe the `auto-optimizer` flows that depend on the same NVAPI/NVML backend capabilities.

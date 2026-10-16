@@ -145,6 +145,8 @@ pub enum BackendSet {
     Nvapi,
     Nvml,
     Both,
+    /// Native NullMoth RM; does not initialize NVAPI or NVML.
+    MacosRm,
 }
 
 #[derive(Clone, Copy)]
@@ -153,6 +155,7 @@ pub struct GpuTarget<'a> {
     pub index: usize,
     nvapi: Option<&'a Gpu>,
     nvml: Option<&'a Nvml>,
+    macos_rm: Option<&'a crate::macos_rm::Device>,
     /// Why `nvml` is `None` when the backend set requested NVML (`BackendSet::Both`):
     /// carries the original `Nvml::init()` failure reason so a later `nvml()` call
     /// can surface the root cause ("NVML init failed: ...") instead of the bare
@@ -168,6 +171,7 @@ impl fmt::Debug for GpuTarget<'_> {
             .field("index", &self.index)
             .field("nvapi", &self.nvapi.is_some())
             .field("nvml", &self.nvml.is_some())
+            .field("macos_rm", &self.macos_rm.is_some())
             .finish()
     }
 }
@@ -179,6 +183,7 @@ impl<'a> GpuTarget<'a> {
             index,
             nvapi: None,
             nvml: None,
+            macos_rm: None,
             nvml_error: None,
         }
     }
@@ -189,6 +194,15 @@ impl<'a> GpuTarget<'a> {
 
     pub fn has_nvml(&self) -> bool {
         self.nvml.is_some()
+    }
+
+    pub fn has_macos_rm(&self) -> bool {
+        self.macos_rm.is_some()
+    }
+
+    pub fn macos_rm(&self) -> Result<&'a crate::macos_rm::Device, Error> {
+        self.macos_rm
+            .ok_or_else(|| Error::Custom(format!("GPU {} has no macOS RM backend", self.id.0)))
     }
 
     /// 原生 GC6 唤醒：force_gc6_exit（NVAPI 0x55590CB2，单参数、无 struct），
@@ -228,6 +242,7 @@ pub struct TargetInventory {
     nvml: Option<Nvml>,
     nvapi_gpus: Vec<Gpu>,
     nvml_ids: Vec<u32>,
+    macos_rm_devices: Vec<crate::macos_rm::Device>,
     /// Root-cause string stashed when `BackendSet::Both` degraded to NVAPI-only
     /// because `Nvml::init()` failed. Surfaced by [`GpuTarget::nvml`] so callers
     /// that genuinely need NVML see "NVML init failed: ..." rather than a bare
@@ -239,9 +254,18 @@ pub struct TargetInventory {
 
 impl TargetInventory {
     pub fn discover(backends: BackendSet) -> Result<Self, Error> {
+        if backends == BackendSet::MacosRm {
+            return Ok(Self {
+                nvml: None,
+                nvapi_gpus: Vec::new(),
+                nvml_ids: Vec::new(),
+                nvml_error: None,
+                macos_rm_devices: crate::macos_rm::discover()?,
+            });
+        }
         let nvapi_gpus = match backends {
             BackendSet::Nvapi | BackendSet::Both => super::gpu::get_sorted_gpus()?,
-            BackendSet::Nvml => Vec::new(),
+            BackendSet::Nvml | BackendSet::MacosRm => Vec::new(),
         };
 
         // NVML availability policy:
@@ -272,7 +296,7 @@ impl TargetInventory {
                     (None, Some(reason))
                 }
             },
-            BackendSet::Nvapi => (None, None),
+            BackendSet::Nvapi | BackendSet::MacosRm => (None, None),
         };
 
         let nvml_ids = match &nvml {
@@ -285,6 +309,7 @@ impl TargetInventory {
             nvapi_gpus,
             nvml_ids,
             nvml_error,
+            macos_rm_devices: Vec::new(),
         })
     }
 
@@ -294,6 +319,7 @@ impl TargetInventory {
             .iter()
             .map(|gpu| gpu_id_from_nvapi_gpu(gpu).0)
             .chain(self.nvml_ids.iter().copied())
+            .chain(self.macos_rm_devices.iter().map(|device| device.id().0))
             .collect::<Vec<_>>();
         ids.sort_unstable();
         ids.dedup();
@@ -308,6 +334,10 @@ impl TargetInventory {
                     .iter()
                     .find(|gpu| gpu_id_from_nvapi_gpu(gpu).0 == id),
                 nvml: self.nvml.as_ref(),
+                macos_rm: self
+                    .macos_rm_devices
+                    .iter()
+                    .find(|device| device.id().0 == id),
                 nvml_error: self.nvml_error.as_deref(),
             })
             .collect()

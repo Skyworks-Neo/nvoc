@@ -65,7 +65,11 @@ pub(super) fn format_human(execution: &Execution) -> String {
                 false,
             ));
             if let Some(output) = &result.output {
-                lines.extend(render_command_output(execution.command, output));
+                if result.backend == "macos-rm" {
+                    lines.extend(format_macos_rm_output(output));
+                } else {
+                    lines.extend(render_command_output(execution.command, output));
+                }
                 // The wrapper layers soft-fail unsupported surfaces to
                 // {"supported": false} — surface the ORIGINAL NVAPI status
                 // recorded underneath (e.g. "-9 IncompatibleStructVersion"
@@ -89,6 +93,52 @@ pub(super) fn format_human(execution: &Execution) -> String {
     }
 
     lines.join("\n")
+}
+
+/// Keep unavailable reasons as plain text; the generic renderer infers units
+/// from field names and would append kHz / percent to error descriptions.
+fn format_macos_rm_output(output: &Value) -> Vec<String> {
+    let mut data = output.clone();
+    let unavailable = data
+        .as_object_mut()
+        .and_then(|map| map.remove("unavailable"));
+    if let Some(map) = data.as_object_mut() {
+        map.remove("rusd_timestamps"); // raw diagnostics remain in JSON output
+        for (source, label, scale, unit) in [
+            ("graphics_clock_khz", "graphics_clock", 1000.0, "MHz"),
+            ("memory_clock_khz", "memory_clock", 1000.0, "MHz"),
+            ("temperature_c", "temperature", 1.0, "C"),
+            ("power_mw", "power", 1000.0, "W"),
+            ("power_limit_mw", "power_limit", 1000.0, "W"),
+            ("fan_rpm", "fan_speed", 1.0, "rpm"),
+            ("utilization_percent", "gpu_utilization", 1.0, "%"),
+        ] {
+            if let Some(value) = map.remove(source) {
+                map.insert(
+                    label.into(),
+                    value
+                        .as_f64()
+                        .map_or(Value::Null, |v| json!(format!("{:.3} {unit}", v / scale))),
+                );
+            }
+        }
+    }
+    if let Some(pstate) = data.get("pstate").and_then(Value::as_u64) {
+        data["pstate"] = json!(format!("P{pstate}"));
+    }
+    let mut lines = format_value_block(&data, 1);
+    if let Some(Value::Object(reasons)) = unavailable
+        && !reasons.is_empty()
+    {
+        lines.push("  Unavailable:".into());
+        for (field, reason) in reasons {
+            lines.push(format!(
+                "    {field}: {}",
+                reason.as_str().unwrap_or("unavailable")
+            ));
+        }
+    }
+    lines
 }
 
 /// Per-command human renderer, dispatched through the CommandSpec table
@@ -3440,6 +3490,33 @@ mod tests {
     use super::*;
     use crate::{Command, TargetResult, all_commands};
     use serde_json::json;
+
+    #[test]
+    fn macos_status_formats_missing_values_without_units_on_error_text() {
+        let output = json!({"pstate": 1, "graphics_clock_khz": null,
+            "unavailable": {"graphics_clock_khz": "not yet validated"}});
+        let rendered = format_macos_rm_output(&output).join("\n");
+        assert!(rendered.contains("P1"));
+        assert!(rendered.contains("N/A"));
+        assert!(rendered.contains("graphics_clock_khz: not yet validated"));
+        assert!(!rendered.contains("validated kHz"));
+    }
+
+    #[test]
+    fn macos_status_renders_engineering_units_without_changing_json() {
+        let output = json!({"graphics_clock_khz": 1530000, "memory_clock_khz": 6000984,
+            "power_mw": 11368, "power_limit_mw": 100000, "fan_rpm": 0,
+            "temperature_c": 48.5625, "utilization_percent": 0,
+            "rusd_timestamps": {"power_mw": 123}, "unavailable": {}});
+        let rendered = format_macos_rm_output(&output).join("\n");
+        assert!(rendered.contains("1530.000 MHz"));
+        assert!(rendered.contains("6000.984 MHz"));
+        assert!(rendered.contains("11.368 W"));
+        assert!(rendered.contains("100.000 W"));
+        assert!(rendered.contains("0.000 rpm"));
+        assert!(!rendered.contains("123"));
+        assert_eq!(output["power_mw"], 11368);
+    }
 
     #[test]
     fn human_output_formats_objects_without_json_dump() {

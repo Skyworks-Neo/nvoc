@@ -47,6 +47,7 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::macros::format_description;
 
+mod macos_rm;
 mod output;
 mod vbios;
 use std::collections::{BTreeMap, BTreeSet};
@@ -124,6 +125,7 @@ pub enum BackendChoice {
     Auto,
     Nvapi,
     Nvml,
+    MacosRm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -673,7 +675,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::GetStatus,
                 CommandSpec {
                     options: Box::leak(Box::new(["verbose"])),
-                    ..CommandSpec::new("get-status", Group::Info, "Read NVAPI live GPU status")
+                    ..CommandSpec::new("get-status", Group::Info, "Read live GPU status (macOS RM: P-state and RUSD telemetry; unavailable fields include reasons)")
                 },
             ),
             (
@@ -1477,6 +1479,9 @@ fn render_root_help() -> String {
     text.push_str("  -g, --gpu <GPU_ID>     GPU selector; repeat for multiple GPUs\n");
     text.push_str("      --nvapi            Force the NVAPI backend\n");
     text.push_str("      --nvml             Force the NVML backend\n");
+    text.push_str(
+        "      --macos-rm         Use native NullMoth RM (default on macOS; read-only)\n",
+    );
     text.push_str("  -O, --output <FORMAT>  Output format: human or json [default: human]\n");
     text.push_str("      --no-color         Disable ANSI color output\n");
     text.push_str("  -h, --help             Print help\n");
@@ -1635,6 +1640,8 @@ where
         BackendChoice::Nvapi
     } else if command_matches.get_flag("nvml") {
         BackendChoice::Nvml
+    } else if command_matches.get_flag("macos-rm") {
+        BackendChoice::MacosRm
     } else {
         BackendChoice::Auto
     };
@@ -1691,6 +1698,11 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
 
     // `list` is a meta command: it reads no GPU and uses no backend.
     if command != Command::List {
+        if invocation.backend == BackendChoice::MacosRm
+            && !(command == Command::GetVbios && invocation.options.contains_key("input"))
+        {
+            macos_rm::validate(command)?;
+        }
         let supported = command.adapters();
         match invocation.backend {
             BackendChoice::Nvapi if !supported.contains(&BackendAdapter::Nvapi) => {
@@ -1846,6 +1858,14 @@ fn cli_command(command_hint: Option<Command>) -> ClapCommand {
                 .conflicts_with("nvapi")
                 .global(true)
                 .help("Force the NVML backend"),
+        )
+        .arg(
+            Arg::new("macos-rm")
+                .long("macos-rm")
+                .action(ArgAction::SetTrue)
+                .conflicts_with_all(["nvapi", "nvml", "nvapi-path", "nvml-path"])
+                .global(true)
+                .help("Use native NullMoth RM (default on macOS; read-only)"),
         )
         .arg(
             Arg::new("nvml-path")
@@ -2310,6 +2330,7 @@ fn execute(invocation: &Invocation) -> CliResult<Execution> {
     }
 
     match invocation.backend {
+        BackendChoice::MacosRm => macos_rm::execute(invocation, command),
         BackendChoice::Nvapi => execute_backend(invocation, command, BackendAdapter::Nvapi),
         BackendChoice::Nvml => execute_backend(invocation, command, BackendAdapter::Nvml),
         BackendChoice::Auto => execute_auto(invocation, command),
@@ -2317,6 +2338,9 @@ fn execute(invocation: &Invocation) -> CliResult<Execution> {
 }
 
 fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Execution> {
+    if macos_rm::selected(BackendChoice::Auto) {
+        return macos_rm::execute(invocation, command);
+    }
     if command == Command::GetGpuList {
         return execute_list_gpus_auto(invocation);
     }

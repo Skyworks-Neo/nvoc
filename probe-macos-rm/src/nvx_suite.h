@@ -17,6 +17,10 @@
 #include "nvtypes.h"
 #include <stdio.h>
 
+#ifndef NVX_IDLE_ONLY
+#define NVX_IDLE_ONLY 1
+#endif
+
 enum {
     NVX_V_OK = 0,      /* NV_OK, values plausible            */
     NVX_V_REJECTED,    /* call completed, RM returned error  */

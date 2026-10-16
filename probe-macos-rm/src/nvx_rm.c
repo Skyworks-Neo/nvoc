@@ -105,6 +105,8 @@ void nvx_rm_chain_close(int ctl_fd, NvHandle hClient, NvHandle hDevice, NvHandle
 const char *nvx_status_name(NvU32 status)
 {
     switch (status) {
+/* nvstatus.h already expanded this guarded X-macro header into the enum. */
+#undef SDK_NVSTATUSCODES_H
 #define NV_STATUS_CODE(name, code, string) case name: return #name;
 #include "nvstatuscodes.h"
 #undef NV_STATUS_CODE
