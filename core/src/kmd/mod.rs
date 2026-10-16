@@ -30,6 +30,7 @@
 //! RAM 范围(低内存/页表帧/定位目标帧)。
 
 pub mod board;
+#[cfg(windows)]
 pub mod layout_probe;
 pub mod pagewalk;
 

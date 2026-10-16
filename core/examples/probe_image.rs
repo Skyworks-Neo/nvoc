@@ -3,18 +3,25 @@
 //! 新驱动 onboarding 的第一步:拿到 RM 分派命令号与 GPU 链偏移,给 idalib
 //! 静态狩猎当锚点(fail-closed,推不出即报错退出)。
 
-use std::process::ExitCode;
+// layout_probe（及其 capstone 依赖）只在 Windows 下编译——探针的
+// 消费场景（nvlddmkm 功耗墙 RE）全部在 Windows 主机上。
+#[cfg(not(windows))]
+fn main() -> std::process::ExitCode {
+    eprintln!("probe_image is Windows-only (kmd layout_probe is cfg(windows))");
+    std::process::ExitCode::FAILURE
+}
 
-fn main() -> ExitCode {
+#[cfg(windows)]
+fn main() -> std::process::ExitCode {
     let Some(path) = std::env::args().nth(1) else {
         eprintln!("usage: probe_image <nvlddmkm.sys path>");
-        return ExitCode::FAILURE;
+        return std::process::ExitCode::FAILURE;
     };
     let img = match std::fs::read(&path) {
         Ok(img) => img,
         Err(e) => {
             eprintln!("failed to read {path}: {e}");
-            return ExitCode::FAILURE;
+            return std::process::ExitCode::FAILURE;
         }
     };
     match nvoc_core::kmd::layout_probe::probe(&img) {
@@ -54,11 +61,11 @@ fn main() -> ExitCode {
                 "{}",
                 serde_json::to_string_pretty(&layout).unwrap_or_default()
             );
-            ExitCode::SUCCESS
+            std::process::ExitCode::SUCCESS
         }
         Err(e) => {
             eprintln!("probe failed (fail-closed): {e:?}");
-            ExitCode::FAILURE
+            std::process::ExitCode::FAILURE
         }
     }
 }

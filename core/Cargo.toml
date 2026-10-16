@@ -11,13 +11,17 @@ license = "Apache-2.0"
 [dependencies]
 nvapi = { workspace = true }
 serde = { workspace = true }
-capstone = { workspace = true }
 nvml-wrapper = { workspace = true }
 quick-error = { workspace = true }
 # nvml.rs dlopens libnvml.so / nvml.dll by path on every platform.
 libloading = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# capstone 只服务 kmd/layout_probe 的 nvlddmkm.sys 静态反汇编（Windows
+# 驱动镜像、功耗墙 RE）；linux 侧无消费场景，门控掉免得跨平台 mirror
+# 需要 linux 交叉 C 工具链。
+capstone = { workspace = true }
+
 # kmd/pawnio.rs talks to \Device\PawnIO with CreateFileW/DeviceIoControl
 # directly; the Win32 umbrella feature does not pull in the sub-namespaces.
 windows-sys = { workspace = true, features = [
