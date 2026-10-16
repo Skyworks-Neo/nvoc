@@ -15,8 +15,8 @@ use super::result::{
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 use ::nvapi::hi::{
-    ClockDomain, CoolerPolicy, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
-    SensorThrottle, VfPoint,
+    ClockDomain, ClockLockEntry, CoolerPolicy, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState,
+    Percentage, SensorThrottle, VfPoint,
 };
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 
@@ -1342,6 +1342,30 @@ impl GpuOperation for ResetVfpFrequencyLock {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         low_nvapi::reset_vfp_frequency_lock(target.nvapi()?, self.domain)
+    }
+}
+
+/// Write PerfClientLimits lock entries verbatim (the caller owns the RMW:
+/// GET current, overlay, write). Entries carry their raw mode, so
+/// `PstateSelect` pins (PerfLimitId ids 4/5) replay exactly as captured —
+/// this is the profile `vfp_locks` domain applier.
+#[derive(Clone, Debug)]
+pub struct SetVfpLockEntries {
+    pub entries: Vec<ClockLockEntry>,
+}
+
+impl GpuOperation for SetVfpLockEntries {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetVfpLockEntries
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_vfp_lock_entries(&self.entries)
+            .map_err(Error::from)
     }
 }
 

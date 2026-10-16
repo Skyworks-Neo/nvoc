@@ -133,10 +133,7 @@ pub fn build_plan(
             continue;
         }
         if let Some(reason) = domain_unsupported_reason(domain, gpu_type) {
-            match domain {
-                DomainKind::VfpLocks => unimplemented.push((domain, reason)),
-                _ => not_applicable.push((domain, reason)),
-            }
+            not_applicable.push((domain, reason));
             continue;
         }
         // LockedClocks is schema-present but the apply wiring lands with the
@@ -252,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn vfp_locks_are_deferred_not_applied() {
+    fn vfp_locks_apply_last_in_order() {
         let doc = doc_with(|d| {
             d.vfp_locks = Some(Default::default());
             d.power = Some(PowerSettings::default());
@@ -263,8 +260,8 @@ mod tests {
             GpuType::Desktop40Series,
             &PlanOptions::default(),
         );
-        assert_eq!(plan.steps, vec![DomainKind::Power]);
-        assert_eq!(plan.unimplemented.len(), 1);
+        assert_eq!(plan.steps, vec![DomainKind::Power, DomainKind::VfpLocks]);
+        assert!(plan.unimplemented.is_empty());
     }
 
     #[test]

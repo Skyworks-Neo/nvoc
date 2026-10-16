@@ -5274,7 +5274,7 @@ fn profile_save(
             let settings = run(target, QueryGpuSettings)
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
                 .output;
-            let captured = nvoc_core::profile::capture_domains(&settings, &wanted);
+            let captured = nvoc_core::profile::capture_domains(&settings, &context, &wanted);
             if captured.present().is_empty() {
                 return Err(PyRuntimeError::new_err(
                     "nothing captured: the driver reported no values for the requested domains",
@@ -5408,6 +5408,15 @@ fn profile_diff(
                             .map(|v| v.overvolt_uv == settings.overvolt)
                             .unwrap_or(true);
                         (boost_ok && ov_ok, "boost percent / overvolt")
+                    }
+                    nvoc_core::profile::DomainKind::VoltRails => {
+                        let recorded = doc
+                            .domains
+                            .volt_rails
+                            .as_ref()
+                            .map(|v| v.len())
+                            .unwrap_or(0);
+                        (recorded == 0, "volt-rail offsets (recorded intent only)")
                     }
                     nvoc_core::profile::DomainKind::Power => {
                         (true, "recorded intent (live watts not compared)")

@@ -2069,7 +2069,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("domains")
             .value_name("DOMAINS")
             .action(ArgAction::Set)
-            .help("Comma-separated profile domains to capture: clock-offsets, public-vftable, voltage, power, thermal, fan, locked-clocks, vfp-locks (default: all except the lock families)"),
+            .help("Comma-separated profile domains to capture: clock-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, locked-clocks, vfp-locks (default: all except the lock families)"),
         "note" => Arg::new("note")
             .long("note")
             .value_name("TEXT")
@@ -2926,7 +2926,7 @@ fn execute_target(
             let domains_wanted = parse_domain_selection(invocation)?;
             let settings = run(target, QueryGpuSettings)?.output;
             let context = profile_capture_context(target, identity);
-            let domains = capture_domains(&settings, &domains_wanted);
+            let domains = capture_domains(&settings, &context, &domains_wanted);
             if domains.present().is_empty() {
                 return Err(CliError::new(
                     "nothing captured: the driver reported no values for the requested domains \
@@ -8102,6 +8102,10 @@ fn profile_diff_value(doc: &ProfileDoc, settings: &nvoc_core::GpuSettings) -> Va
                     .map(|v| v.overvolt_uv == settings.overvolt)
                     .unwrap_or(true);
                 (live_boost_ok && live_ov_ok, "boost percent / overvolt")
+            }
+            DomainKind::VoltRails => {
+                let recorded = domains.volt_rails.as_ref().map(|v| v.len()).unwrap_or(0);
+                (recorded == 0, "volt-rail offsets (recorded intent only)")
             }
             DomainKind::Power => {
                 // Live watts verification needs NVML; here the diff only

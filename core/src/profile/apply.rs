@@ -6,18 +6,20 @@
 use super::plan::ApplyPlan;
 use super::schema::{
     DomainKind, FanCurvePointRecord, FanCurveReadoutRecord, PowerSettings, ProfileDoc,
-    SettingsBackup, VoltageSettings,
+    SettingsBackup, VoltRailLimit, VoltageSettings,
 };
 use crate::nvml::query_nvml_power_watts;
 use crate::operation::{
-    GetFanCurves, QueryGpuSettings, ResetFanCurve, ResetNvapiSensorLimits,
+    GetFanCurves, QueryGpuSettings, QueryNvapiVoltRails, ResetFanCurve, ResetNvapiSensorLimits,
     ResetPublicVftableOffset, SetDomainVfpDeltas, SetFanCurve, SetNvapiOvervolt,
-    SetNvapiPowerLimits, SetNvapiSensorLimits, SetPowerLimit, SetPstateClockOffset,
-    SetVoltageBoost, run,
+    SetNvapiPowerLimits, SetNvapiSensorLimits, SetNvapiVoltRailOffset, SetPowerLimit,
+    SetPstateClockOffset, SetVfpLockEntries, SetVoltageBoost, run,
 };
 use crate::target::GpuTarget;
 use crate::types::VfpResetDomain;
-use ::nvapi::hi::{ClockDomain, KilohertzDelta, MicrovoltsDelta, Percentage};
+use ::nvapi::hi::{
+    ClockDomain, ClockLockEntry, KilohertzDelta, MicrovoltsDelta, Percentage, PerfLimitId,
+};
 use std::collections::BTreeMap;
 
 /// Power readback tolerance in watts: NVML quantizes limits to the VRM's
@@ -75,6 +77,8 @@ struct DomainWrites {
     clock_offsets: BTreeMap<::nvapi::hi::PState, BTreeMap<ClockDomain, KilohertzDelta>>,
     public_vftable: Option<::nvapi::hi::VfpDeltas>,
     voltage: Option<VoltageSettings>,
+    /// Per-rail melonVolt offsets to write (empty = nothing).
+    volt_rails: Vec<VoltRailLimit>,
     power: Option<PowerSettings>,
     /// `None` = nothing to write; `Some(None-shaped reset)` uses
     /// `thermal_reset` instead.
@@ -83,6 +87,10 @@ struct DomainWrites {
     fan_curves: BTreeMap<u8, Vec<FanCurvePointRecord>>,
     /// Curve indices to reset (snapshot had no curve for them).
     fan_resets: std::collections::BTreeSet<u8>,
+    /// PerfClientLimits entries to write verbatim (freq/volt locks and
+    /// PstateSelect pins — each entry carries its own mode). `None` =
+    /// nothing.
+    vfp_locks: Option<Vec<ClockLockEntry>>,
 }
 
 impl DomainWrites {
@@ -91,6 +99,7 @@ impl DomainWrites {
             clock_offsets: doc.domains.clock_offsets.clone().unwrap_or_default(),
             public_vftable: doc.domains.public_vftable.clone(),
             voltage: doc.domains.voltage.clone(),
+            volt_rails: doc.domains.volt_rails.clone().unwrap_or_default(),
             power: doc.domains.power.clone(),
             thermal: doc.domains.thermal.clone(),
             thermal_reset: false,
@@ -101,6 +110,11 @@ impl DomainWrites {
                 .map(|fan| fan.curves.clone())
                 .unwrap_or_default(),
             fan_resets: std::collections::BTreeSet::new(),
+            vfp_locks: doc
+                .domains
+                .vfp_locks
+                .as_ref()
+                .map(|locks| locks.values().copied().collect()),
         }
     }
 }
@@ -214,6 +228,41 @@ fn rollback_writes(
                     }
                 }
             }
+            DomainKind::VoltRails => {
+                // Replay every rail the snapshot carries; a profile-touched
+                // rail missing from the snapshot neutralizes to offset 0
+                // (same expected type — the shape check still applies).
+                let mut rails: Vec<VoltRailLimit> = backup.volt_rails.clone();
+                for record in &profile.volt_rails {
+                    if !rails.iter().any(|r| r.rail_bit == record.rail_bit) {
+                        rails.push(VoltRailLimit {
+                            rail_bit: record.rail_bit,
+                            offset_uv: 0,
+                            expected_type: record.expected_type,
+                        });
+                    }
+                }
+                w.volt_rails = rails;
+            }
+            DomainKind::VfpLocks => {
+                // The snapshot's full GET is the exact restore state (it
+                // always carries all seeded entries on supporting cards);
+                // overlay any profile-touched limit id the snapshot lacks
+                // with a mode-None entry so the pin cannot survive.
+                let mut entries: BTreeMap<PerfLimitId, ClockLockEntry> = settings.vfp_locks.clone();
+                if let Some(profile_locks) = &doc.domains.vfp_locks {
+                    for (limit, entry) in profile_locks {
+                        entries.entry(*limit).or_insert(ClockLockEntry {
+                            limit: *limit,
+                            mode: ::nvapi::ClockLockMode::None,
+                            lock_value: None,
+                            select_pstate: None,
+                            clock: entry.clock,
+                        });
+                    }
+                }
+                w.vfp_locks = Some(entries.into_values().collect());
+            }
             _ => {}
         }
     }
@@ -236,9 +285,8 @@ pub fn execute_profile(
     let writes = DomainWrites::from_profile(doc);
 
     for domain in &plan.steps {
-        let result = apply_domain(target, *domain, &writes);
-        let outcome = match result {
-            Ok(()) => {
+        let outcome = match apply_domain(target, *domain, &writes) {
+            Ok(DomainWriteStatus::Applied) => {
                 applied.push(*domain);
                 if options.verify {
                     match verify_domain(target, *domain, &writes) {
@@ -254,6 +302,14 @@ pub fn execute_profile(
                 } else {
                     DomainOutcome::Applied { verified: false }
                 }
+            }
+            // The plane exists in the profile but the card/driver cannot
+            // serve it (e.g. no VoltRails GET on this generation). Counts as
+            // a failure — the profile cannot be honored — but carries its
+            // own outcome label so the report says WHY.
+            Ok(DomainWriteStatus::Unavailable(reason)) => {
+                failed = true;
+                DomainOutcome::Unavailable { error: reason }
             }
             Err(e) => {
                 failed = true;
@@ -308,11 +364,18 @@ pub fn execute_profile(
     }
 }
 
+/// Outcome of one domain's writes: applied, or the plane is unavailable on
+/// this card/driver (profile asked for it, hardware can't serve it).
+enum DomainWriteStatus {
+    Applied,
+    Unavailable(String),
+}
+
 fn apply_domain(
     target: &GpuTarget<'_>,
     domain: DomainKind,
     writes: &DomainWrites,
-) -> Result<(), crate::Error> {
+) -> Result<DomainWriteStatus, crate::Error> {
     match domain {
         DomainKind::ClockOffsets => {
             for (pstate, deltas) in &writes.clock_offsets {
@@ -327,7 +390,7 @@ fn apply_domain(
                     )?;
                 }
             }
-            Ok(())
+            Ok(DomainWriteStatus::Applied)
         }
         DomainKind::PublicVftable => {
             let vfp = writes
@@ -362,7 +425,7 @@ fn apply_domain(
                     },
                 )?;
             }
-            Ok(())
+            Ok(DomainWriteStatus::Applied)
         }
         DomainKind::Voltage => {
             let voltage = writes
@@ -380,7 +443,44 @@ fn apply_domain(
                     },
                 )?;
             }
-            Ok(())
+            Ok(DomainWriteStatus::Applied)
+        }
+        DomainKind::VoltRails => {
+            if writes.volt_rails.is_empty() {
+                return Ok(DomainWriteStatus::Applied);
+            }
+            // Availability gate first: a rail write on a card whose driver
+            // exposes no VoltRails plane is Unavailable, not a write error.
+            let rails = match run(target, QueryNvapiVoltRails)?.output {
+                Some(rails) => rails,
+                None => {
+                    return Ok(DomainWriteStatus::Unavailable(
+                        "VoltRails plane not exposed by this driver".to_owned(),
+                    ));
+                }
+            };
+            for record in &writes.volt_rails {
+                if !rails.control.iter().any(|e| e.rail_bit == record.rail_bit) {
+                    return Ok(DomainWriteStatus::Unavailable(format!(
+                        "rail bit {} not present (mask 0x{:08X})",
+                        record.rail_bit, rails.rail_mask
+                    )));
+                }
+                let applied = run(
+                    target,
+                    SetNvapiVoltRailOffset {
+                        rail_bit: record.rail_bit,
+                        offset_uV: record.offset_uv,
+                        expected_type: record.expected_type,
+                    },
+                )?;
+                if applied.output.is_none() {
+                    return Ok(DomainWriteStatus::Unavailable(
+                        "volt-rail write path not exposed by this driver".to_owned(),
+                    ));
+                }
+            }
+            Ok(DomainWriteStatus::Applied)
         }
         DomainKind::Power => {
             let power = writes
@@ -398,7 +498,7 @@ fn apply_domain(
                     },
                 )?;
             }
-            Ok(())
+            Ok(DomainWriteStatus::Applied)
         }
         DomainKind::Thermal => {
             if writes.thermal_reset {
@@ -415,7 +515,7 @@ fn apply_domain(
                     },
                 )?;
             }
-            Ok(())
+            Ok(DomainWriteStatus::Applied)
         }
         DomainKind::Fan => {
             for (index, points) in &writes.fan_curves {
@@ -430,11 +530,27 @@ fn apply_domain(
             for index in &writes.fan_resets {
                 run(target, ResetFanCurve { index: *index })?;
             }
-            Ok(())
+            Ok(DomainWriteStatus::Applied)
         }
-        DomainKind::LockedClocks | DomainKind::VfpLocks => Err(crate::Error::Custom(format!(
-            "{domain} apply is not wired in this version"
-        ))),
+        DomainKind::VfpLocks => {
+            let Some(entries) = &writes.vfp_locks else {
+                return Ok(DomainWriteStatus::Applied);
+            };
+            // Entries carry their own mode — PstateSelect pins (ids 4/5)
+            // replay exactly as captured. A plane-less driver surfaces as a
+            // plain write error here (the GET-side gate runs in verify).
+            run(
+                target,
+                SetVfpLockEntries {
+                    entries: entries.clone(),
+                },
+            )?;
+            Ok(DomainWriteStatus::Applied)
+        }
+        DomainKind::LockedClocks => Err(crate::Error::Custom(
+            "locked_clocks apply ships with the clock-lock workflow (not wired in this version)"
+                .to_owned(),
+        )),
     }
 }
 
@@ -537,9 +653,55 @@ fn verify_domain(
             }
             Ok(())
         }
-        DomainKind::LockedClocks | DomainKind::VfpLocks => Err(format!(
-            "{domain} verification is not wired in this version"
-        )),
+        DomainKind::VoltRails => {
+            if writes.volt_rails.is_empty() {
+                return Ok(());
+            }
+            let rails = match run(target, QueryNvapiVoltRails).map_err(|e| e.to_string())?.output {
+                Some(rails) => rails,
+                None => {
+                    return Err("VoltRails plane not exposed by this driver".to_owned());
+                }
+            };
+            for record in &writes.volt_rails {
+                let live = rails
+                    .control
+                    .iter()
+                    .find(|e| e.rail_bit == record.rail_bit)
+                    .ok_or_else(|| {
+                        format!("rail bit {} not present in readback", record.rail_bit)
+                    })?;
+                if live.values[0] != record.offset_uv {
+                    return Err(format!(
+                        "rail {} offset differs: expected {} µV, read back {} µV",
+                        record.rail_bit, record.offset_uv, live.values[0]
+                    ));
+                }
+            }
+            Ok(())
+        }
+        DomainKind::VfpLocks => {
+            let Some(expected) = &writes.vfp_locks else {
+                return Ok(());
+            };
+            let settings = query_settings(target)?;
+            for entry in expected {
+                let live = settings.vfp_locks.get(&entry.limit).ok_or_else(|| {
+                    format!("vfp lock {:?} not present in readback", entry.limit)
+                })?;
+                if live != entry {
+                    return Err(format!(
+                        "vfp lock {:?} differs: expected {entry:?}, read back {live:?}",
+                        entry.limit
+                    ));
+                }
+            }
+            Ok(())
+        }
+        DomainKind::LockedClocks => Err(
+            "locked_clocks verification ships with the clock-lock workflow (not wired in this version)"
+                .to_owned(),
+        ),
     }
 }
 
@@ -580,9 +742,11 @@ pub fn capture_backup_now(
             current: current as u32,
             max: Some(max as u32),
         });
+    let volt_rails = super::capture::read_volt_rail_limits(target);
     let mut backup = SettingsBackup::new(identity.clone(), now_utc);
     backup.settings = settings;
     backup.fan_curves = fan_curves;
+    backup.volt_rails = volt_rails;
     backup.power_watts = power_watts;
     Ok(backup)
 }
@@ -607,6 +771,12 @@ pub fn backup_domains(backup: &SettingsBackup) -> Vec<DomainKind> {
     }
     if !backup.fan_curves.is_empty() {
         domains.push(DomainKind::Fan);
+    }
+    if !backup.volt_rails.is_empty() {
+        domains.push(DomainKind::VoltRails);
+    }
+    if !backup.settings.vfp_locks.is_empty() {
+        domains.push(DomainKind::VfpLocks);
     }
     domains
 }
@@ -720,10 +890,42 @@ pub fn restore_backup(
                     )?;
                 }
             }
-            DomainKind::LockedClocks | DomainKind::VfpLocks => {
+            DomainKind::VoltRails => {
+                if backup.volt_rails.is_empty() {
+                    notes.push((*domain, "snapshot carries no volt-rail plane".to_owned()));
+                }
+                for record in &backup.volt_rails {
+                    let applied = run(
+                        target,
+                        SetNvapiVoltRailOffset {
+                            rail_bit: record.rail_bit,
+                            offset_uV: record.offset_uv,
+                            expected_type: record.expected_type,
+                        },
+                    )?;
+                    if applied.output.is_none() {
+                        notes.push((
+                            *domain,
+                            format!("rail {} write path unavailable", record.rail_bit),
+                        ));
+                    }
+                }
+            }
+            DomainKind::VfpLocks => {
+                if backup.settings.vfp_locks.is_empty() {
+                    notes.push((*domain, "snapshot carries no vfp locks".to_owned()));
+                }
+                run(
+                    target,
+                    SetVfpLockEntries {
+                        entries: backup.settings.vfp_locks.values().copied().collect(),
+                    },
+                )?;
+            }
+            DomainKind::LockedClocks => {
                 notes.push((
                     *domain,
-                    format!("{domain} restore is not wired in this version"),
+                    "locked_clocks restore is not wired in this version".to_owned(),
                 ));
             }
         }
@@ -812,6 +1014,110 @@ mod tests {
         let writes = rollback_writes(&doc, &backup, &[DomainKind::Thermal]);
         assert!(writes.thermal_reset);
         assert!(writes.thermal.is_none());
+    }
+
+    #[test]
+    fn rollback_restores_volt_rails_from_snapshot() {
+        let mut doc = ProfileDoc::new("rails", GpuIdentity::default(), "t".to_owned());
+        doc.domains.volt_rails = Some(vec![VoltRailLimit {
+            rail_bit: 1,
+            offset_uv: 15000,
+            expected_type: Some(3),
+        }]);
+        let mut backup = SettingsBackup::new(GpuIdentity::default(), "t".to_owned());
+        backup.volt_rails = vec![VoltRailLimit {
+            rail_bit: 1,
+            offset_uv: 0,
+            expected_type: Some(3),
+        }];
+        let writes = rollback_writes(&doc, &backup, &[DomainKind::VoltRails]);
+        assert_eq!(writes.volt_rails.len(), 1);
+        assert_eq!(writes.volt_rails[0].offset_uv, 0);
+    }
+
+    #[test]
+    fn rollback_volt_rails_neutralizes_rails_missing_from_snapshot() {
+        let mut doc = ProfileDoc::new("rails", GpuIdentity::default(), "t".to_owned());
+        doc.domains.volt_rails = Some(vec![VoltRailLimit {
+            rail_bit: 1,
+            offset_uv: 15000,
+            expected_type: Some(3),
+        }]);
+        let backup = SettingsBackup::new(GpuIdentity::default(), "t".to_owned());
+        let writes = rollback_writes(&doc, &backup, &[DomainKind::VoltRails]);
+        assert_eq!(writes.volt_rails.len(), 1);
+        assert_eq!(writes.volt_rails[0].offset_uv, 0);
+        assert_eq!(writes.volt_rails[0].expected_type, Some(3));
+    }
+
+    #[test]
+    fn rollback_replays_vfp_locks_and_neutralizes_missing_entries() {
+        use ::nvapi::hi::ClockLockMode;
+        use std::collections::BTreeMap;
+
+        let mut doc = ProfileDoc::new("locks", GpuIdentity::default(), "t".to_owned());
+        let mut pins = BTreeMap::new();
+        pins.insert(
+            PerfLimitId::PstateSelectUpper,
+            ClockLockEntry {
+                limit: PerfLimitId::PstateSelectUpper,
+                mode: ClockLockMode::PstateSelect,
+                lock_value: None,
+                select_pstate: Some(3),
+                clock: ClockDomain::Graphics,
+            },
+        );
+        doc.domains.vfp_locks = Some(pins);
+
+        let mut backup = SettingsBackup::new(GpuIdentity::default(), "t".to_owned());
+        let mut stock = BTreeMap::new();
+        stock.insert(
+            PerfLimitId::Gpu,
+            ClockLockEntry {
+                limit: PerfLimitId::Gpu,
+                mode: ClockLockMode::None,
+                lock_value: None,
+                select_pstate: None,
+                clock: ClockDomain::Graphics,
+            },
+        );
+        backup.settings.vfp_locks = stock;
+
+        let writes = rollback_writes(&doc, &backup, &[DomainKind::VfpLocks]);
+        let entries = writes.vfp_locks.unwrap();
+        assert_eq!(entries.len(), 2);
+        let pin = entries
+            .iter()
+            .find(|e| e.limit == PerfLimitId::PstateSelectUpper)
+            .unwrap();
+        // the profile-touched entry the snapshot lacks -> neutralized
+        assert_eq!(pin.mode, ClockLockMode::None);
+        assert_eq!(pin.select_pstate, None);
+        // the snapshot-carried entry replays verbatim
+        assert!(entries.iter().any(|e| e.limit == PerfLimitId::Gpu));
+    }
+
+    #[test]
+    fn backup_domains_includes_volt_rails_and_vfp_locks() {
+        let mut backup = SettingsBackup::new(GpuIdentity::default(), "t".to_owned());
+        backup.volt_rails.push(VoltRailLimit {
+            rail_bit: 1,
+            offset_uv: 0,
+            expected_type: None,
+        });
+        backup.settings.vfp_locks.insert(
+            PerfLimitId::Gpu,
+            ClockLockEntry {
+                limit: PerfLimitId::Gpu,
+                mode: ::nvapi::ClockLockMode::None,
+                lock_value: None,
+                select_pstate: None,
+                clock: ClockDomain::Graphics,
+            },
+        );
+        let domains = backup_domains(&backup);
+        assert!(domains.contains(&DomainKind::VoltRails));
+        assert!(domains.contains(&DomainKind::VfpLocks));
     }
 
     #[test]
