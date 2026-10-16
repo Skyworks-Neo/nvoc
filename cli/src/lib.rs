@@ -240,6 +240,7 @@ pub enum Command {
     SetPublicVftableRangeOffset,
     SetPstateLockViaMemRange,
     GetPStateLock,
+    GetLockStatus,
     SetPStateLock,
     ResetPStateLock,
     SetLegacyApplicationFreqLock,
@@ -583,6 +584,12 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     formatter: Some(output::format_legacy_temp_sensor),
                     ..CommandSpec::new("get-legacy-temp-sensor", Group::Thermal, "Read NVAPI legacy 3-sensor thermal view (GPU/Memory/Board, live + physical range)")
+                },
+            ),
+            (
+                Command::GetLockStatus,
+                CommandSpec {
+                    ..CommandSpec::new("get-lock-status", Group::Voltage, "Read the PerfClientLimits lock table — all 7 entries (GPU/Memory frequency upper+lower bounds, P-State select pins, Voltage lock) with decoded mode and value")
                 },
             ),
             (Command::GetPmgrArbiter, CommandSpec::new("get-pmgr-arbiter", Group::Perf, "Read the PMGR voltage-request arbiter values (0x717648FD, escape 0x0700019F)")),
@@ -3156,6 +3163,63 @@ fn execute_target(
             Ok(value)
         }
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
+        Command::GetLockStatus => {
+            // The PerfClientLimits lock table (GET 0x9962C97C-adjacent view via
+            // the typed ClockLockEntry decode): all 7 seeded entries with the
+            // decoded lock mode. Entry 6 is the nvapioc-style VOLTAGE lock
+            // (mode 3, µV); entries 4/5 are PstateSelect pins (mode 1, value =
+            // pstate number) written by set-pstate-lock.
+            let settings = run(target, QueryGpuSettings)?.output;
+            let mut entries = Vec::new();
+            let mut active = 0usize;
+            for (limit, entry) in &settings.vfp_locks {
+                let display = limit.to_string();
+                let (mode, state) = match entry.mode {
+                    nvoc_core::ClockLockMode::None => ("none".to_owned(), "unlocked".to_owned()),
+                    nvoc_core::ClockLockMode::PstateSelect => (
+                        "pstate-select".to_owned(),
+                        format!("pin P{}", entry.select_pstate.unwrap_or(0)),
+                    ),
+                    nvoc_core::ClockLockMode::ManualFrequency => (
+                        "manual-frequency".to_owned(),
+                        format!(
+                            "freq lock {}",
+                            entry
+                                .lock_value
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "0".to_owned())
+                        ),
+                    ),
+                    nvoc_core::ClockLockMode::ManualVoltage => (
+                        "manual-voltage".to_owned(),
+                        format!(
+                            "voltage lock {}",
+                            entry
+                                .lock_value
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "0".to_owned())
+                        ),
+                    ),
+                    other => (format!("{other:?}"), "unknown mode".to_owned()),
+                };
+                if entry.mode != nvoc_core::ClockLockMode::None {
+                    active += 1;
+                }
+                entries.push(json!({
+                    "limit": limit,
+                    "display": display,
+                    "mode": mode,
+                    "state": state,
+                    "lock_value": entry.lock_value,
+                    "select_pstate": entry.select_pstate,
+                    "clock": entry.clock,
+                }));
+            }
+            Ok(json!({
+                "active": active,
+                "entries": entries,
+            }))
+        }
         Command::GetPublicVftable => get_vfp(target, invocation),
         Command::SyncVfpMemoryPstate => {
             sync_memory_pstate_as_p0(target)?;
@@ -9549,6 +9613,7 @@ mod tests {
             | Command::SetPublicVftableRangeOffset
             | Command::SetPstateLockViaMemRange
             | Command::GetPStateLock
+            | Command::GetLockStatus
             | Command::SetPStateLock
             | Command::ResetPStateLock
             | Command::SetLegacyApplicationFreqLock
