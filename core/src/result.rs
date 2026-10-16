@@ -37,6 +37,7 @@ pub enum OperationKind {
     QueryVfpPointVoltage,
     SetVfpFrequencyLock,
     ResetVfpFrequencyLock,
+    SetVfpLockEntries,
     SetGpcVoltLock,
     ResetPublicVftableOffset,
     ResetPublicVftableGpcLock,
@@ -370,6 +371,7 @@ impl OperationKind {
                 | SetFanPercent
                 | SetVfpFrequencyLock
                 | ResetVfpFrequencyLock
+                | SetVfpLockEntries
                 | SetGpcVoltLock
                 | ResetPublicVftableOffset
                 | ResetPublicVftableGpcLock

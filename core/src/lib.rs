@@ -70,8 +70,8 @@ pub use operation::{
     SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
     SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
     SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
-    TgpWattRangeInfo, detect_gpu_type, fetch_gpu_type, find_matching_vfp_point,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
+    SetWm2Mode, TgpWattRangeInfo, detect_gpu_type, fetch_gpu_type, find_matching_vfp_point,
     is_server_pascal_dual_plane, legacy_core_overvolt_ranges, legacy_p0_core_max_voltage_delta,
     nvapi_status_name, nvml_pstate_to_index, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, plan_private_vf_oc_order,
@@ -99,9 +99,10 @@ pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
 pub use ::nvapi::hi::{
     Celsius, ClkVfControlPointPrivate, ClkVfControlPrivate, ClkVfDomainClass, ClkVfDomainHint,
     ClkVfPointPrivate, ClkVfPointsPrivate, ClkVfRawRecord, ClkVfSegmentKind, ClockDomain,
-    ClockLockMode, CoolerControl, CoolerPolicy, CoolerSettings, DisplayId, FanCoolerId, GpuInfo,
-    GpuSettings, GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState,
-    Percentage, SensorThrottle, VfPoint, VfPointType, VoltageDomain,
+    ClockLockEntry, ClockLockMode, CoolerControl, CoolerPolicy, CoolerSettings, DisplayId,
+    FanCoolerId, GpuInfo, GpuSettings, GpuStatus, Kilohertz, KilohertzDelta, Microvolts,
+    MicrovoltsDelta, PState, Percentage, PerfLimitId, SensorThrottle, VfPoint, VfPointType,
+    VoltageDomain,
 };
 pub use ::nvapi::{ClkVfSegment, clk_vf_delta_for_target, clk_vf_effect_for_delta};
 
