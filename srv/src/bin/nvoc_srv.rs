@@ -135,6 +135,13 @@ fn run_foreground(cli: Cli) {
             std::process::exit(1);
         }
     }
+    // Build identity first, before anything that can fail, so a deployed
+    // service is always attributable to a commit (see `verify_deploy.ps1`).
+    info!(
+        "nvoc_service {} ({}) starting",
+        nvoc_srv::build_info::BUILD_VERSION,
+        nvoc_srv::build_info::BUILD_GIT_HASH
+    );
     info!(
         "control plane on 127.0.0.1:{} — config: {}",
         cfg.port,
