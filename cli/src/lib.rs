@@ -3184,8 +3184,25 @@ fn execute_target(
             let settings = run(target, QueryGpuSettings)?.output;
             let mut entries = Vec::new();
             let mut active = 0usize;
-            for (limit, entry) in &settings.vfp_locks {
-                let display = limit.to_string();
+            use nvoc_core::PerfLimitId;
+            // Field numbering 1..7 follows the seeded id order (0..6). The
+            // Display names mirror the limit variants (Gpu -> "GpuUpperbound").
+            // `domain` is DERIVED from the limit id (0/1 = GPU pair, 2/3 =
+            // Memory pair — the id already encodes the plane); the raw
+            // clock_id field is NOT shown: on GET the driver does not echo a
+            // per-entry domain (it reads as our seed default, Graphics), so
+            // the raw value carries no signal on this generation.
+            for (index, (limit, entry)) in settings.vfp_locks.iter().enumerate() {
+                let field_id = index + 1;
+                let display = match limit {
+                    PerfLimitId::Gpu => "GpuUpperbound".to_owned(),
+                    PerfLimitId::Memory => "MemoryUpperbound".to_owned(),
+                    other => format!("{other:?}"),
+                };
+                let domain = match limit {
+                    PerfLimitId::Memory | PerfLimitId::MemoryLowerbound => "Memory",
+                    _ => "Graphics",
+                };
                 let (mode, state) = match entry.mode {
                     nvoc_core::ClockLockMode::None => ("none".to_owned(), "unlocked".to_owned()),
                     nvoc_core::ClockLockMode::PstateSelect => (
@@ -3218,13 +3235,14 @@ fn execute_target(
                     active += 1;
                 }
                 entries.push(json!({
+                    "id": field_id,
                     "limit": limit,
                     "display": display,
+                    "domain": domain,
                     "mode": mode,
                     "state": state,
                     "lock_value": entry.lock_value,
                     "select_pstate": entry.select_pstate,
-                    "clock": entry.clock,
                 }));
             }
             Ok(json!({
@@ -4014,16 +4032,14 @@ fn execute_target(
             Ok(json!({"applied": true, "pstate": format!("P{pstate}")}))
         }
         Command::SetPstateRangeLock => {
-            // HYPOTHESIS UNDER TEST: the PstateSelect pair mirrors the
-            // frequency pair — same count=2 partial-write modality proven by
-            // set-pstate-lock, but with DIFFERENT pstate numbers in ids 5/4,
-            // defining an allowed P-State band instead of an exact pin.
-            // Mapping (inferred, mirrors id0/id1 = upper/lower perf bounds):
+            // CONFIRMED LIVE (2070 desktop / 610.47, band P5-P8): the
+            // PstateSelect pair IS a range form — the same count=2
+            // partial-write modality as set-pstate-lock's exact pin, with
+            // DIFFERENT pstate numbers in ids 5/4. The driver echoes the two
+            // values back faithfully (Upper=5, Lower=8 — no collapse) and
+            // 0x9962C97C reports BOTH endpoints locked ("Locked: P5, P8").
             //   id5 PstateSelectUpper <- LOW pstate number (perf ceiling)
             //   id4 PstateSelectLower <- HIGH pstate number (perf floor)
-            // The self-readback (lock table + locked-pstate set) is the RE
-            // instrument: what the driver echoes back tells us whether the
-            // band form is honored or collapsed.
             let parse_pstate = |raw: &str| -> Result<u8, CliError> {
                 raw.trim_start_matches(['P', 'p'])
                     .parse::<u8>()
