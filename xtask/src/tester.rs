@@ -41,11 +41,33 @@ fn safe() -> Res<()> {
         "nvoc-gui",
         &["pytest", "-q", "gui/tests/"],
     ))?;
-    util::run(&mut util::uv_run(
-        &root,
-        "pynvoc",
-        &["pytest", "-q", "nvoc-python/tests/"],
-    ))
+    // The pynvoc suite skips EVERYTHING when the native module fails to
+    // import (the conftest fixture turns ImportError into pytest.skip), and
+    // pytest exits 0 on an all-skip run — a broken _native build once sailed
+    // through this gate as "green". Emit a junit report and require at
+    // least one actually-executed test.
+    let junit = root.join("target").join("pynvoc-junit.xml");
+    let junit_arg = format!("--junitxml={}", junit.display());
+    let extra = ["pytest", "-q", "nvoc-python/tests/", junit_arg.as_str()];
+    util::run(&mut util::uv_run(&root, "pynvoc", &extra))?;
+    guard_executed_tests(&junit)
+}
+
+/// Fails when the junit report shows no executed tests (all skipped or
+/// nothing collected) — the silent-pass failure mode of an import-broken
+/// Python suite.
+fn guard_executed_tests(junit: &Path) -> Res<()> {
+    let Ok(report) = std::fs::read_to_string(junit) else {
+        return Err("pynvoc pytest produced no junit report".into());
+    };
+    let total = report.matches("<testcase").count();
+    let skipped = report.matches("<skipped").count();
+    if total == 0 || skipped == total {
+        return Err(format!(
+            "pynvoc pytest executed 0 of {total} tests ({skipped} skipped) —              the native module is likely import-broken; this is NOT a green run"
+        ));
+    }
+    Ok(())
 }
 
 fn gpu_readonly() -> Res<()> {
