@@ -50,6 +50,6 @@ pub use schema::{
     FanCurveReadoutRecord, FanSettings, GpuFingerprint, GpuIdentity, LockedClocks,
     MAX_PACKAGE_PROFILES, PACKAGE_KIND, PROFILE_KIND, PackageRejection, PowerSettings,
     PowerWattsBounds, ProfileDoc, ProfileDomains, ProfilePackage, SCHEMA_VERSION, SettingsBackup,
-    ValidationRecord, VoltageSettings, empty_gpu_settings,
+    ValidationRecord, VoltRailLimit, VoltageSettings, empty_gpu_settings,
 };
 pub use store::{ACTIVE_MARKER_FILE, BACKUP_LAST_FILE, ProfileStore, STOCK_FILE, now_utc};

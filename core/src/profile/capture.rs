@@ -5,27 +5,35 @@
 
 use super::schema::{
     BaselineBlock, DomainKind, FanSettings, GpuIdentity, PowerSettings, PowerWattsBounds,
-    ProfileDoc, ProfileDomains, SettingsBackup, VoltageSettings, empty_gpu_settings,
+    ProfileDoc, ProfileDomains, SettingsBackup, VoltRailLimit, VoltageSettings, empty_gpu_settings,
 };
 use super::schema::{FanCurveReadoutRecord, ValidationRecord};
 use ::nvapi::hi::{CoolerSettings, FanCoolerId, GpuSettings, SensorThrottle};
 use std::collections::BTreeMap;
 
 /// Out-of-band reads that do not live in [`GpuSettings`], gathered by the
-/// caller (NVML UUID / driver version / power bounds, target PCI address).
+/// caller (NVML UUID / driver version / power bounds / VoltRails plane,
+/// target PCI address).
 #[derive(Debug, Clone, Default)]
 pub struct CaptureContext {
     pub identity: GpuIdentity,
     pub power: Option<PowerWattsBounds>,
     /// Fan curves read via `GetFanCurves` (used only for [`SettingsBackup`]).
     pub fan_curves: Vec<FanCurveReadoutRecord>,
+    /// VoltRails control-plane snapshot (all present rails; empty when the
+    /// driver exposes no plane — the degradation is visible, never silent).
+    pub volt_rails: Vec<VoltRailLimit>,
 }
 
-/// Capture the requested domains out of a `GpuSettings` snapshot. Domains the
-/// snapshot cannot express (the driver reported nothing for that plane) are
-/// captured as *absent*, never as empty values — an empty capture would wipe
-/// the plane on apply.
-pub fn capture_domains(settings: &GpuSettings, domains: &[DomainKind]) -> ProfileDomains {
+/// Capture the requested domains out of a `GpuSettings` snapshot plus the
+/// out-of-band [`CaptureContext`] planes. Domains the sources cannot express
+/// (the driver reported nothing for that plane) are captured as *absent*,
+/// never as empty values — an empty capture would wipe the plane on apply.
+pub fn capture_domains(
+    settings: &GpuSettings,
+    context: &CaptureContext,
+    domains: &[DomainKind],
+) -> ProfileDomains {
     let mut out = ProfileDomains::default();
     for domain in domains {
         match domain {
@@ -47,6 +55,11 @@ pub fn capture_domains(settings: &GpuSettings, domains: &[DomainKind]) -> Profil
                         boost_percent: boost,
                         overvolt_uv: overvolt,
                     });
+                }
+            }
+            DomainKind::VoltRails => {
+                if !context.volt_rails.is_empty() {
+                    out.volt_rails = Some(context.volt_rails.clone());
                 }
             }
             DomainKind::Power => {
@@ -122,6 +135,7 @@ pub fn capture_backup(
     let mut backup = SettingsBackup::new(context.identity.clone(), now_utc);
     backup.settings = settings.clone();
     backup.fan_curves = context.fan_curves.clone();
+    backup.volt_rails = context.volt_rails.clone();
     backup.power_watts = context.power.clone();
     backup
 }
@@ -132,9 +146,31 @@ pub fn with_validation(mut doc: ProfileDoc, record: ValidationRecord) -> Profile
     doc
 }
 
-/// Best-effort out-of-band reads for a target: power bounds via NVML and
-/// fan curves via NVAPI. Absent backends simply leave the fields empty —
-/// the degradation is visible in the context, never an error.
+/// Read the VoltRails control plane as profile records (all present rails).
+/// Empty when the driver exposes no plane — the degradation is visible in
+/// the caller's context, never an error.
+pub(crate) fn read_volt_rail_limits(target: &crate::target::GpuTarget<'_>) -> Vec<VoltRailLimit> {
+    crate::operation::run(target, crate::operation::QueryNvapiVoltRails)
+        .ok()
+        .and_then(|report| report.output)
+        .map(|rails| {
+            rails
+                .control
+                .iter()
+                .map(|entry| VoltRailLimit {
+                    rail_bit: entry.rail_bit,
+                    offset_uv: entry.values[0],
+                    expected_type: Some(entry.entry_type),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Best-effort out-of-band reads for a target: power bounds via NVML, fan
+/// curves and the VoltRails plane via NVAPI. Absent backends simply leave
+/// the fields empty — the degradation is visible in the context, never an
+/// error.
 pub fn capture_context(
     target: &crate::target::GpuTarget<'_>,
     identity: GpuIdentity,
@@ -160,10 +196,12 @@ pub fn capture_context(
                 .collect()
         })
         .unwrap_or_default();
+    let volt_rails = read_volt_rail_limits(target);
     CaptureContext {
         identity,
         power,
         fan_curves,
+        volt_rails,
     }
 }
 
@@ -193,7 +231,11 @@ mod tests {
     #[test]
     fn capture_only_requested_domains() {
         let settings = settings_with_all_planes();
-        let domains = capture_domains(&settings, &[DomainKind::Voltage]);
+        let domains = capture_domains(
+            &settings,
+            &CaptureContext::default(),
+            &[DomainKind::Voltage],
+        );
         assert!(domains.voltage.is_some());
         assert!(domains.clock_offsets.is_none());
         assert!(domains.public_vftable.is_none());
@@ -204,13 +246,16 @@ mod tests {
         let settings = empty_gpu_settings();
         let domains = capture_domains(
             &settings,
+            &CaptureContext::default(),
             &[
                 DomainKind::ClockOffsets,
+                DomainKind::VoltRails,
                 DomainKind::Power,
                 DomainKind::Thermal,
             ],
         );
         assert!(domains.clock_offsets.is_none());
+        assert!(domains.volt_rails.is_none());
         assert!(domains.power.is_none());
         assert!(domains.thermal.is_none());
         // nothing present at all
@@ -218,9 +263,29 @@ mod tests {
     }
 
     #[test]
+    fn volt_rails_captured_from_context() {
+        let settings = empty_gpu_settings();
+        let mut context = CaptureContext::default();
+        context.volt_rails.push(VoltRailLimit {
+            rail_bit: 1,
+            offset_uv: 15000,
+            expected_type: Some(3),
+        });
+        let domains = capture_domains(&settings, &context, &[DomainKind::VoltRails]);
+        let rails = domains.volt_rails.unwrap();
+        assert_eq!(rails.len(), 1);
+        assert_eq!(rails[0].offset_uv, 15000);
+        assert_eq!(rails[0].expected_type, Some(3));
+    }
+
+    #[test]
     fn locked_clocks_never_captured_from_settings() {
         let settings = empty_gpu_settings();
-        let domains = capture_domains(&settings, &[DomainKind::LockedClocks]);
+        let domains = capture_domains(
+            &settings,
+            &CaptureContext::default(),
+            &[DomainKind::LockedClocks],
+        );
         assert!(domains.locked_clocks.is_none());
     }
 
@@ -245,10 +310,16 @@ mod tests {
             current: 170,
             max: None,
         });
+        context.volt_rails.push(VoltRailLimit {
+            rail_bit: 1,
+            offset_uv: 0,
+            expected_type: Some(3),
+        });
         let backup = capture_backup(&context, &empty_gpu_settings(), "t".to_owned());
         assert!(backup.validate().is_ok());
         let json = serde_json::to_string(&backup).unwrap();
         let back: SettingsBackup = serde_json::from_str(&json).unwrap();
         assert_eq!(back, backup);
+        assert_eq!(back.volt_rails.len(), 1);
     }
 }

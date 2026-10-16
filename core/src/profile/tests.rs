@@ -139,8 +139,10 @@ fn captured_doc_from_capture_module_matches_schema() {
         identity: identity(),
         power: None,
         fan_curves: Vec::new(),
+        volt_rails: Vec::new(),
     };
-    let domains = super::capture::capture_domains(&settings, &DomainKind::DEFAULT_CAPTURE);
+    let domains =
+        super::capture::capture_domains(&settings, &context, &DomainKind::DEFAULT_CAPTURE);
     let doc = super::capture::new_profile_doc(
         "from-capture",
         None,

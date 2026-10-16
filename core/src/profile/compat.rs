@@ -35,9 +35,6 @@ pub fn domain_unsupported_reason(domain: DomainKind, gpu_type: GpuType) -> Optio
                 None
             }
         }
-        DomainKind::VfpLocks => {
-            Some("vfp_locks apply ships with the VFP lock workflow (not wired in v1)".to_owned())
-        }
         _ => None,
     }
 }

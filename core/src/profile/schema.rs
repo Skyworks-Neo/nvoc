@@ -79,6 +79,9 @@ pub enum DomainKind {
     PublicVftable,
     /// Voltage boost percent + core overvolt deltas.
     Voltage,
+    /// Per-rail µV offsets on the private VoltRails plane (melonVolt path,
+    /// keyed by rail bit). Written after `Voltage` (same plane family).
+    VoltRails,
     /// Power limit (watts via NVML, or percent via NVAPI).
     Power,
     /// Thermal / sensor throttle limits.
@@ -87,16 +90,17 @@ pub enum DomainKind {
     Fan,
     /// Min/max clock locks. High-risk; never captured by default.
     LockedClocks,
-    /// Per-perf-limit V/F frequency locks. High-risk; never captured by
-    /// default.
+    /// Per-perf-limit client locks (freq/voltage locks and PstateSelect
+    /// pins, keyed by `PerfLimitId`). High-risk; never captured by default.
     VfpLocks,
 }
 
 impl DomainKind {
-    pub const ALL: [DomainKind; 8] = [
+    pub const ALL: [DomainKind; 9] = [
         DomainKind::ClockOffsets,
         DomainKind::PublicVftable,
         DomainKind::Voltage,
+        DomainKind::VoltRails,
         DomainKind::Power,
         DomainKind::Thermal,
         DomainKind::Fan,
@@ -107,10 +111,11 @@ impl DomainKind {
     /// Domains `profile save` captures unless `--domains` says otherwise.
     /// The two lock families stay opt-in: a misapplied lock is the hardest
     /// state to recover from a remote shell.
-    pub const DEFAULT_CAPTURE: [DomainKind; 6] = [
+    pub const DEFAULT_CAPTURE: [DomainKind; 7] = [
         DomainKind::ClockOffsets,
         DomainKind::PublicVftable,
         DomainKind::Voltage,
+        DomainKind::VoltRails,
         DomainKind::Power,
         DomainKind::Thermal,
         DomainKind::Fan,
@@ -121,6 +126,7 @@ impl DomainKind {
             DomainKind::ClockOffsets => "clock_offsets",
             DomainKind::PublicVftable => "public_vftable",
             DomainKind::Voltage => "voltage",
+            DomainKind::VoltRails => "volt_rails",
             DomainKind::Power => "power",
             DomainKind::Thermal => "thermal",
             DomainKind::Fan => "fan",
@@ -146,7 +152,7 @@ impl std::fmt::Display for DomainKind {
 /// need them (e.g. `PublicVftable` resets the public table before replaying
 /// deltas); the order exists so global offsets land before per-point curves
 /// and lock-style writes land last.
-pub const DOMAIN_APPLY_ORDER: [DomainKind; 8] = DomainKind::ALL;
+pub const DOMAIN_APPLY_ORDER: [DomainKind; 9] = DomainKind::ALL;
 
 /// Identity binding stored in every profile. `uuid` is the primary key (NVML
 /// `GPU-…`); the fingerprint is the apply-time second factor. The PCI address
@@ -194,6 +200,8 @@ pub struct ProfileDomains {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voltage: Option<VoltageSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volt_rails: Option<Vec<VoltRailLimit>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power: Option<PowerSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thermal: Option<Vec<SensorThrottle>>,
@@ -220,6 +228,7 @@ impl ProfileDomains {
             DomainKind::ClockOffsets => self.clock_offsets.is_some(),
             DomainKind::PublicVftable => self.public_vftable.is_some(),
             DomainKind::Voltage => self.voltage.is_some(),
+            DomainKind::VoltRails => self.volt_rails.is_some(),
             DomainKind::Power => self.power.is_some(),
             DomainKind::Thermal => self.thermal.is_some(),
             DomainKind::Fan => self.fan.is_some(),
@@ -229,7 +238,19 @@ impl ProfileDomains {
     }
 }
 
-/// Public per-point V/F deltas: reused verbatim from `GpuSettings.vfp`.
+/// One volt-rail limit record (private VoltRails / melonVolt plane), keyed
+/// by rail bit. `offset_uv` is the ABSOLUTE µV offset from stock (0 =
+/// stock), matching the driver's offset semantics. `expected_type` carries
+/// the control entry's type discriminator at capture (e.g. 3 on 5090
+/// MSVDD) — re-checked at apply unless `None`, refusing the write when the
+/// entry shape changed (type semantics differ per platform).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoltRailLimit {
+    pub rail_bit: u32,
+    pub offset_uv: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_type: Option<u32>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct VoltageSettings {
@@ -400,6 +421,10 @@ pub struct SettingsBackup {
     pub settings: GpuSettings,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fan_curves: Vec<FanCurveReadoutRecord>,
+    /// Full VoltRails control-plane snapshot (all present rails) — the
+    /// rollback source for the `volt_rails` domain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volt_rails: Vec<VoltRailLimit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_watts: Option<PowerWattsBounds>,
 }
@@ -414,6 +439,7 @@ impl SettingsBackup {
             note: None,
             settings: empty_gpu_settings(),
             fan_curves: Vec::new(),
+            volt_rails: Vec::new(),
             power_watts: None,
         }
     }
