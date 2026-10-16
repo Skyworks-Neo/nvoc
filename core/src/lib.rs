@@ -92,9 +92,9 @@ pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
 pub use ::nvapi::hi::{
     Celsius, ClkVfControlPointPrivate, ClkVfControlPrivate, ClkVfDomainClass, ClkVfDomainHint,
     ClkVfPointPrivate, ClkVfPointsPrivate, ClkVfRawRecord, ClkVfSegmentKind, ClockDomain,
-    CoolerControl, CoolerPolicy, CoolerSettings, DisplayId, FanCoolerId, GpuInfo, GpuSettings,
-    GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
-    SensorThrottle, VfPoint, VfPointType, VoltageDomain,
+    ClockLockMode, CoolerControl, CoolerPolicy, CoolerSettings, DisplayId, FanCoolerId, GpuInfo,
+    GpuSettings, GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState,
+    Percentage, SensorThrottle, VfPoint, VfPointType, VoltageDomain,
 };
 pub use ::nvapi::{ClkVfSegment, clk_vf_delta_for_target, clk_vf_effect_for_delta};
 
