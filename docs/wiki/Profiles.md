@@ -30,7 +30,7 @@ One JSON document per slot (`schema_version: 1`, `deny_unknown_fields`):
 
 - `gpu` — UUID + fingerprint identity block (see above).
 - `domains` — only the captured settings families appear; **an absent domain is never written on apply** (the MSI Afterburner `ProfileContents` mask idea, expressed as omitted fields):
-  `clock_offsets` (per-PState per-domain kHz deltas), `public_vftable` (per-point V/F deltas, graphics + memory), `voltage` (boost %, overvolt µV), `power` (watts and/or percent), `thermal` (sensor limits), `fan` (per-cooler curves), plus `locked_clocks` / `vfp_locks` which are schema-reserved and **never default-captured** (opt-in via `profile-save --domains`).
+  `clock_offsets` (per-PState per-domain kHz deltas), `public_vftable` (per-point V/F deltas, graphics + memory), `voltage` (boost %, overvolt µV), `volt_rails` (per-rail µV offsets on the private VoltRails/melonVolt plane, keyed by rail bit, with the entry-type guard), `power` (watts and/or percent), `thermal` (sensor limits), `fan` (per-cooler curves); `locked_clocks` / `vfp_locks` are the **never-default-captured** lock families (opt-in via `profile-save --domains`). `vfp_locks` apply IS wired: entries carry their raw mode, so `PstateSelect` pins (PerfLimitId ids 4/5 — `Unknown_4/5` renamed to `PstateSelectLower/Upper` in nvapi-rs) replay exactly as captured; `locked_clocks` remains deferred (explicitly reported in the plan).
 - `baseline` — the stock reference values at capture time (used by `profile-diff` and future rebinding).
 - `validation` — optional user-recorded stress evidence.
 
@@ -99,7 +99,7 @@ Boot-time auto-apply (srv integration needs crash-loop protection — a readines
 
 - `gpu` —— UUID + 指纹身份块。
 - `domains` —— 只序列化被捕获的域；**缺席的域在 apply 时绝不触碰**（Afterburner `ProfileContents` 位掩码思想，用"字段缺席"表达）：
-  `clock_offsets`（各 PState 各域 kHz 偏移）、`public_vftable`（逐点 V/F 偏移，核心+显存）、`voltage`（boost %、overvolt µV）、`power`（瓦特和/或百分比）、`thermal`（传感器限制）、`fan`（各风扇曲线）；另有 `locked_clocks` / `vfp_locks` 为 schema 预留，**默认永不捕获**（需 `profile-save --domains` 显式点名）。
+  `clock_offsets`（各 PState 各域 kHz 偏移）、`public_vftable`（逐点 V/F 偏移，核心+显存）、`voltage`（boost %、overvolt µV）、`volt_rails`（melonVolt 私有 VoltRails 面的逐 rail µV offset，按 rail bit 键控，含 entry-type 护栏）、`power`（瓦特和/或百分比）、`thermal`（传感器限制）、`fan`（各风扇曲线）；`locked_clocks` / `vfp_locks` 为**默认永不捕获**的锁族（需 `profile-save --domains` 显式点名）。`vfp_locks` 的 apply 已接线：条目携带原始 mode，`PstateSelect` 钉死（PerfLimitId ids 4/5，nvapi-rs 已把 Unknown_4/5 正名为 PstateSelectLower/Upper）原样回放；`locked_clocks` 仍未接线（计划中显式 deferred）。
 - `baseline` —— 捕获时刻的出厂参考值（供 `profile-diff` 与后续重绑）。
 - `validation` —— 可选的用户压测记录。
 
@@ -119,6 +119,18 @@ Boot-time auto-apply (srv integration needs crash-loop protection — a readines
 ### 可移植性
 
 `profile-export [--out FILE] [NAME…]` 把槽位打包成单个可移植 `*.nvocprofile.json`（带 schema 版本与主机/用途元数据）。`profile-import` 按拒绝阶梯校验（kind 不对 → 版本不支持 → 空 → 超上限 → 逐槽错误聚合），且**绝不**把槽位重绑到别的卡；硬件仍由 apply 期身份检查把关。命名冲突用 `--on-conflict skip|overwrite|rename` 处理。
+
+### 平面覆盖速查（v2 抽样复核后补全）
+
+| 驱动面 | CLI 写入口 | profile 域 | 捕获 | 应用/回滚 |
+|---|---|---|---|---|
+| PState 时钟偏移 | `set-pstate-clock-offset` 族 | `clock_offsets` | 默认 | ✓ |
+| 公共 V/F 表 | `set-public-vftable-*` | `public_vftable` | 默认 | ✓ |
+| boost % / overvolt | `set-public-gpc-rail-volt-boost` 等 | `voltage` | 默认 | ✓ |
+| **VoltRails/melonVolt** | `set-volt-rail-limit`（按 rail bit） | `volt_rails` | 默认（无平面则缺席） | ✓（缺席卡片判 Unavailable，计失败并回滚） |
+| 功率/温度/风扇 | `set-power-limit` 族 | `power`/`thermal`/`fan` | 默认 | ✓ |
+| **PerfClientLimits 锁（含 PstateSelect 钉死）** | `set-pstate-lock` / `set-vfp-voltage-lock` | `vfp_locks`（点名） | 点名 | ✓（锁族最后写入；回滚重放快照全 GET） |
+| 锁频 min/max | `set-locked-clocks-mhz` | `locked_clocks`（点名） | 无捕获源 | deferred（显式上报） |
 
 ### 设计出处
 
