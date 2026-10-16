@@ -1077,7 +1077,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "MAX_MHZ",
                     "Perf max-frequency cap in MHz (e.g. 300). --min sets the min-frequency cap (defaults to MAX_MHZ); both are clamped by the driver. Distinct from a clock offset or P-state lock; use reset-perf-freq-caps to clear",
                 )])),
-                    ..CommandSpec::new("set-perf-freq-caps", Group::Perf, "Set the GPU frequency perf-cap in MHz (PerfLimitsSetStatus; clamp perf max/min freq; --min for the lower bound, default both bounds equal). Use reset-perf-freq-caps to clear")
+                    ..CommandSpec::new("set-perf-freq-caps", Group::Perf, "Set the GPU frequency perf-cap in MHz (PerfLimitsSetStatus; clamp perf max/min freq; --min for the lower bound, default both bounds equal). The cap is read back after the write and rolled back if the driver can no longer report its perf limits. Use reset-perf-freq-caps to clear")
                 },
             ),
             (

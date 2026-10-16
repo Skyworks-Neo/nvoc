@@ -3217,13 +3217,36 @@ impl GpuOperation for SetNvapiPerfFreqCap {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
         let cap = match self.cap {
             NvapiPerfFreqCap::Reset => ::nvapi::hi::PerfFreqCap::Reset,
             NvapiPerfFreqCap::Cap { max_khz, min_khz } => {
                 ::nvapi::hi::PerfFreqCap::Cap { max_khz, min_khz }
             }
         };
-        target.nvapi()?.set_perf_freq_cap(cap).map_err(Error::from)
+        gpu.set_perf_freq_cap(cap).map_err(Error::from)?;
+
+        // The SET buffer layout is RE'd from one driver. A driver that reads
+        // it differently still accepts the write but wedges its perf limits:
+        // on a Quadro P400 (Pascal, R580) any cap parks the GPC at an idle
+        // clock and PerfLimitsGetStatus fails until the cap is reset. Read the
+        // limits back once and roll the cap back if the driver cannot.
+        if let NvapiPerfFreqCap::Cap { .. } = self.cap
+            && let Err(read_err) = gpu.perf_freq_caps()
+        {
+            let rollback = match gpu.set_perf_freq_cap(::nvapi::hi::PerfFreqCap::Reset) {
+                Ok(()) => "the cap was reset".to_string(),
+                Err(reset_err) => {
+                    format!("resetting it failed too ({reset_err}); run reset-perf-freq-caps")
+                }
+            };
+            return Err(Error::from(format!(
+                "the driver accepted the perf-cap write but can no longer report \
+                 its perf limits ({read_err}), so the write layout likely does \
+                 not match this driver; {rollback}"
+            )));
+        }
+        Ok(())
     }
 }
 
