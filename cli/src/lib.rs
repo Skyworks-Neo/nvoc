@@ -42,12 +42,12 @@ use nvoc_core::{
     SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
     SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode,
     SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
-    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
-    SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets,
-    fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
-    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
-    sync_memory_pstate_as_p0,
+    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries,
+    SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode,
+    discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
+    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
+    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -235,6 +235,7 @@ pub enum Command {
     GetPStateLock,
     GetLockStatus,
     SetPStateLock,
+    SetPstateRangeLock,
     ResetPStateLock,
     SetLegacyApplicationFreqLock,
     SetLegacyGpcRailOvervoltLimit,
@@ -1462,6 +1463,17 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         PositionalValueKind::Pstate,
                     )])),
                     ..CommandSpec::new("set-pstate-lock-via-mem-range", Group::Clock, "Lock one NVML P-State or a contiguous range via memory freq range")
+                },
+            ),
+            (
+                Command::SetPstateRangeLock,
+                CommandSpec {
+                    arity: (2, 2),
+                    positionals: Box::leak(Box::new([
+                    PositionalArg::free("arg_low_pstate", "LOW_PSTATE", "Perf-ceiling end of the band: lowest P-State number (e.g. P2)"),
+                    PositionalArg::free("arg_high_pstate", "HIGH_PSTATE", "Perf-floor end of the band: highest P-State number (e.g. P5)"),
+                ])),
+                    ..CommandSpec::new("set-pstate-range-lock", Group::Clock, "Lock the native NVAPI P-State to a RANGE: PstateSelect pair (ids 5/4) written with DIFFERENT pstates — the band analog of set-pstate-lock's exact pin. Self-verifies via the lock table + the locked-pstate set")
                 },
             ),
             (
@@ -4346,6 +4358,73 @@ fn execute_target(
                 },
             )?;
             Ok(json!({"applied": true, "pstate": format!("P{pstate}")}))
+        }
+        Command::SetPstateRangeLock => {
+            // HYPOTHESIS UNDER TEST: the PstateSelect pair mirrors the
+            // frequency pair — same count=2 partial-write modality proven by
+            // set-pstate-lock, but with DIFFERENT pstate numbers in ids 5/4,
+            // defining an allowed P-State band instead of an exact pin.
+            // Mapping (inferred, mirrors id0/id1 = upper/lower perf bounds):
+            //   id5 PstateSelectUpper <- LOW pstate number (perf ceiling)
+            //   id4 PstateSelectLower <- HIGH pstate number (perf floor)
+            // The self-readback (lock table + locked-pstate set) is the RE
+            // instrument: what the driver echoes back tells us whether the
+            // band form is honored or collapsed.
+            let parse_pstate = |raw: &str| -> Result<u8, CliError> {
+                raw.trim_start_matches(['P', 'p'])
+                    .parse::<u8>()
+                    .map_err(|e| CliError::new(format!("invalid P-State {raw:?}: {e}")))
+            };
+            let low = parse_pstate(&invocation.positionals[0])?;
+            let high = parse_pstate(&invocation.positionals[1])?;
+            if low > high {
+                return Err(CliError::new(format!(
+                    "pstate band inverted: {low} > {high} (LOW_PSTATE must be <= HIGH_PSTATE)"
+                )));
+            }
+            use nvoc_core::{ClockLockEntry, ClockLockMode, PerfLimitId};
+            let pins = [
+                (PerfLimitId::PstateSelectUpper, low),
+                (PerfLimitId::PstateSelectLower, high),
+            ];
+            run(
+                target,
+                SetVfpLockEntries {
+                    entries: pins
+                        .iter()
+                        .map(|&(limit, pstate)| ClockLockEntry {
+                            limit,
+                            mode: ClockLockMode::PstateSelect,
+                            lock_value: None,
+                            select_pstate: Some(pstate),
+                            clock: ClockDomain::Graphics,
+                        })
+                        .collect(),
+                },
+            )?;
+            // Self-readback: the typed table + the driver's own locked set.
+            let settings = run(target, QueryGpuSettings)?.output;
+            let locked_set = run(target, QueryNvapiPStateLockStatus)?.output;
+            let readback: Vec<_> = [
+                PerfLimitId::PstateSelectUpper,
+                PerfLimitId::PstateSelectLower,
+            ]
+            .iter()
+            .filter_map(|limit| settings.vfp_locks.get(limit))
+            .map(|entry| {
+                json!({
+                    "limit": entry.limit,
+                    "mode": entry.mode,
+                    "select_pstate": entry.select_pstate,
+                })
+            })
+            .collect();
+            Ok(json!({
+                "applied": true,
+                "band": format!("P{low}-P{high}"),
+                "readback": readback,
+                "locked_pstates": locked_set.unwrap_or_default(),
+            }))
         }
         Command::ResetPStateLock => {
             run(
@@ -9616,6 +9695,7 @@ mod tests {
             | Command::SetPstateLockViaMemRange
             | Command::GetPStateLock
             | Command::GetLockStatus
+            | Command::SetPstateRangeLock
             | Command::SetPStateLock
             | Command::ResetPStateLock
             | Command::SetLegacyApplicationFreqLock
