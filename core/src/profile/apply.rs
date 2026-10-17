@@ -11,7 +11,7 @@ use super::schema::{
 use crate::nvml::query_nvml_power_watts;
 use crate::operation::{
     GetFanCurves, QueryGpuSettings, QueryNvapiVoltRails, ResetFanCurve, ResetNvapiSensorLimits,
-    ResetPublicVftableOffset, SetDomainVfpDeltas, SetFanCurve, SetNvapiOvervolt,
+    ResetPublicVftableOffset, SetCoolerLevels, SetDomainVfpDeltas, SetFanCurve, SetNvapiOvervolt,
     SetNvapiPowerLimits, SetNvapiSensorLimits, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot,
     SetPowerLimit, SetPstateClockOffset, SetVfpLockEntries, SetVoltageBoost, run,
 };
@@ -84,6 +84,11 @@ struct DomainWrites {
     /// `thermal_reset` instead.
     thermal: Option<Vec<::nvapi::hi::SensorThrottle>>,
     thermal_reset: bool,
+    /// Static cooler policies captured per cooler id (Manual N% or the
+    /// driver's automatic mode). Written via `SetCoolerLevels` BEFORE any
+    /// curve replay — the curve table only drives the fan under
+    /// temperature-continuous policy.
+    cooler_levels: BTreeMap<::nvapi::hi::FanCoolerId, ::nvapi::hi::CoolerSettings>,
     fan_curves: BTreeMap<u8, Vec<FanCurvePointRecord>>,
     /// Curve indices to reset (snapshot had no curve for them).
     fan_resets: std::collections::BTreeSet<u8>,
@@ -103,6 +108,12 @@ impl DomainWrites {
             power: doc.domains.power.clone(),
             thermal: doc.domains.thermal.clone(),
             thermal_reset: false,
+            cooler_levels: doc
+                .domains
+                .fan
+                .as_ref()
+                .map(|fan| fan.cooler_settings.clone())
+                .unwrap_or_default(),
             fan_curves: doc
                 .domains
                 .fan
@@ -116,6 +127,26 @@ impl DomainWrites {
                 .as_ref()
                 .map(|locks| locks.values().copied().collect()),
         }
+    }
+}
+
+/// Translate a captured [`CoolerSettings`] into a `SetCoolerLevels` request.
+/// `Manual N%` writes the percent; the captured automatic mode
+/// (temperature-continuous or any non-manual policy, level unset) re-arms
+/// that policy with level 0 — the same shape `set-fan-curve --activate`
+/// uses, so pre-30-series cards (no curve table) land back on the driver's
+/// own thermal control.
+fn cooler_level_request(settings: ::nvapi::hi::CoolerSettings) -> (::nvapi::hi::CoolerPolicy, u32) {
+    match settings.level {
+        Some(pct) => (settings.policy, pct.0),
+        None => (settings.policy, 0),
+    }
+}
+
+fn cooler_target_for(cooler_id: ::nvapi::hi::FanCoolerId) -> crate::CoolerTarget {
+    match cooler_id {
+        ::nvapi::hi::FanCoolerId::Cooler2 => crate::CoolerTarget::Cooler2,
+        _ => crate::CoolerTarget::Cooler1,
     }
 }
 
@@ -225,6 +256,20 @@ fn rollback_writes(
                         if !backup.fan_curves.iter().any(|c| c.index == *index) {
                             w.fan_resets.insert(*index);
                         }
+                    }
+                    // Restore each touched cooler's snapshot policy; a cooler
+                    // the snapshot lacks re-arms the driver's automatic mode
+                    // (temperature-continuous, level 0).
+                    for cooler_id in fan.cooler_settings.keys() {
+                        w.cooler_levels.insert(
+                            *cooler_id,
+                            backup.settings.coolers.get(cooler_id).copied().unwrap_or(
+                                ::nvapi::hi::CoolerSettings {
+                                    policy: ::nvapi::hi::CoolerPolicy::TemperatureContinuous,
+                                    level: None,
+                                },
+                            ),
+                        );
                     }
                 }
             }
@@ -352,8 +397,14 @@ pub fn execute_profile(
                         rolled_back: true,
                     };
                 } else {
+                    // Keep the original failure visible — the rollback note
+                    // rides as a suffix instead of replacing the cause.
+                    let original = match &outcome {
+                        DomainOutcome::Failed { error, .. } => error.clone(),
+                        _ => String::new(),
+                    };
                     *outcome = DomainOutcome::Failed {
-                        error: "rolled back to pre-apply state".to_owned(),
+                        error: format!("{original}; rolled back to pre-apply state"),
                         rolled_back: true,
                     };
                 }
@@ -549,6 +600,20 @@ fn apply_domain(
             Ok(DomainWriteStatus::Applied)
         }
         DomainKind::Fan => {
+            // Static cooler policy first (Manual N% or the captured automatic
+            // mode) — the curve table only drives the fan under
+            // temperature-continuous policy, so the policy must land first.
+            for (cooler_id, settings) in &writes.cooler_levels {
+                let (policy, level) = cooler_level_request(*settings);
+                run(
+                    target,
+                    SetCoolerLevels {
+                        policy,
+                        level,
+                        cooler_target: cooler_target_for(*cooler_id),
+                    },
+                )?;
+            }
             for (index, points) in &writes.fan_curves {
                 run(
                     target,
@@ -675,21 +740,42 @@ fn verify_domain(
             Ok(())
         }
         DomainKind::Fan => {
-            let readouts = run(target, GetFanCurves).map_err(|e| e.to_string())?;
-            for (index, points) in &writes.fan_curves {
-                let read = readouts
-                    .output
-                    .iter()
-                    .find(|r| r.index == *index)
-                    .ok_or_else(|| format!("fan curve {index} not reported back"))?;
-                let read_points: Vec<FanCurvePointRecord> =
-                    read.points.iter().map(|p| (*p).into()).collect();
-                if &read_points != points {
-                    return Err(format!(
-                        "fan curve {index} differs: expected {} points, read back {}",
-                        points.len(),
-                        read.points.len()
-                    ));
+            // Cooler-policy readback comes from QueryGpuSettings (the same
+            // source the capture used) — not every card exposes the fan
+            // curve table, and a curves-only check would false-alarm there.
+            if !writes.cooler_levels.is_empty() {
+                let settings = query_settings(target)?;
+                for (cooler_id, expected) in &writes.cooler_levels {
+                    let live = settings.coolers.get(cooler_id).ok_or_else(|| {
+                        format!("cooler {cooler_id:?} not present in readback")
+                    })?;
+                    if live != expected {
+                        return Err(format!(
+                            "cooler {cooler_id:?} policy differs: expected {expected:?}, read back {live:?}"
+                        ));
+                    }
+                }
+            }
+            // Only touch the curve table when the apply actually wrote (or
+            // reset) curves — cards without the curve plane must not fail
+            // verification over a read they cannot serve.
+            if !writes.fan_curves.is_empty() || !writes.fan_resets.is_empty() {
+                let readouts = run(target, GetFanCurves).map_err(|e| e.to_string())?;
+                for (index, points) in &writes.fan_curves {
+                    let read = readouts
+                        .output
+                        .iter()
+                        .find(|r| r.index == *index)
+                        .ok_or_else(|| format!("fan curve {index} not reported back"))?;
+                    let read_points: Vec<FanCurvePointRecord> =
+                        read.points.iter().map(|p| (*p).into()).collect();
+                    if &read_points != points {
+                        return Err(format!(
+                            "fan curve {index} differs: expected {} points, read back {}",
+                            points.len(),
+                            read_points.len()
+                        ));
+                    }
                 }
             }
             Ok(())
@@ -1084,6 +1170,92 @@ mod tests {
         let writes = rollback_writes(&doc, &backup, &[DomainKind::VoltRails]);
         assert_eq!(writes.volt_rails.len(), 1);
         assert_eq!(writes.volt_rails[0].offset_uv, 0);
+    }
+
+    #[test]
+    fn fan_cooler_level_request_maps_policy_and_percent() {
+        use ::nvapi::hi::{CoolerPolicy, CoolerSettings, Percentage};
+        // Override: Manual + percent writes both verbatim.
+        let manual = cooler_level_request(CoolerSettings {
+            policy: CoolerPolicy::Manual,
+            level: Some(Percentage(100)),
+        });
+        assert_eq!(manual, (CoolerPolicy::Manual, 100));
+        // Automatic: the captured policy re-arms with level 0 (the same
+        // shape `set-fan-curve --activate` uses) — pre-30-series cards land
+        // back on the driver's own thermal control.
+        let auto = cooler_level_request(CoolerSettings {
+            policy: CoolerPolicy::TemperatureContinuous,
+            level: None,
+        });
+        assert_eq!(auto, (CoolerPolicy::TemperatureContinuous, 0));
+    }
+
+    #[test]
+    fn fan_apply_writes_carries_cooler_settings_from_profile() {
+        use ::nvapi::hi::{CoolerPolicy, CoolerSettings, FanCoolerId, Percentage};
+        use std::collections::BTreeMap;
+        let mut doc = ProfileDoc::new("fan", GpuIdentity::default(), "t".to_owned());
+        let mut coolers = BTreeMap::new();
+        coolers.insert(
+            FanCoolerId::Cooler1,
+            CoolerSettings {
+                policy: CoolerPolicy::Manual,
+                level: Some(Percentage(100)),
+            },
+        );
+        doc.domains.fan = Some(super::super::schema::FanSettings {
+            curves: BTreeMap::new(),
+            cooler_settings: coolers,
+        });
+        let writes = DomainWrites::from_profile(&doc);
+        assert_eq!(writes.cooler_levels.len(), 1);
+        assert_eq!(
+            writes.cooler_levels[&FanCoolerId::Cooler1].level,
+            Some(Percentage(100))
+        );
+        assert!(writes.fan_curves.is_empty());
+    }
+
+    #[test]
+    fn fan_rollback_restores_cooler_policy_and_neutralizes_missing() {
+        use ::nvapi::hi::{CoolerPolicy, CoolerSettings, FanCoolerId, Percentage};
+        use std::collections::BTreeMap;
+        let mut doc = ProfileDoc::new("fan", GpuIdentity::default(), "t".to_owned());
+        let mut coolers = BTreeMap::new();
+        coolers.insert(
+            FanCoolerId::Cooler1,
+            CoolerSettings {
+                policy: CoolerPolicy::Manual,
+                level: Some(Percentage(80)),
+            },
+        );
+        doc.domains.fan = Some(super::super::schema::FanSettings {
+            curves: BTreeMap::new(),
+            cooler_settings: coolers,
+        });
+
+        // Snapshot carries the stock policy for Cooler1 -> restore it.
+        let mut backup = SettingsBackup::new(GpuIdentity::default(), "t".to_owned());
+        backup.settings.coolers.insert(
+            FanCoolerId::Cooler1,
+            CoolerSettings {
+                policy: CoolerPolicy::TemperatureContinuous,
+                level: None,
+            },
+        );
+        let writes = rollback_writes(&doc, &backup, &[DomainKind::Fan]);
+        assert_eq!(
+            writes.cooler_levels[&FanCoolerId::Cooler1].policy,
+            CoolerPolicy::TemperatureContinuous
+        );
+
+        // Snapshot lacks the cooler -> re-arm automatic mode.
+        let empty_backup = SettingsBackup::new(GpuIdentity::default(), "t".to_owned());
+        let writes = rollback_writes(&doc, &empty_backup, &[DomainKind::Fan]);
+        let restored = writes.cooler_levels[&FanCoolerId::Cooler1];
+        assert_eq!(restored.policy, CoolerPolicy::TemperatureContinuous);
+        assert_eq!(restored.level, None);
     }
 
     #[test]
