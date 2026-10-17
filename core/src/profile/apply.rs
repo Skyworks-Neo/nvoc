@@ -743,15 +743,21 @@ fn verify_domain(
             // Cooler-policy readback comes from QueryGpuSettings (the same
             // source the capture used) — not every card exposes the fan
             // curve table, and a curves-only check would false-alarm there.
+            // Only the POLICY is compared: the readback `level` field tracks
+            // the live cooler state (a Manual 100% request reads back the
+            // fan's current percent while it is still ramping), so an
+            // immediate equality check would false-alarm on physics, not on
+            // the write.
             if !writes.cooler_levels.is_empty() {
                 let settings = query_settings(target)?;
                 for (cooler_id, expected) in &writes.cooler_levels {
                     let live = settings.coolers.get(cooler_id).ok_or_else(|| {
                         format!("cooler {cooler_id:?} not present in readback")
                     })?;
-                    if live != expected {
+                    if live.policy != expected.policy {
                         return Err(format!(
-                            "cooler {cooler_id:?} policy differs: expected {expected:?}, read back {live:?}"
+                            "cooler {cooler_id:?} policy differs: expected {:?} (level {:?}), read back {:?} (level {:?})",
+                            expected.policy, expected.level, live.policy, live.level
                         ));
                     }
                 }
