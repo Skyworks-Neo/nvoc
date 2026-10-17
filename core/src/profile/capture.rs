@@ -153,18 +153,24 @@ pub(crate) fn read_volt_rail_limits(target: &crate::target::GpuTarget<'_>) -> Ve
     crate::operation::run(target, crate::operation::QueryNvapiVoltRails)
         .ok()
         .and_then(|report| report.output)
-        .map(|rails| {
-            rails
-                .control
-                .iter()
-                .map(|entry| VoltRailLimit {
-                    rail_bit: entry.rail_bit,
-                    offset_uv: entry.values[0],
-                    expected_type: Some(entry.entry_type),
-                })
-                .collect()
-        })
+        .map(|rails| volt_rail_limits(&rails))
         .unwrap_or_default()
+}
+
+/// Convert a VoltRails snapshot into profile records. The full 6-dword
+/// control payload (melonVolt slots) is carried verbatim and applied on
+/// restore via the slot write path.
+pub(crate) fn volt_rail_limits(rails: &::nvapi::VoltRails) -> Vec<VoltRailLimit> {
+    rails
+        .control
+        .iter()
+        .map(|entry| VoltRailLimit {
+            rail_bit: entry.rail_bit,
+            offset_uv: entry.values[0],
+            expected_type: Some(entry.entry_type),
+            slots: Some(entry.values),
+        })
+        .collect()
 }
 
 /// Best-effort out-of-band reads for a target: power bounds via NVML, fan
@@ -270,12 +276,43 @@ mod tests {
             rail_bit: 1,
             offset_uv: 15000,
             expected_type: Some(3),
+            slots: None,
         });
         let domains = capture_domains(&settings, &context, &[DomainKind::VoltRails]);
         let rails = domains.volt_rails.unwrap();
         assert_eq!(rails.len(), 1);
         assert_eq!(rails[0].offset_uv, 15000);
         assert_eq!(rails[0].expected_type, Some(3));
+    }
+
+    #[test]
+    fn volt_rail_capture_carries_full_slot_payload() {
+        // 5090-MSVDD-shaped control entry: slot 0 = µV offset, 2 = VRM max
+        // wall, 3 = VMIN min-hold, 1/4/5 firmware-opaque.
+        let values = [15000i32, 7, -25000, -30000, 0, 12345];
+        let rails = ::nvapi::VoltRails {
+            rail_mask: 0x2,
+            control: vec![::nvapi::VoltRailEntry {
+                rail_bit: 1,
+                entry_type: 3,
+                values,
+                extra_values: None,
+            }],
+            status: Vec::new(),
+            rail_descriptors: Vec::new(),
+        };
+        let limits = volt_rail_limits(&rails);
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].offset_uv, 15000);
+        assert_eq!(limits[0].expected_type, Some(3));
+        assert_eq!(limits[0].slots, Some(values));
+    }
+
+    #[test]
+    fn vfp_locks_in_default_capture() {
+        // The get-lock-status table (PerfClientLimits GET) rides along by
+        // default: capture is a read, and apply replays the exact table.
+        assert!(DomainKind::DEFAULT_CAPTURE.contains(&DomainKind::VfpLocks));
     }
 
     #[test]
@@ -314,6 +351,7 @@ mod tests {
             rail_bit: 1,
             offset_uv: 0,
             expected_type: Some(3),
+            slots: None,
         });
         let backup = capture_backup(&context, &empty_gpu_settings(), "t".to_owned());
         assert!(backup.validate().is_ok());
