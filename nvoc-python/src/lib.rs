@@ -1,5 +1,6 @@
 use nvapi::hi::{
-    Celsius, ClockDomain, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
+    Celsius, ClockDomain, ClockLockValue, CoolerPolicy, KilohertzDelta, MicrovoltsDelta, PState,
+    Percentage,
 };
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 use nvoc_core::{
@@ -1028,8 +1029,8 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         bool_value(!status.vfp_locks.is_empty()),
     );
     for lock in status.vfp_locks.values() {
-        if let Some(mv) = first_number_in_display(lock) {
-            map.insert("vfp_lock_mv".into(), f64_value(mv));
+        if let Some(ClockLockValue::Voltage(uv)) = lock.lock_value {
+            map.insert("vfp_lock_mv".into(), f64_value(f64::from(uv.0) / 1000.0));
             break;
         }
     }

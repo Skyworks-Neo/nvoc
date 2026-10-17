@@ -773,14 +773,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "NAME",
                     "Profile slot to apply",
                 )])),
-                    ..CommandSpec::new("profile-apply", Group::Profile, "Apply a saved profile to this GPU: identity check -> plan -> backup-last.json -> write -> read-back verify -> rollback on failure; --dry-run prints the plan only")
+                    ..CommandSpec::new("profile-apply", Group::Profile, "Apply a saved profile to every selected GPU (default: all; narrow with --gpu): per GPU identity check -> plan -> backup-last.json -> write -> read-back verify -> rollback on failure; --dry-run prints the plan only")
                 },
             ),
             (
                 Command::ProfileCaptureStock,
                 CommandSpec {
                     options: Box::leak(Box::new(["note", "profile-root"])),
-                    ..CommandSpec::new("profile-capture-stock", Group::Profile, "Snapshot the CURRENT settings as this GPU's stock.json reference (run at stock for a meaningful baseline)")
+                    ..CommandSpec::new("profile-capture-stock", Group::Profile, "Snapshot the CURRENT settings as each selected GPU's stock.json reference (run at stock for a meaningful baseline)")
                 },
             ),
             (
@@ -825,7 +825,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ProfileExport,
                 CommandSpec {
                     options: Box::leak(Box::new(["out", "profile-root", "purpose"])),
-                    ..CommandSpec::new("profile-export", Group::Profile, "Export this GPU's profile slots (all, or the named ones) into one portable .nvocprofile.json package; default output ./nvoc-profiles.nvocprofile.json")
+                    ..CommandSpec::new("profile-export", Group::Profile, "Export every selected GPU's profile slots (all, or the named ones) into one portable .nvocprofile.json package; default output ./nvoc-profiles.nvocprofile.json")
                 },
             ),
             (
@@ -845,7 +845,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ProfileList,
                 CommandSpec {
                     options: Box::leak(Box::new(["profile-root"])),
-                    ..CommandSpec::new("profile-list", Group::Profile, "List this GPU's saved profile slots plus stock/backup/active markers")
+                    ..CommandSpec::new("profile-list", Group::Profile, "List each selected GPU's saved profile slots plus stock/backup/active markers")
                 },
             ),
             (
@@ -877,7 +877,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "NAME",
                     "Profile slot name to create/overwrite",
                 )])),
-                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state into a named slot (default domains: clock-offsets, public-vftable, voltage, power, thermal, fan; --domains narrows; locks are never captured by default)")
+                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state of every selected GPU (default: all; narrow with --gpu) into a named slot per GPU (default domains: clock-offsets, public-vftable, voltage, power, thermal, fan; --domains narrows; locks are never captured by default)")
                 },
             ),
             (
@@ -2647,10 +2647,39 @@ fn execute_backend(
         )));
     }
 
-    if is_profile_command(command) && filtered.len() > 1 {
-        return Err(CliError::new(
-            "profile commands operate on ONE GPU (slots are identity-bound); narrow the selection with --gpu <index>",
-        ));
+    match multi_gpu_mode(command) {
+        MultiGpuMode::Once => {
+            // The handler never reads the live target (package slots carry
+            // their own captured identities), so it runs exactly once per
+            // invocation no matter how many GPUs are selected.
+            let result = match execute_target(command, adapter, &filtered[0], invocation) {
+                Ok(output) => TargetResult {
+                    gpu_id: None,
+                    backend: adapter.label(),
+                    ok: true,
+                    output: Some(output),
+                    error: None,
+                },
+                Err(error) => TargetResult {
+                    gpu_id: None,
+                    backend: adapter.label(),
+                    ok: false,
+                    output: None,
+                    error: Some(error.to_string()),
+                },
+            };
+            return Ok(Execution {
+                function: command.name(),
+                command,
+                backend: adapter.label().to_string(),
+                warnings: Vec::new(),
+                results: vec![result],
+            });
+        }
+        MultiGpuMode::Aggregate => {
+            return execute_profile_export(invocation, command, adapter, filtered);
+        }
+        MultiGpuMode::PerGpu => {}
     }
 
     let mut results = Vec::with_capacity(filtered.len());
@@ -2680,6 +2709,110 @@ fn execute_backend(
         backend: adapter.label().to_string(),
         warnings: Vec::new(),
         results,
+    })
+}
+
+/// How a command scales when more than one GPU is selected. Profile commands
+/// fan out per GPU safely: the store is keyed per GPU identity, so each GPU
+/// only ever reads and writes its own slot directory (apply-time identity
+/// checks stay per GPU). The exceptions are the package commands — import
+/// routes every slot by its own captured identity and export must produce one
+/// file — classified here so `execute_backend` can special-case them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MultiGpuMode {
+    /// One `TargetResult` per GPU; per-GPU errors are isolated and visible.
+    PerGpu,
+    /// Run the handler exactly once per invocation (it ignores the live
+    /// target). A per-target fan-out would double-apply the work — with
+    /// `profile-import --on-conflict rename` it would mint duplicate renamed
+    /// slots.
+    Once,
+    /// Aggregate every selected GPU before producing a single result: the
+    /// output file is shared, so a fan-out would clobber it (last write wins).
+    Aggregate,
+}
+
+fn multi_gpu_mode(command: Command) -> MultiGpuMode {
+    match command {
+        Command::ProfileImport => MultiGpuMode::Once,
+        Command::ProfileExport => MultiGpuMode::Aggregate,
+        _ => MultiGpuMode::PerGpu,
+    }
+}
+
+/// `profile-export`: collect the matching slots from EVERY selected GPU into
+/// one portable package, written once to `--out`. A wanted name counts as
+/// found when it exists on at least one selected GPU; per-GPU presence is
+/// reported so partial coverage is visible.
+fn execute_profile_export(
+    invocation: &Invocation,
+    command: Command,
+    adapter: BackendAdapter,
+    filtered: Vec<GpuTarget<'_>>,
+) -> CliResult<Execution> {
+    let store = profile_store(invocation)?;
+    let wanted = invocation
+        .positionals
+        .iter()
+        .map(|s| s.trim().to_owned())
+        .collect::<Vec<_>>();
+    let mut docs = Vec::new();
+    let mut per_gpu = Vec::new();
+    for target in &filtered {
+        let (_, identity) = profile_live_identity(target)?;
+        let listed = store.list_profiles(&identity)?;
+        let mut names = Vec::new();
+        for entry in listed {
+            let doc = entry.map_err(CliError::new)?;
+            if wanted.is_empty() || wanted.iter().any(|n| n.eq_ignore_ascii_case(&doc.name)) {
+                names.push(doc.name.clone());
+                docs.push(doc);
+            }
+        }
+        per_gpu.push(json!({
+            "gpu_id": target.id.0,
+            "uuid": identity.uuid,
+            "profiles": names,
+        }));
+    }
+    for name in &wanted {
+        if !docs.iter().any(|doc| doc.name.eq_ignore_ascii_case(name)) {
+            return Err(CliError::new(format!("profile {name:?} not found")));
+        }
+    }
+    if docs.is_empty() {
+        return Err(CliError::new(
+            "no profiles to export (save one with profile-save first)",
+        ));
+    }
+    let source_host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok();
+    let package = export_package(
+        docs,
+        source_host,
+        option_one(invocation, "purpose").map(str::to_owned),
+        profile_now_utc()?,
+    )?;
+    let out = option_one(invocation, "out").unwrap_or("nvoc-profiles.nvocprofile.json");
+    let out_path = std::path::Path::new(out);
+    write_package(out_path, &package)?;
+    Ok(Execution {
+        function: command.name(),
+        command,
+        backend: adapter.label().to_string(),
+        warnings: Vec::new(),
+        results: vec![TargetResult {
+            gpu_id: None,
+            backend: adapter.label(),
+            ok: true,
+            output: Some(json!({
+                "exported": out_path.display().to_string(),
+                "profiles": package.profiles.iter().map(|doc| doc.name.clone()).collect::<Vec<_>>(),
+                "per_gpu": per_gpu,
+            })),
+            error: None,
+        }],
     })
 }
 
@@ -2859,8 +2992,11 @@ fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSe
     }
 }
 
-/// Profile commands operate on one GPU's slot directory: multi-target fan-out
-/// would interleave identity-bound files. Enforced in `execute_backend`.
+/// Profile commands touch the per-GPU slot directories and need the NVML
+/// inventory even on the NVAPI path (see `discovery_backend_set`: profile
+/// binding keys on the NVML UUID). Multi-GPU scaling is classified by
+/// [`multi_gpu_mode`]; the default fan-out is safe because each GPU only
+/// ever reads and writes its own identity-keyed directory.
 fn is_profile_command(command: Command) -> bool {
     matches!(
         command,
@@ -9027,6 +9163,33 @@ fn summarize_errors(execution: &Execution) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Profile commands fan out per GPU (the store is keyed per GPU
+    /// identity); only the package commands deviate — import runs once,
+    /// export aggregates into one file.
+    #[test]
+    fn profile_multi_gpu_modes() {
+        for command in [
+            Command::ProfileSave,
+            Command::ProfileApply,
+            Command::ProfileList,
+            Command::ProfileShow,
+            Command::ProfileDiff,
+            Command::ProfileDelete,
+            Command::ProfileRename,
+            Command::ProfileCopy,
+            Command::ProfileCaptureStock,
+            Command::ProfileRestoreLast,
+        ] {
+            assert_eq!(multi_gpu_mode(command), MultiGpuMode::PerGpu);
+        }
+        assert_eq!(multi_gpu_mode(Command::ProfileImport), MultiGpuMode::Once);
+        assert_eq!(
+            multi_gpu_mode(Command::ProfileExport),
+            MultiGpuMode::Aggregate
+        );
+        assert_eq!(multi_gpu_mode(Command::GetStatus), MultiGpuMode::PerGpu);
+    }
 
     /// Mode-0 control VALUE is signed (i32 kHz, stored two's complement):
     /// -100000 kHz ×2 Pascal axis must render -100.0 MHz, not the

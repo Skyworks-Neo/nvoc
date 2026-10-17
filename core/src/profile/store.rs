@@ -99,6 +99,11 @@ impl ProfileStore {
     ) -> Result<ProfileDoc, Error> {
         let dir = self.gpu_dir(identity);
         let path = dir.join(format!("{}.json", name_slug(name)));
+        if !path.exists() {
+            return Err(Error::Custom(format!(
+                "no profile named {name:?} saved for this GPU (profile-list shows its slots)"
+            )));
+        }
         let doc = self.read_doc(&path)?;
         doc.validate()
             .map_err(|e| Error::Custom(format!("profile at {} is invalid: {e}", path.display())))?;
@@ -406,6 +411,15 @@ mod tests {
         let listed = store.list_profiles(&identity).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].is_ok());
+    }
+
+    #[test]
+    fn load_missing_profile_names_the_gpu() {
+        let store = tmp_store("missing-name");
+        let err = store.load_profile(&ident(), "nope").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("no profile named"), "{message}");
+        assert!(message.contains("nope"), "{message}");
     }
 
     #[test]
