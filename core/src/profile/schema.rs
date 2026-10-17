@@ -288,9 +288,9 @@ pub struct FanSettings {
     /// Per cooler-index fan curve points.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub curves: BTreeMap<u8, Vec<FanCurvePointRecord>>,
-    /// Static cooler policies captured for reference. v1 does not apply these
-    /// (`SetCoolerLevels` interacts with live cooler arbitration); the field
-    /// exists so a capture is not silently lossy.
+    /// Static cooler policies (Manual N% or the automatic mode), written
+    /// back via `SetCoolerLevels` on apply. This is the fan plane for
+    /// pre-30-series cards, which expose no editable curve table.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cooler_settings: BTreeMap<FanCoolerId, CoolerSettings>,
 }
