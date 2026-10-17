@@ -109,9 +109,12 @@ impl DomainKind {
     ];
 
     /// Domains `profile save` captures unless `--domains` says otherwise.
-    /// The two lock families stay opt-in: a misapplied lock is the hardest
-    /// state to recover from a remote shell.
-    pub const DEFAULT_CAPTURE: [DomainKind; 7] = [
+    /// The `vfp_locks` family IS the get-lock-status table (PerfClientLimits
+    /// GET): saving it is read-only, and its apply replays the exact table
+    /// (mode-None entries unlock), so it rides along by default. The two
+    /// `locked_clocks`/authoring families stay out: that plane has no
+    /// capture source yet.
+    pub const DEFAULT_CAPTURE: [DomainKind; 8] = [
         DomainKind::ClockOffsets,
         DomainKind::PublicVftable,
         DomainKind::Voltage,
@@ -119,6 +122,7 @@ impl DomainKind {
         DomainKind::Power,
         DomainKind::Thermal,
         DomainKind::Fan,
+        DomainKind::VfpLocks,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -250,6 +254,14 @@ pub struct VoltRailLimit {
     pub offset_uv: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_type: Option<u32>,
+    /// Full melonVolt control payload captured verbatim: the 6 dwords
+    /// (`values[0..6]`), slot 0 being the µV offset mirrored in
+    /// `offset_uv`, slot 2 the VRM max-wall offset, slot 3 the VMIN /
+    /// min-hold offset (both mV-in/uV-out, P100/582.41-pinned), slots
+    /// 1/4/5 retained-but-quiet firmware-opaque. `None` on documents
+    /// captured before slot persistence — apply then touches slot 0 only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<[i32; 6]>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
@@ -644,6 +656,20 @@ mod tests {
         assert!(!json.contains("clock_offsets"));
         assert!(!json.contains("vfp_locks"));
         assert!(json.contains("power"));
+    }
+
+    #[test]
+    fn volt_rail_record_without_slots_is_valid_v1() {
+        // Documents captured before slot persistence carry no `slots` key;
+        // they must keep loading (apply then touches slot 0 only).
+        let json = serde_json::json!({
+            "rail_bit": 1,
+            "offset_uv": 15000,
+            "expected_type": 3
+        });
+        let record: VoltRailLimit = serde_json::from_value(json).unwrap();
+        assert_eq!(record.offset_uv, 15000);
+        assert_eq!(record.slots, None);
     }
 
     #[test]

@@ -886,7 +886,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "NAME",
                     "Profile slot name to create/overwrite",
                 )])),
-                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state of every selected GPU (default: all; narrow with --gpu) into a named slot per GPU (default domains: clock-offsets, public-vftable, voltage, power, thermal, fan; --domains narrows; locks are never captured by default)")
+                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state of every selected GPU (default: all; narrow with --gpu) into a named slot per GPU (default domains: clock-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, vfp-locks; --domains narrows)")
                 },
             ),
             (

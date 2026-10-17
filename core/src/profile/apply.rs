@@ -12,8 +12,8 @@ use crate::nvml::query_nvml_power_watts;
 use crate::operation::{
     GetFanCurves, QueryGpuSettings, QueryNvapiVoltRails, ResetFanCurve, ResetNvapiSensorLimits,
     ResetPublicVftableOffset, SetDomainVfpDeltas, SetFanCurve, SetNvapiOvervolt,
-    SetNvapiPowerLimits, SetNvapiSensorLimits, SetNvapiVoltRailOffset, SetPowerLimit,
-    SetPstateClockOffset, SetVfpLockEntries, SetVoltageBoost, run,
+    SetNvapiPowerLimits, SetNvapiSensorLimits, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot,
+    SetPowerLimit, SetPstateClockOffset, SetVfpLockEntries, SetVoltageBoost, run,
 };
 use crate::target::GpuTarget;
 use crate::types::VfpResetDomain;
@@ -239,6 +239,9 @@ fn rollback_writes(
                             rail_bit: record.rail_bit,
                             offset_uv: 0,
                             expected_type: record.expected_type,
+                            // Neutralization only zeroes the offset; the
+                            // opaque payload slots are not blindly stamped.
+                            slots: None,
                         });
                     }
                 }
@@ -479,6 +482,34 @@ fn apply_domain(
                         "volt-rail write path not exposed by this driver".to_owned(),
                     ));
                 }
+                // Replay the remaining melonVolt payload slots verbatim. A
+                // slot that already matches the live value is left alone —
+                // the opaque dwords (1/4/5) are only ever written when the
+                // capture actually differs, never blindly.
+                if let Some(slots) = record.slots {
+                    let live = rails
+                        .control
+                        .iter()
+                        .find(|e| e.rail_bit == record.rail_bit)
+                        .map(|e| e.values);
+                    if live == Some(slots) {
+                        continue;
+                    }
+                    for (slot, &value) in slots.iter().enumerate().skip(1) {
+                        if live.as_ref().is_some_and(|vals| vals[slot] == value) {
+                            continue;
+                        }
+                        run(
+                            target,
+                            SetNvapiVoltRailSlot {
+                                rail_bit: record.rail_bit,
+                                slot,
+                                value_uV: value,
+                                expected_type: record.expected_type,
+                            },
+                        )?;
+                    }
+                }
             }
             Ok(DomainWriteStatus::Applied)
         }
@@ -536,9 +567,19 @@ fn apply_domain(
             let Some(entries) = &writes.vfp_locks else {
                 return Ok(DomainWriteStatus::Applied);
             };
+            // Availability gate first: the PerfClientLimits table is the
+            // capture source AND the apply target. A driver that does not
+            // expose it (empty GET) makes the domain Unavailable — the rest
+            // of the profile still applies, no rollback storm.
+            let current = run(target, QueryGpuSettings)?.output;
+            if current.vfp_locks.is_empty() {
+                return Ok(DomainWriteStatus::Unavailable(
+                    "PerfClientLimits lock table not exposed by this driver".to_owned(),
+                ));
+            }
             // Entries carry their own mode — PstateSelect pins (ids 4/5)
-            // replay exactly as captured. A plane-less driver surfaces as a
-            // plain write error here (the GET-side gate runs in verify).
+            // replay exactly as captured. A plain write error after the GET
+            // gate is a genuine failure (stamp-gated SET) and rolls back.
             run(
                 target,
                 SetVfpLockEntries {
@@ -675,6 +716,14 @@ fn verify_domain(
                     return Err(format!(
                         "rail {} offset differs: expected {} µV, read back {} µV",
                         record.rail_bit, record.offset_uv, live.values[0]
+                    ));
+                }
+                if let Some(slots) = record.slots
+                    && live.values != slots
+                {
+                    return Err(format!(
+                        "rail {} payload differs: expected {:?}, read back {:?}",
+                        record.rail_bit, slots, live.values
                     ));
                 }
             }
@@ -1023,12 +1072,14 @@ mod tests {
             rail_bit: 1,
             offset_uv: 15000,
             expected_type: Some(3),
+            slots: None,
         }]);
         let mut backup = SettingsBackup::new(GpuIdentity::default(), "t".to_owned());
         backup.volt_rails = vec![VoltRailLimit {
             rail_bit: 1,
             offset_uv: 0,
             expected_type: Some(3),
+            slots: None,
         }];
         let writes = rollback_writes(&doc, &backup, &[DomainKind::VoltRails]);
         assert_eq!(writes.volt_rails.len(), 1);
@@ -1042,6 +1093,7 @@ mod tests {
             rail_bit: 1,
             offset_uv: 15000,
             expected_type: Some(3),
+            slots: None,
         }]);
         let backup = SettingsBackup::new(GpuIdentity::default(), "t".to_owned());
         let writes = rollback_writes(&doc, &backup, &[DomainKind::VoltRails]);
@@ -1104,6 +1156,7 @@ mod tests {
             rail_bit: 1,
             offset_uv: 0,
             expected_type: None,
+            slots: None,
         });
         backup.settings.vfp_locks.insert(
             PerfLimitId::Gpu,
