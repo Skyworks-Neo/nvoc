@@ -241,6 +241,7 @@ pub enum Command {
     SetPstateLockViaMemRange,
     GetPStateLock,
     GetLockStatus,
+    GetPerfPolicies,
     SetPStateLock,
     SetPstateRangeLock,
     ResetPStateLock,
@@ -477,6 +478,31 @@ fn find_bit_signature(image: &[u8]) -> Option<usize> {
     vbios::find_bit(image)
 }
 
+/// PerfFlags bit names for the get-perf-policies view (nvapi-rs
+/// `NV_GPU_PERF_FLAGS`; AB 19412 RE + ccminer cross-refs agree on semantics).
+const PERF_FLAG_NAMES: &[(u32, &str)] = &[
+    (1, "power-limit"),
+    (2, "thermal-limit"),
+    (4, "voltage-rel-limit"),
+    (8, "voltage-op-limit"),
+    (16, "no-load-limit"),
+    (32, "unknown-32"),
+];
+
+fn perf_flag_names(bits: u32) -> Vec<String> {
+    let mut names: Vec<String> = PERF_FLAG_NAMES
+        .iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|(_, name)| (*name).to_owned())
+        .collect();
+    let named = PERF_FLAG_NAMES.iter().fold(0u32, |acc, (bit, _)| acc | bit);
+    let unknown = bits & !named;
+    if unknown != 0 {
+        names.push(format!("unknown-{unknown:#x}"));
+    }
+    names
+}
+
 /// `--help` listing order; kept sorted by test). Adding a command = one enum
 /// variant, one row here, one `execute_target` arm; the
 /// `table_covers_every_variant` test rejects a variant with no row.
@@ -590,7 +616,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetLockStatus,
                 CommandSpec {
-                    ..CommandSpec::new("get-lock-status", Group::Voltage, "Read the PerfClientLimits lock table — all 7 entries (GPU/Memory frequency upper+lower bounds, P-State select pins, Voltage lock) with decoded mode and value")
+                    ..CommandSpec::new("get-lock-status", Group::Voltage, "Read the PerfClientLimits lock table — all 7 entries (GPU/Memory frequency upper+lower bounds, P-State select pins, Voltage lock) with decoded mode and value. Dual-named interface: AB 19412 drives the same id (0x39442CFB) as its VFCurve_SetCurve writer")
+                },
+            ),
+            (
+                Command::GetPerfPolicies,
+                CommandSpec {
+                    ..CommandSpec::new("get-perf-policies", Group::Perf, "Read the performance-policy diagnostic view: supported limit mask (PerfPoliciesGetInfo 0x409D9841), ACTIVE throttling sources (GetStatus 0x3D358A0C active bits — power/thermal/voltage/no-load), raw+named, plus performance-decrease reasons — the 'why is the GPU below peak' readout; AB 19412 names the same family GetRelPower/PowerPolicies")
                 },
             ),
             (Command::GetPmgrArbiter, CommandSpec::new("get-pmgr-arbiter", Group::Perf, "Read the PMGR voltage-request arbiter values (0x717648FD, escape 0x0700019F)")),
@@ -3248,6 +3280,25 @@ fn execute_target(
             Ok(json!({
                 "active": active,
                 "entries": entries,
+            }))
+        }
+        Command::GetPerfPolicies => {
+            // PerfPolicies diagnostic: supported limit mask (INFO) vs ACTIVE
+            // throttling sources (STATUS `unknown` dword, same PerfFlags bit
+            // semantics — bit-named below) + performance-decrease reasons.
+            // The active mask is the driver-side "why below peak" readout that
+            // pairs with get-lock-status's client-side lock table.
+            let info = run(target, QueryGpuInfo)?.output;
+            let status = run(target, QueryGpuStatus)?.output;
+            Ok(json!({
+                "supported": perf_flag_names(info.perf.limits.bits()),
+                "supported_raw": info.perf.limits.bits(),
+                "limit_flags": perf_flag_names(status.perf.limits.bits()),
+                "active": status.perf.active.map(|bits| perf_flag_names(bits.bits())),
+                "active_raw": status.perf.unknown,
+                "timer_ns": status.perf.timer,
+                "policy_timers_ns": status.perf.policy_timers,
+                "decrease_reasons": status.performance_decrease,
             }))
         }
         Command::GetPublicVftable => get_vfp(target, invocation),
@@ -9709,6 +9760,7 @@ mod tests {
             | Command::SetPstateLockViaMemRange
             | Command::GetPStateLock
             | Command::GetLockStatus
+            | Command::GetPerfPolicies
             | Command::SetPstateRangeLock
             | Command::SetPStateLock
             | Command::ResetPStateLock

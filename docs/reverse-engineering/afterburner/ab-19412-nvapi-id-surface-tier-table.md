@@ -107,7 +107,35 @@
 | **P2** | I2C 直写 VRM 通道 | `0x283AC65A` / `0x4D7B0709` | 无（kmd MMIO 另有通道） | **不实现**，仅接口 + 24 芯片清单建档（CHALVRM 族表）；留待有明确仲裁需求再立项 | 高：卡级硬件写 |
 | **P3** | FramerateLimit 族 / 显示器族 / GetCustomDisplay | 8+5 IDs | 无 | 不实现（非 OC 域） | — |
 
-## 4. 对既有结论的修正/佐证
+## 4. 实现勘误（2026-10-18，补全计划落地时核实）
+
+逆向产出后对 nvapi-rs 子模块与主仓库的现状核查表明：**本表 P0/P1 的 9 个接口 ID
+全部已在 nvapi-rs 绑定**，第 3 节的缺口认定据此修正：
+
+| 本表原判定 | 实际现状 | 真实缺口 → 落点 |
+|---|---|---|
+| P0 电压轨 Client 族（0x465F9BCF/0x9DF23CA1/0xB9306D9B） | sys `NV_GPU_CLIENT_VOLT_RAILS_*` + 中层 `core_voltage/voltage_boost` + hi `GpuStatus.voltage`/`GpuSettings.voltage_boost` + CLI `get/set/reset-public-gpc-rail-volt-boost` 全通 | 无 |
+| P0 钳制源掩码（0x409D9841/0x3D358A0C） | sys/中层 `perf_info/perf_status` + hi `GpuInfo.perf`/`GpuStatus.perf` 已通；0x550 的 active 掩码此前裸透传 | 已落地：`PerfStatus.active/timer/policy_timers` 深解码（nvapi-rs 209457b）+ CLI `get-perf-policies` 位名化诊断 |
+| P1 热/功策略 | sys+中层+hi+CLI 全通：`thermal_limit_info/thermal_limit/set_thermal_limit`（V3/V2 回退）、`power_limit_info/power_limit/set_power_limit`（V2/V1 回退）；写侧 `SetPublicTgpPercent`（power SET）、`SetNvapiTargetTemp`/`SetNvapiSensorLimits`（thermal SET） | 无 |
+| P1 风扇 Coolers | sys cooler.rs:533-627 + 中层 + CLI `set-fan-speed --rpm`/`set-fan-curve --activate` 在用 | 无 |
+| P1 电压 boost（0x0F4DAE6B） | CLI `set-public-gpc-rail-volt-boost` | 无 |
+
+### AB 名 ↔ nvapi-rs 名对位（N1–N6 的最终裁决）
+
+| AB 19412 RTHAL 符号 | 实际 ID | nvapi-rs 名 | 备注 |
+|---|---|---|---|
+| `VFCurve_SetCurve/GetCurve` | 0x39442CFB / 0xE440B867 | `PerfClientLimitsSet/GetStatus` | 双名一接口；SetCurve 写前先拉 ThermalPolicies/PowerPolicies GET（已记入 sys doc comment） |
+| `Get/SetPowerControl`、`GetPowerControlRange` | 0x34206D86/0x70916171/0xAD95F5ED | `ClientPowerPolicies*`（`power_limit_info/power_limit/set_power_limit`） | AB 名义上的 "PowerControl" 就是 PowerPolicies 族；nvoc 的 kmd 0x470807 通道是另一条臂 |
+| `Get/SetThermalControl`、`GetThermalControlRange` | 0x0D258BB5/0xE9C425A1/0x34C0B13D | `ClientThermalPolicies*`（`thermal_limit_info/thermal_limit/set_thermal_limit`） | nvoc 另有 private GET-prime 0xC4554575 处理 mobile GetStatus 瞬态值 |
+| `GetRelPower` | 0xEDCF624E | `ClientPowerTopologyGetStatus` | AB 把 PowerTopology 状态当相对功率读 |
+| `ClientVoltageRail_Get/Get/SetControl` | 0x465F9BCF/0x9DF23CA1/0xB9306D9B | `ClientVoltRails*`（`core_voltage`/`voltage_boost`） | 同域同名异拼 |
+| `GetFramerateLimit` 族（8 ID） | 0xDAD9CFF8 等 | 未绑 | P3 维持不实现 |
+
+另记：nvapi-rs 同时存在 `...Private` 后缀的同名 ID 变体（如
+`ClientPowerPoliciesGetInfoPrivate` 0x67F31384）——两代平行 ID 族；AB 19412 走的是
+**非 Private** 族（0x34206D86 等），与 nvid.rs:329-331/743-745 一致。
+
+## 5. 对既有结论的修正/佐证
 
 1. **宽表抬窗的第三方量级佐证**：AB 用同代接口把 GDDR7 显存抬到 3999 MHz（oem3
    `MemoryClockBoostMax`），与 Turing 610.47 宽表 Max 槽同抬同量级。
