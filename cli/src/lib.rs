@@ -598,8 +598,8 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetI2c,
                 CommandSpec {
-                    options: Box::leak(Box::new(["port", "address", "register", "len", "speed", "ddc", "display-mask"])),
-                    ..CommandSpec::new("get-i2c", Group::Info, "Read bytes from an I2C slave on the card's I2C bus (NVAPI I2CRead — the transport AB's VRM tooling uses; 24 controller drivers catalogued in the RE archive). --port N (access port), --address 0xXX (7-bit slave, default 0x2F), --register 0xXX (repeated reg bytes, default none), --len N (default 1), --speed KHZ (3/10/33/100/200/400, default driver default), --ddc (DDC port), --display-mask 0xX (default 0x1; ports 0-2 auto-map to DDC mask bits per AB convention)")
+                    options: Box::leak(Box::new(["port", "address", "register", "len", "speed", "ddc", "display-mask", "scan", "scan-ports"])),
+                    ..CommandSpec::new("get-i2c", Group::Info, "Read bytes from an I2C slave on the card's I2C bus (NVAPI I2CRead — the transport AB's VRM tooling uses; 24 controller drivers catalogued in the RE archive). --port N (access port), --address 0xXX (7-bit slave address, default 0x2F; shifted to 8-bit internally), --register 0xXX (repeated reg bytes, default none), --len N (default 1), --speed KHZ (3/10/33/100/200/400, default driver default), --ddc (DDC port), --display-mask 0xX (default 0x1; ports 0-2 auto-map to DDC mask bits per AB convention). --scan [START [END]] probes a 7-bit address range for responding slaves (default 0x08-0x77, the standard addressable range) instead of a single read; --scan-ports [START [END]] (default 0-15) probes ports instead, paired with --address")
                 },
             ),
             (
@@ -2476,6 +2476,16 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("N")
             .action(ArgAction::Set)
             .help("get-i2c: number of bytes to read (default 1)"),
+        "scan-ports" => Arg::new("scan-ports")
+            .long("scan-ports")
+            .num_args(0..=2)
+            .value_names(["START", "END"])
+            .help("get-i2c: probe a port range instead of an address range (pair with --address of a device you know answers, e.g. --address 0x50); no values = 0-15 (driver accepts u8; 0-2 = DDC per AB convention, >=3 = access ports, 0xFF = driver auto-probe)"),
+        "scan" => Arg::new("scan")
+            .long("scan")
+            .num_args(0..=2)
+            .value_names(["START", "END"])
+            .help("get-i2c: probe a 7-bit address range for responding slaves instead of a single read; no values = full standard range (0x08-0x77), one value = start..0x77, two values = start..end"),
         "speed" => Arg::new("speed")
             .long("speed")
             .value_name("KHZ")
@@ -3409,6 +3419,90 @@ fn execute_target(
             }))
         }
         Command::GetI2c => {
+            // --scan-ports [START [END]]: probe each port in the range with
+            // one single-byte read at --address (a known-present device);
+            // lists the ports where it answers.
+            if let Some(range) = invocation.options.get("scan-ports") {
+                let (start, end) = match range.len() {
+                    0 => (0, 15),
+                    1 => {
+                        let start = parse_hex_or_dec_u32(&range[0], "scan-ports start")?;
+                        (start, 15)
+                    }
+                    _ => (
+                        parse_hex_or_dec_u32(&range[0], "scan-ports start")?,
+                        parse_hex_or_dec_u32(&range[1], "scan-ports end")?,
+                    ),
+                };
+                let (start, end) = (start.clamp(0, 15), end.clamp(0, 15));
+                let mut tx = parse_i2c_options(invocation)?;
+                tx.register.clear();
+                tx.length = 1;
+                let mut responding = Vec::new();
+                for port in start..=end {
+                    tx.port = Some(port as u8);
+                    if let Ok(report) = run(target, QueryNvapiI2cRead(tx.clone())) {
+                        let first = report.output.first().copied().unwrap_or(0xFF);
+                        responding.push(json!({
+                            "port": port,
+                            "first_byte": format!("{first:02X}"),
+                        }));
+                    }
+                }
+                let ports: Vec<u32> = responding
+                    .iter()
+                    .filter_map(|v| v.get("port").and_then(|p| p.as_u64()))
+                    .map(|p| p as u32)
+                    .collect();
+                return Ok(json!({
+                    "scan_ports": { "start": start, "end": end, "address": format!("{:02X}", tx.address) },
+                    "responding": responding,
+                    "ports": ports,
+                    "count": responding.len(),
+                }));
+            }
+            // --scan [START [END]]: probe an address range for responding
+            // slaves (one read of 1 byte each, no register); any error is
+            // treated as "no device at this address". Absent = single read.
+            if let Some(range) = invocation.options.get("scan") {
+                let (start, end) = match range.len() {
+                    0 => (0x08, 0x77),
+                    1 => {
+                        let start = parse_hex_or_dec_u32(&range[0], "scan start")?;
+                        (start, 0x77)
+                    }
+                    _ => (
+                        parse_hex_or_dec_u32(&range[0], "scan start")?,
+                        parse_hex_or_dec_u32(&range[1], "scan end")?,
+                    ),
+                };
+                let (start, end) = (start.clamp(0x08, 0x77), end.clamp(0x08, 0x77));
+                let mut tx = parse_i2c_options(invocation)?;
+                tx.register.clear();
+                let mut responding = Vec::new();
+                for address in start..=end {
+                    tx.address = address as u8;
+                    // A NACK surfaces as Err — that's the "no device here"
+                    // outcome, not a scan failure.
+                    if let Ok(report) = run(target, QueryNvapiI2cRead(tx.clone())) {
+                        let first = report.output.first().copied().unwrap_or(0xFF);
+                        responding.push(json!({
+                            "address": format!("0x{address:02X}"),
+                            "first_byte": format!("{first:02X}"),
+                        }));
+                    }
+                }
+                let addresses: Vec<String> = responding
+                    .iter()
+                    .filter_map(|v| v.get("address").and_then(|a| a.as_str().map(String::from)))
+                    .collect();
+                return Ok(json!({
+                    "scan": { "start": format!("{start:#04x}"), "end": format!("{end:#04x}") },
+                    "responding": responding,
+                    "addresses": addresses,
+                    "count": responding.len(),
+                }));
+            }
             let tx = parse_i2c_options(invocation)?;
             let bytes = run(target, QueryNvapiI2cRead(tx))?.output;
             let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
