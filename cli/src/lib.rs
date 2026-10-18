@@ -2618,6 +2618,7 @@ fn collect_named_options(
             | "dump-records"
             | "force"
             | "kmd"
+            | "ddc"
             | "unsafe" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
@@ -3382,7 +3383,12 @@ fn execute_target(
         }
         Command::GetFramerateLimit => {
             let fps = run(target, QueryNvapiFramerateLimit)?.output;
+            // AB parity: IsFramerateLimitControlSupported gates the limiter UI
+            // on the DRS setting answering at all — drivers without the legacy
+            // FRL surface report SettingNotFound on Set/GetSetting (-160).
+            let supported = nvoc_core::framerate_limit_supported().unwrap_or(false);
             Ok(json!({
+                "supported": supported,
                 "fps": fps,
                 "drs_setting_id": "0x10834FEE",
                 "unset": fps.is_none(),
@@ -10405,6 +10411,35 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn get_i2c_options_parse_without_flag_downcast_panic() {
+        // Regression: `--ddc` is a SetTrue flag; before it joined the flag
+        // list in collect_named_options, the value branch downcast it to
+        // String and panicked the parser.
+        let invocation = parse_args([
+            "get-i2c",
+            "--ddc",
+            "--address",
+            "0x49",
+            "--register",
+            "0x00,0x01",
+            "--len",
+            "4",
+            "--speed",
+            "100",
+            "--port",
+            "2",
+        ])
+        .expect("parse get-i2c");
+        let tx = parse_i2c_options(&invocation).expect("i2c options");
+        assert!(tx.port_is_ddc);
+        assert_eq!(tx.address, 0x49);
+        assert_eq!(tx.register, vec![0x00, 0x01]);
+        assert_eq!(tx.length, 4);
+        assert_eq!(tx.speed_khz, 100);
+        assert_eq!(tx.port, Some(2));
+    }
+
     fn set_pwr_cur_limit_parses_all_targets() {
         // Merged power/current writer: every target name, and the NVML flag
         // only meaningful for the tgp/board form.

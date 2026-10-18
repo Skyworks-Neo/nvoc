@@ -5411,7 +5411,12 @@ impl GpuOperation for SetNvapiFramerateLimit {
                 "refused: set-framerate-limit persists into the driver profile registry (global, survives reboot). Re-run with --force".to_owned(),
             ));
         }
-        nvapi::set_framerate_limit(self.fps).map_err(Error::from)?;
+        nvapi::set_framerate_limit(self.fps).map_err(|e| match e {
+            nvapi::Error::Nvapi(err) if err.status == nvapi::Status::SettingNotFound => Error::Custom(
+                "driver has no DRS setting 0x10834FEE (the legacy Frame Rate Limiter surface AB 19412 drives; NVAPI_SETTING_NOT_FOUND): this driver branch does not carry it — NVIDIA App's Max Frame Rate (FRL2) is the modern equivalent".to_owned(),
+            ),
+            other => Error::from(other),
+        })?;
         Ok(AppliedValue {
             requested: self.fps,
             applied: self.fps,

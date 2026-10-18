@@ -18,6 +18,7 @@ pub mod vbios_dcb;
 pub use self::nvapi::{
     CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
 };
+pub use ::nvapi::framerate_limit_supported;
 pub use ::nvapi::sys::gpu::power::undocumented::Wm2AcousticMode;
 pub use ::nvapi::{P0VoltageBounds, VoltRails};
 pub use ::nvapi::{
