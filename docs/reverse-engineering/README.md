@@ -45,6 +45,7 @@ a supported API contract. Start with the maintained wiki summary in
 | Document | Purpose | Snapshot |
 |---|---|---|
 | [`afterburner/oow-mode-verification.md`](afterburner/oow-mode-verification.md) | Differential verification of the "out of warranty" mode claims (4.6.7.16935 vs 4.6.7.19412): oem3 database, hidden-control infrastructure, VRM/policy/MMIO surface | Both builds on disk under `reverse/afterburner*` (binaries not stored; RTCore drivers committed by explicit request) |
+| [`afterburner/ab-19412-nvapi-id-surface-tier-table.md`](afterburner/ab-19412-nvapi-id-surface-tier-table.md) | Full private NVAPI interface surface (74 QueryInterface IDs mapped to named wrapper methods), naming-deviation verdicts vs nvoc, and the P0–Pn fill-in tier table | RTHAL.dll 4.6.7.19412 |
 
 ### NVML audit
 
