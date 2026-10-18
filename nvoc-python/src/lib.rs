@@ -5636,6 +5636,65 @@ fn profile_diff(
                             .unwrap_or(0);
                         (recorded == 0, "fan curves (recorded intent only)")
                     }
+                    nvoc_core::profile::DomainKind::ClkDomainOffsets => {
+                        let live = run(target, QueryNvapiClkDomains)
+                            .ok()
+                            .and_then(|report| report.output);
+                        let all_match = match (doc.domains.clk_domain_offsets.as_ref(), live) {
+                            (Some(records), Some(live_control)) => records.iter().all(|record| {
+                                live_control
+                                    .entries
+                                    .iter()
+                                    .find(|entry| entry.bit == record.bit)
+                                    .map(|entry| entry.values_kHz == record.values)
+                                    .unwrap_or(false)
+                            }),
+                            (Some(_), None) => false,
+                            (None, _) => true,
+                        };
+                        (all_match, "ClkDomains control records")
+                    }
+                    nvoc_core::profile::DomainKind::PrivateVfOffsets => {
+                        let live = run(target, QueryNvapiClkVfPoints { include_raw: false })
+                            .ok()
+                            .and_then(|report| report.output);
+                        let all_match = match (doc.domains.private_vf_offsets.as_ref(), live) {
+                            (Some(records), Some(live_points)) => records.iter().all(|record| {
+                                live_points
+                                    .points
+                                    .iter()
+                                    .find(|p| p.bank == record.bank && p.index == record.index)
+                                    .map(|p| {
+                                        ((p.freq_current_mhz as i64 - p.freq_default_mhz as i64)
+                                            * 1000) as i32
+                                            == record.offset_khz
+                                    })
+                                    .unwrap_or(false)
+                            }),
+                            (Some(_), None) => false,
+                            (None, _) => true,
+                        };
+                        (all_match, "private V/F point offsets")
+                    }
+                    nvoc_core::profile::DomainKind::TopRelsRatios => {
+                        // Best-effort: the plane is 50-series-only; an
+                        // absent plane reads as "no live data" rather than
+                        // drift. Slot identity is the GetInfo index.
+                        let live = run(target, QueryTopRelsRelations)
+                            .ok()
+                            .map(|report| report.output)
+                            .unwrap_or_default();
+                        let all_match = match doc.domains.toprels_ratios.as_ref() {
+                            Some(records) => records.iter().all(|record| {
+                                live.iter()
+                                    .find(|(index, ..)| index == &record.index)
+                                    .map(|entry| entry.5 == Some(record.ratio_raw))
+                                    .unwrap_or(false)
+                            }),
+                            None => true,
+                        };
+                        (all_match, "TopRels slot ratios")
+                    }
                     nvoc_core::profile::DomainKind::LockedClocks
                     | nvoc_core::profile::DomainKind::VfpLocks => {
                         (true, "recorded intent only in v1")

@@ -4,9 +4,9 @@
 //! captures are unit-testable without a GPU.
 
 use super::schema::{
-    BaselineBlock, DomainKind, FanSettings, GpuIdentity, PowerSettings, PowerWattsBounds,
-    ProfileDoc, ProfileDomains, SettingsBackup, TopRelsRatioRecord, VoltRailLimit, VoltageSettings,
-    empty_gpu_settings,
+    BaselineBlock, ClkDomainOffsetRecord, DomainKind, FanSettings, GpuIdentity, PowerSettings,
+    PowerWattsBounds, PrivateVfPointOffsetRecord, ProfileDoc, ProfileDomains, SettingsBackup,
+    TopRelsRatioRecord, VoltRailLimit, VoltageSettings, empty_gpu_settings,
 };
 use super::schema::{FanCurveReadoutRecord, ValidationRecord};
 use ::nvapi::hi::{CoolerSettings, FanCoolerId, GpuSettings, SensorThrottle};
@@ -27,6 +27,12 @@ pub struct CaptureContext {
     /// TopRels GPC:XBAR ratio records (live control value per populated
     /// relation; empty when the plane is absent — 50-series only).
     pub toprels_ratios: Vec<TopRelsRatioRecord>,
+    /// Private ClkDomains control records (all entries, full 8-slot
+    /// arrays; empty when the family is absent).
+    pub clk_domain_records: Vec<ClkDomainOffsetRecord>,
+    /// Non-zero applied per-point frequency offsets on the private V/F
+    /// table (mode-0 form; empty when the family is absent).
+    pub private_vf_offsets: Vec<PrivateVfPointOffsetRecord>,
 }
 
 /// Capture the requested domains out of a `GpuSettings` snapshot plus the
@@ -102,6 +108,16 @@ pub fn capture_domains(
                     out.toprels_ratios = Some(context.toprels_ratios.clone());
                 }
             }
+            DomainKind::ClkDomainOffsets => {
+                if !context.clk_domain_records.is_empty() {
+                    out.clk_domain_offsets = Some(context.clk_domain_records.clone());
+                }
+            }
+            DomainKind::PrivateVfOffsets => {
+                if !context.private_vf_offsets.is_empty() {
+                    out.private_vf_offsets = Some(context.private_vf_offsets.clone());
+                }
+            }
         }
     }
     out
@@ -146,6 +162,8 @@ pub fn capture_backup(
     backup.fan_curves = context.fan_curves.clone();
     backup.volt_rails = context.volt_rails.clone();
     backup.toprels_ratios = context.toprels_ratios.clone();
+    backup.clk_domain_records = context.clk_domain_records.clone();
+    backup.private_vf_offsets = context.private_vf_offsets.clone();
     backup.power_watts = context.power.clone();
     backup
 }
@@ -173,6 +191,57 @@ pub(crate) fn read_volt_rail_limits(target: &crate::target::GpuTarget<'_>) -> Ve
 /// Read the TopRels relation table with live control ratios as profile
 /// records. Empty when the plane is absent (non-50-series: the control GET
 /// answers -103/-1) — visible degradation, never an error.
+/// Read the private ClkDomains control records (all entries, full
+/// 8-slot arrays). Empty when the family is absent — visible
+/// degradation, never an error.
+pub(crate) fn read_clk_domain_records(
+    target: &crate::target::GpuTarget<'_>,
+) -> Vec<ClkDomainOffsetRecord> {
+    crate::operation::run(target, crate::operation::QueryNvapiClkDomains)
+        .ok()
+        .and_then(|report| report.output)
+        .map(|control| {
+            control
+                .entries
+                .iter()
+                .map(|entry| ClkDomainOffsetRecord {
+                    bit: entry.bit,
+                    values: entry.values_kHz,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Read the non-zero applied per-point frequency offsets from the
+/// private V/F table (mode-0 form: current minus default, in kHz).
+/// Empty when the family is absent.
+pub(crate) fn read_private_vf_offsets(
+    target: &crate::target::GpuTarget<'_>,
+) -> Vec<PrivateVfPointOffsetRecord> {
+    crate::operation::run(
+        target,
+        crate::operation::QueryNvapiClkVfPoints { include_raw: false },
+    )
+    .ok()
+    .and_then(|report| report.output)
+    .map(|points| {
+        points
+            .points
+            .iter()
+            .filter_map(|point| {
+                let offset_khz =
+                    ((point.freq_current_mhz as i64 - point.freq_default_mhz as i64) * 1000) as i32;
+                (offset_khz != 0).then_some(PrivateVfPointOffsetRecord {
+                    bank: point.bank,
+                    index: point.index,
+                    offset_khz,
+                })
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
 pub(crate) fn read_toprels_ratios(
     target: &crate::target::GpuTarget<'_>,
 ) -> Vec<TopRelsRatioRecord> {
@@ -240,12 +309,16 @@ pub fn capture_context(
         .unwrap_or_default();
     let volt_rails = read_volt_rail_limits(target);
     let toprels_ratios = read_toprels_ratios(target);
+    let clk_domain_records = read_clk_domain_records(target);
+    let private_vf_offsets = read_private_vf_offsets(target);
     CaptureContext {
         identity,
         power,
         fan_curves,
         volt_rails,
         toprels_ratios,
+        clk_domain_records,
+        private_vf_offsets,
     }
 }
 
@@ -346,6 +419,41 @@ mod tests {
         assert_eq!(limits[0].slots, Some(values));
     }
 
+    #[test]
+    fn clk_domain_and_private_vf_domains_roundtrip_through_capture() {
+        let settings = empty_gpu_settings();
+        let mut context = CaptureContext::default();
+        context.clk_domain_records.push(ClkDomainOffsetRecord {
+            bit: 1,
+            values: [12000, 0, 0, 0, 0, 0, 0, 0],
+        });
+        context.private_vf_offsets.push(PrivateVfPointOffsetRecord {
+            bank: 0,
+            index: 5,
+            offset_khz: -15000,
+        });
+        let domains = capture_domains(
+            &settings,
+            &context,
+            &[DomainKind::ClkDomainOffsets, DomainKind::PrivateVfOffsets],
+        );
+        assert_eq!(domains.clk_domain_offsets.as_ref().unwrap()[0].bit, 1);
+        assert_eq!(
+            domains.private_vf_offsets.as_ref().unwrap()[0].offset_khz,
+            -15000
+        );
+        // both domains ride along by default
+        assert!(DomainKind::DEFAULT_CAPTURE.contains(&DomainKind::ClkDomainOffsets));
+        assert!(DomainKind::DEFAULT_CAPTURE.contains(&DomainKind::PrivateVfOffsets));
+        assert_eq!(
+            DomainKind::parse("clk_domain_offsets"),
+            Some(DomainKind::ClkDomainOffsets)
+        );
+        assert_eq!(
+            DomainKind::parse("private_vf_offsets"),
+            Some(DomainKind::PrivateVfOffsets)
+        );
+    }
     #[test]
     fn vfp_locks_in_default_capture() {
         // The get-lock-status table (PerfClientLimits GET) rides along by

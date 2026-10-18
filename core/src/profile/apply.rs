@@ -5,16 +5,19 @@
 
 use super::plan::ApplyPlan;
 use super::schema::{
-    DomainKind, FanCurvePointRecord, FanCurveReadoutRecord, PowerSettings, ProfileDoc,
-    SettingsBackup, TopRelsRatioRecord, VoltRailLimit, VoltageSettings,
+    ClkDomainOffsetRecord, DomainKind, FanCurvePointRecord, FanCurveReadoutRecord, PowerSettings,
+    PrivateVfPointOffsetRecord, ProfileDoc, SettingsBackup, TopRelsRatioRecord, VoltRailLimit,
+    VoltageSettings,
 };
 use crate::nvml::query_nvml_power_watts;
 use crate::operation::{
-    GetFanCurves, QueryGpuSettings, QueryNvapiVoltRails, QueryTopRelsRelations, ResetFanCurve,
-    ResetNvapiSensorLimits, ResetPublicVftableOffset, SetCoolerLevels, SetDomainVfpDeltas,
-    SetFanCurve, SetNvapiOvervolt, SetNvapiPowerLimits, SetNvapiSensorLimits,
-    SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetPowerLimit, SetPstateClockOffset,
-    SetTopRelsRatioSlotRaw, SetVfpLockEntries, SetVoltageBoost, run,
+    GetFanCurves, QueryGpuInfo, QueryGpuSettings, QueryNvapiClkDomains, QueryNvapiClkVfPoints,
+    QueryNvapiVoltRails, QueryTopRelsRelations, ResetFanCurve, ResetNvapiSensorLimits,
+    ResetPublicVftableOffset, SetCoolerLevels, SetDomainVfpDeltas, SetFanCurve,
+    SetNvapiClkDomainOffset, SetNvapiOvervolt, SetNvapiPowerLimits, SetNvapiSensorLimits,
+    SetNvapiVfpPointPrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetPowerLimit,
+    SetPstateClockOffset, SetTopRelsRatioSlotRaw, SetVfpLockEntries, SetVoltageBoost,
+    fetch_gpu_type, run,
 };
 use crate::target::GpuTarget;
 use crate::types::VfpResetDomain;
@@ -95,6 +98,10 @@ struct DomainWrites {
     fan_resets: std::collections::BTreeSet<u8>,
     /// TopRels GPC:XBAR ratio records to restore verbatim (per slot).
     toprels_ratios: Vec<TopRelsRatioRecord>,
+    /// Private ClkDomains control records to restore verbatim.
+    clk_domain_offsets: Vec<ClkDomainOffsetRecord>,
+    /// Per-point private V/F frequency offsets to restore (mode-0).
+    private_vf_offsets: Vec<PrivateVfPointOffsetRecord>,
     /// PerfClientLimits entries to write verbatim (freq/volt locks and
     /// PstateSelect pins — each entry carries its own mode). `None` =
     /// nothing.
@@ -124,6 +131,8 @@ impl DomainWrites {
                 .map(|fan| fan.curves.clone())
                 .unwrap_or_default(),
             toprels_ratios: doc.domains.toprels_ratios.clone().unwrap_or_default(),
+            clk_domain_offsets: doc.domains.clk_domain_offsets.clone().unwrap_or_default(),
+            private_vf_offsets: doc.domains.private_vf_offsets.clone().unwrap_or_default(),
             fan_resets: std::collections::BTreeSet::new(),
             vfp_locks: doc
                 .domains
@@ -315,6 +324,13 @@ fn rollback_writes(
                 }
                 w.vfp_locks = Some(entries.into_values().collect());
             }
+            DomainKind::ClkDomainOffsets => {
+                // The snapshot carries the full pre-apply record set.
+                w.clk_domain_offsets = backup.clk_domain_records.clone();
+            }
+            DomainKind::PrivateVfOffsets => {
+                w.private_vf_offsets = backup.private_vf_offsets.clone();
+            }
             DomainKind::TopRelsRatios => {
                 // Restore the snapshot's captured slot values. A slot the
                 // snapshot lacks (older backup) is left alone — the
@@ -454,6 +470,86 @@ fn apply_domain(
                         },
                     )?;
                 }
+            }
+            Ok(DomainWriteStatus::Applied)
+        }
+        DomainKind::ClkDomainOffsets => {
+            if writes.clk_domain_offsets.is_empty() {
+                return Ok(DomainWriteStatus::Applied);
+            }
+            // Availability gate: the family is absent on some drivers.
+            let live = run(target, QueryNvapiClkDomains)?.output;
+            let Some(live) = live else {
+                return Ok(DomainWriteStatus::Unavailable(
+                    "private ClkDomains control family not exposed by this driver".to_owned(),
+                ));
+            };
+            for record in &writes.clk_domain_offsets {
+                // Replay only the slots that differ from live — the
+                // driver-opaque dwords may be self-updating, and a
+                // verbatim stamp would fight the driver.
+                let Some(entry) = live.entries.iter().find(|e| e.bit == record.bit) else {
+                    return Ok(DomainWriteStatus::Unavailable(format!(
+                        "clock-domain bit {} not present in readback",
+                        record.bit
+                    )));
+                };
+                for (slot, &value) in record.values.iter().enumerate() {
+                    if entry.values_kHz[slot] == value {
+                        continue;
+                    }
+                    run(
+                        target,
+                        SetNvapiClkDomainOffset {
+                            domain_bit: record.bit,
+                            offset_kHz: value,
+                            slot: slot as u32,
+                            temporary: false,
+                        },
+                    )?;
+                }
+            }
+            Ok(DomainWriteStatus::Applied)
+        }
+        DomainKind::PrivateVfOffsets => {
+            if writes.private_vf_offsets.is_empty() {
+                return Ok(DomainWriteStatus::Applied);
+            }
+            // Availability gate + the Pascal 2x control-word axis (same
+            // shape the CLI's set-private-vftable-point-offset uses).
+            let live = run(target, QueryNvapiClkVfPoints { include_raw: false })?.output;
+            let Some(live) = live else {
+                return Ok(DomainWriteStatus::Unavailable(
+                    "private V/F point table not exposed by this driver".to_owned(),
+                ));
+            };
+            let pascal_2x = run(target, QueryGpuInfo)
+                .ok()
+                .and_then(|r| fetch_gpu_type(&r.output).ok())
+                .is_some_and(|t| t.is_pascal());
+            let axis: i32 = if pascal_2x { 2 } else { 1 };
+            for record in &writes.private_vf_offsets {
+                let live_point = live
+                    .points
+                    .iter()
+                    .find(|p| p.bank == record.bank && p.index == record.index);
+                if let Some(point) = live_point {
+                    let applied_khz = ((point.freq_current_mhz as i64
+                        - point.freq_default_mhz as i64)
+                        * 1000) as i32;
+                    if applied_khz == record.offset_khz {
+                        continue;
+                    }
+                }
+                run(
+                    target,
+                    SetNvapiVfpPointPrivate {
+                        bank: record.bank as usize,
+                        idx: record.index as usize,
+                        freq_mode: true,
+                        value: (record.offset_khz.saturating_mul(axis)) as u32,
+                    },
+                )?;
             }
             Ok(DomainWriteStatus::Applied)
         }
@@ -858,6 +954,63 @@ fn verify_domain(
             }
             Ok(())
         }
+        DomainKind::ClkDomainOffsets => {
+            if writes.clk_domain_offsets.is_empty() {
+                return Ok(());
+            }
+            let live = run(target, QueryNvapiClkDomains)
+                .map_err(|e| e.to_string())?
+                .output;
+            let Some(live) = live else {
+                return Err("private ClkDomains family not exposed".to_owned());
+            };
+            for record in &writes.clk_domain_offsets {
+                let entry = live
+                    .entries
+                    .iter()
+                    .find(|e| e.bit == record.bit)
+                    .ok_or_else(|| format!("clock-domain bit {} not in readback", record.bit))?;
+                if entry.values_kHz != record.values {
+                    return Err(format!(
+                        "clock-domain {} values differ: expected {:?}, read back {:?}",
+                        record.bit, record.values, entry.values_kHz
+                    ));
+                }
+            }
+            Ok(())
+        }
+        DomainKind::PrivateVfOffsets => {
+            if writes.private_vf_offsets.is_empty() {
+                return Ok(());
+            }
+            let live = run(target, QueryNvapiClkVfPoints { include_raw: false })
+                .map_err(|e| e.to_string())?
+                .output;
+            let Some(live) = live else {
+                return Err("private V/F point table not exposed".to_owned());
+            };
+            for record in &writes.private_vf_offsets {
+                let point = live
+                    .points
+                    .iter()
+                    .find(|p| p.bank == record.bank && p.index == record.index)
+                    .ok_or_else(|| {
+                        format!(
+                            "private V/F point {}/{} not in readback",
+                            record.bank, record.index
+                        )
+                    })?;
+                let applied_khz =
+                    ((point.freq_current_mhz as i64 - point.freq_default_mhz as i64) * 1000) as i32;
+                if applied_khz != record.offset_khz {
+                    return Err(format!(
+                        "private V/F point {}/{} offset differs: expected {} kHz, read back {} kHz",
+                        record.bank, record.index, record.offset_khz, applied_khz
+                    ));
+                }
+            }
+            Ok(())
+        }
         DomainKind::TopRelsRatios => {
             if writes.toprels_ratios.is_empty() {
                 return Ok(());
@@ -951,6 +1104,8 @@ pub fn capture_backup_now(
     backup.fan_curves = fan_curves;
     backup.volt_rails = volt_rails;
     backup.toprels_ratios = toprels_ratios;
+    backup.clk_domain_records = super::capture::read_clk_domain_records(target);
+    backup.private_vf_offsets = super::capture::read_private_vf_offsets(target);
     backup.power_watts = power_watts;
     Ok(backup)
 }
@@ -981,6 +1136,12 @@ pub fn backup_domains(backup: &SettingsBackup) -> Vec<DomainKind> {
     }
     if !backup.toprels_ratios.is_empty() {
         domains.push(DomainKind::TopRelsRatios);
+    }
+    if !backup.clk_domain_records.is_empty() {
+        domains.push(DomainKind::ClkDomainOffsets);
+    }
+    if !backup.private_vf_offsets.is_empty() {
+        domains.push(DomainKind::PrivateVfOffsets);
     }
     if !backup.settings.vfp_locks.is_empty() {
         domains.push(DomainKind::VfpLocks);
@@ -1139,6 +1300,43 @@ pub fn restore_backup(
                         SetTopRelsRatioSlotRaw {
                             index: record.index,
                             ratio_raw: record.ratio_raw,
+                        },
+                    )?;
+                }
+            }
+            DomainKind::ClkDomainOffsets => {
+                if backup.clk_domain_records.is_empty() {
+                    notes.push((*domain, "snapshot carries no ClkDomains records".to_owned()));
+                }
+                for record in &backup.clk_domain_records {
+                    for (slot, &value) in record.values.iter().enumerate() {
+                        run(
+                            target,
+                            SetNvapiClkDomainOffset {
+                                domain_bit: record.bit,
+                                offset_kHz: value,
+                                slot: slot as u32,
+                                temporary: false,
+                            },
+                        )?;
+                    }
+                }
+            }
+            DomainKind::PrivateVfOffsets => {
+                if backup.private_vf_offsets.is_empty() {
+                    notes.push((
+                        *domain,
+                        "snapshot carries no private V/F offsets".to_owned(),
+                    ));
+                }
+                for record in &backup.private_vf_offsets {
+                    run(
+                        target,
+                        SetNvapiVfpPointPrivate {
+                            bank: record.bank as usize,
+                            idx: record.index as usize,
+                            freq_mode: true,
+                            value: record.offset_khz as u32,
                         },
                     )?;
                 }

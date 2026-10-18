@@ -22,7 +22,7 @@ pub use self::nvapi::{
 };
 pub use ::nvapi::framerate_limit_supported;
 pub use ::nvapi::sys::gpu::power::undocumented::Wm2AcousticMode;
-pub use ::nvapi::{P0VoltageBounds, VoltRails};
+pub use ::nvapi::{ClockDomainControl, P0VoltageBounds, VoltRails};
 pub use ::nvapi::{
     POWER_COMMAND_ENVELOPE_FLOOR_MW, POWER_COMMAND_ENVELOPE_MULTIPLE, power_command_envelope_max_mw,
 };

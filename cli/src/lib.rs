@@ -995,7 +995,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "NAME",
                     "Profile slot name to create/overwrite",
                 )])),
-                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state of every selected GPU (default: all; narrow with --gpu) into a named slot per GPU (default domains: clock-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, toprels-ratios, vfp-locks; --domains narrows)")
+                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state of every selected GPU (default: all; narrow with --gpu) into a named slot per GPU (default domains: clock-offsets, clk-domain-offsets, private-vf-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, toprels-ratios, vfp-locks; --domains narrows)")
                 },
             ),
             (
@@ -2392,7 +2392,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("domains")
             .value_name("DOMAINS")
             .action(ArgAction::Set)
-            .help("Comma-separated profile domains to capture: clock-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, toprels-ratios, locked-clocks, vfp-locks (default: all except locked-clocks)"),
+            .help("Comma-separated profile domains to capture: clock-offsets, clk-domain-offsets, private-vf-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, toprels-ratios, locked-clocks, vfp-locks (default: all except locked-clocks)"),
         "note" => Arg::new("note")
             .long("note")
             .value_name("TEXT")
@@ -3567,7 +3567,19 @@ fn execute_target(
             let toprels = run(target, QueryTopRelsRelations)
                 .map(|r| r.output)
                 .unwrap_or_default();
-            Ok(profile_diff_value(&doc, &settings, &toprels))
+            let clk_domains = run(target, QueryNvapiClkDomains)
+                .ok()
+                .and_then(|r| r.output);
+            let vf_points = run(target, QueryNvapiClkVfPoints { include_raw: false })
+                .ok()
+                .and_then(|r| r.output);
+            Ok(profile_diff_value(
+                &doc,
+                &settings,
+                &toprels,
+                clk_domains.as_ref(),
+                vf_points.as_ref(),
+            ))
         }
         Command::ProfileApply => {
             let store = profile_store(invocation)?;
@@ -9659,6 +9671,8 @@ fn profile_diff_value(
     doc: &ProfileDoc,
     settings: &nvoc_core::GpuSettings,
     toprels: &[nvoc_core::TopRelsRelationRow],
+    clk_domains: Option<&nvoc_core::ClockDomainControl>,
+    vf_points: Option<&nvoc_core::ClkVfPointsPrivate>,
 ) -> Value {
     use nvoc_core::profile::ProfileDomains;
 
@@ -9701,6 +9715,38 @@ fn profile_diff_value(
             DomainKind::Fan => {
                 let recorded = domains.fan.as_ref().map(|f| f.curves.len()).unwrap_or(0);
                 (recorded == 0, "fan curves (recorded intent only)")
+            }
+            DomainKind::ClkDomainOffsets => {
+                let all_match = match (domains.clk_domain_offsets.as_ref(), clk_domains) {
+                    (Some(records), Some(live)) => records.iter().all(|record| {
+                        live.entries
+                            .iter()
+                            .find(|e| e.bit == record.bit)
+                            .map(|e| e.values_kHz == record.values)
+                            .unwrap_or(false)
+                    }),
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                (all_match, "ClkDomains control records")
+            }
+            DomainKind::PrivateVfOffsets => {
+                let all_match = match (domains.private_vf_offsets.as_ref(), vf_points) {
+                    (Some(records), Some(live)) => records.iter().all(|record| {
+                        live.points
+                            .iter()
+                            .find(|p| p.bank == record.bank && p.index == record.index)
+                            .map(|p| {
+                                ((p.freq_current_mhz as i64 - p.freq_default_mhz as i64) * 1000)
+                                    as i32
+                                    == record.offset_khz
+                            })
+                            .unwrap_or(false)
+                    }),
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                (all_match, "private V/F point offsets")
             }
             DomainKind::TopRelsRatios => {
                 let all_match = match domains.toprels_ratios.as_ref() {

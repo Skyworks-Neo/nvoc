@@ -98,11 +98,25 @@ pub enum DomainKind {
     /// populated relation, restored verbatim through the per-slot SET with
     /// the hang-class hard gates (zero ratio / non-carrier edge).
     TopRelsRatios,
+    /// Private ClkDomains control-record offsets (the
+    /// set-private-freq-domain-global-offset face): the full 8-dword
+    /// value array per controllable domain, captured and restored
+    /// verbatim per slot (slot semantics are generation-dependent:
+    /// 10-40 series freq=volt=0/1, Blackwell 2/3).
+    ClkDomainOffsets,
+    /// Per-point applied frequency offsets on the private V/F table (the
+    /// set-private-vftable-point-offset face, mode-0 semantics: MHz
+    /// offset = freq_current - freq_default). Mode-1 raw control words
+    /// are NOT recoverable from the readback (it only reports MHz), so
+    /// this domain stores and replays the applied offset form only.
+    PrivateVfOffsets,
 }
 
 impl DomainKind {
-    pub const ALL: [DomainKind; 10] = [
+    pub const ALL: [DomainKind; 12] = [
         DomainKind::ClockOffsets,
+        DomainKind::ClkDomainOffsets,
+        DomainKind::PrivateVfOffsets,
         DomainKind::PublicVftable,
         DomainKind::Voltage,
         DomainKind::VoltRails,
@@ -120,8 +134,10 @@ impl DomainKind {
     /// (mode-None entries unlock), so it rides along by default.
     /// `toprels_ratios` is likewise a read at capture and a gated verbatim
     /// restore at apply (50-series-only; absent planes capture as absent).
-    pub const DEFAULT_CAPTURE: [DomainKind; 9] = [
+    pub const DEFAULT_CAPTURE: [DomainKind; 11] = [
         DomainKind::ClockOffsets,
+        DomainKind::ClkDomainOffsets,
+        DomainKind::PrivateVfOffsets,
         DomainKind::PublicVftable,
         DomainKind::Voltage,
         DomainKind::VoltRails,
@@ -144,6 +160,8 @@ impl DomainKind {
             DomainKind::LockedClocks => "locked_clocks",
             DomainKind::VfpLocks => "vfp_locks",
             DomainKind::TopRelsRatios => "toprels_ratios",
+            DomainKind::ClkDomainOffsets => "clk_domain_offsets",
+            DomainKind::PrivateVfOffsets => "private_vf_offsets",
         }
     }
 
@@ -164,7 +182,7 @@ impl std::fmt::Display for DomainKind {
 /// need them (e.g. `PublicVftable` resets the public table before replaying
 /// deltas); the order exists so global offsets land before per-point curves
 /// and lock-style writes land last.
-pub const DOMAIN_APPLY_ORDER: [DomainKind; 10] = DomainKind::ALL;
+pub const DOMAIN_APPLY_ORDER: [DomainKind; 12] = DomainKind::ALL;
 
 /// Identity binding stored in every profile. `uuid` is the primary key (NVML
 /// `GPU-…`); the fingerprint is the apply-time second factor. The PCI address
@@ -225,6 +243,10 @@ pub struct ProfileDomains {
     pub vfp_locks: Option<BTreeMap<PerfLimitId, ClockLockEntry>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toprels_ratios: Option<Vec<TopRelsRatioRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clk_domain_offsets: Option<Vec<ClkDomainOffsetRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_vf_offsets: Option<Vec<PrivateVfPointOffsetRecord>>,
 }
 
 /// One TopRels relation's captured ratio (the `toprels_ratios` domain).
@@ -239,6 +261,27 @@ pub struct TopRelsRatioRecord {
     pub src: u32,
     pub dst: u32,
     pub ratio_raw: u32,
+}
+
+/// One private ClkDomains control record: the domain mask bit plus the
+/// full 8-dword value array, captured verbatim (slot semantics are
+/// generation-dependent and driver-opaque outside the identified
+/// freq/volt planes; the restore replays each differing slot through
+/// the same SetControl path the CLI uses).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClkDomainOffsetRecord {
+    pub bit: u32,
+    pub values: [i32; 8],
+}
+
+/// One private V/F point's applied frequency offset (mode-0 form).
+/// `offset_khz` = (freq_current_mhz - freq_default_mhz) * 1000; the
+/// Pascal 2x control-word axis is applied at write time, never stored.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrivateVfPointOffsetRecord {
+    pub bank: u8,
+    pub index: u16,
+    pub offset_khz: i32,
 }
 
 impl ProfileDomains {
@@ -263,6 +306,8 @@ impl ProfileDomains {
             DomainKind::LockedClocks => self.locked_clocks.is_some(),
             DomainKind::VfpLocks => self.vfp_locks.is_some(),
             DomainKind::TopRelsRatios => self.toprels_ratios.is_some(),
+            DomainKind::ClkDomainOffsets => self.clk_domain_offsets.is_some(),
+            DomainKind::PrivateVfOffsets => self.private_vf_offsets.is_some(),
         }
     }
 }
@@ -466,6 +511,14 @@ pub struct SettingsBackup {
     /// `toprels_ratios` domain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toprels_ratios: Vec<TopRelsRatioRecord>,
+    /// ClkDomains control-record snapshot — rollback source for
+    /// `clk_domain_offsets`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clk_domain_records: Vec<ClkDomainOffsetRecord>,
+    /// Private V/F point offsets snapshot — rollback source for
+    /// `private_vf_offsets`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub private_vf_offsets: Vec<PrivateVfPointOffsetRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_watts: Option<PowerWattsBounds>,
 }
@@ -482,6 +535,8 @@ impl SettingsBackup {
             fan_curves: Vec::new(),
             volt_rails: Vec::new(),
             toprels_ratios: Vec::new(),
+            clk_domain_records: Vec::new(),
+            private_vf_offsets: Vec::new(),
             power_watts: None,
         }
     }
