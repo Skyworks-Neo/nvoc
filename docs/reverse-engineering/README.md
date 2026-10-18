@@ -40,6 +40,12 @@ a supported API contract. Start with the maintained wiki summary in
 | [`nvapi/unregistered-handler-triage-2.md`](nvapi/unregistered-handler-triage-2.md) | Second batch of unregistered handler classifications | Windows driver R610.74 |
 | [`nvapi/evidence/`](nvapi/evidence/) | Generated QueryInterface and handler input tables | Evidence for the two triage reports |
 
+### MSI Afterburner
+
+| Document | Purpose | Snapshot |
+|---|---|---|
+| [`afterburner/oow-mode-verification.md`](afterburner/oow-mode-verification.md) | Differential verification of the "out of warranty" mode claims (4.6.7.16935 vs 4.6.7.19412): oem3 database, hidden-control infrastructure, VRM/policy/MMIO surface | Both builds on disk under `reverse/afterburner*` (binaries not stored; RTCore drivers committed by explicit request) |
+
 ### NVML audit
 
 | Document | Purpose | Snapshot |
