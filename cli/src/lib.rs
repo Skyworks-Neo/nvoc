@@ -641,7 +641,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetPerfPolicies,
                 CommandSpec {
-                    ..CommandSpec::new("get-perf-policies", Group::Perf, "Read the performance-policy diagnostic view: supported limit mask (PerfPoliciesGetInfo 0x409D9841), ACTIVE throttling sources (GetStatus 0x3D358A0C active bits — power/thermal/voltage/no-load), raw+named, plus performance-decrease reasons — the 'why is the GPU below peak' readout; AB 19412 names the same family GetRelPower/PowerPolicies")
+                    ..CommandSpec::new("get-perf-policies", Group::Perf, "Read the performance-policy diagnostic view: supported limit mask (PerfPoliciesGetInfo 0x409D9841), armed limit-source bits (GetStatus 0x3D358A0C — power/thermal/voltage/no-load; RAW SEMANTICS: idle desktops read 15 constantly while decrease-reasons stay 0, so treat the mask as 'sources present/armed', not 'currently throttling' — ccminer-era cross-refs saw it vary under load, confirm with an idle-vs-load A/B), raw+named, plus performance-decrease reasons — the 'why is the GPU below peak' readout; AB 19412 names the same family GetRelPower/PowerPolicies")
                 },
             ),
             (Command::GetPmgrArbiter, CommandSpec::new("get-pmgr-arbiter", Group::Perf, "Read the PMGR voltage-request arbiter values (0x717648FD, escape 0x0700019F)")),

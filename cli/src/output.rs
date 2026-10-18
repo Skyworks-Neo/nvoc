@@ -3555,6 +3555,7 @@ fn format_label(key: &str) -> String {
             "mv" | "mV" | "MV" => "mV".to_string(),
             "mhz" | "MHz" | "MHZ" => "MHz".to_string(),
             "khz" | "kHz" | "KHZ" => "kHz".to_string(),
+            "ns" | "Ns" | "NS" => "ns".to_string(),
             "ma" | "mA" | "MA" => "mA".to_string(),
             "mw" | "mW" | "MW" => "mW".to_string(),
             "c" => "C".to_string(),
