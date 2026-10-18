@@ -10411,7 +10411,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn get_i2c_options_parse_without_flag_downcast_panic() {
         // Regression: `--ddc` is a SetTrue flag; before it joined the flag
         // list in collect_named_options, the value branch downcast it to
@@ -10440,6 +10439,7 @@ mod tests {
         assert_eq!(tx.port, Some(2));
     }
 
+    #[test]
     fn set_pwr_cur_limit_parses_all_targets() {
         // Merged power/current writer: every target name, and the NVML flag
         // only meaningful for the tgp/board form.
