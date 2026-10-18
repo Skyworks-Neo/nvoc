@@ -77,7 +77,7 @@
 | `0x20DE9260` / `0x22A78B05` / `0x4888D790` / `0x175167E9` | 显示器枚举族 | |
 | `0x0694D52E` | `GetCustomDisplay` | |
 | `0x283AC65A` / `0x4D7B0709` | `I2CWrite / I2CRead / I2CWriteAndRead` | **VRM 直写传输层**（24 款 `CHALVRMImplementation*` 芯片驱动走此通道） |
-| `0xDAD9CFF8` `0x375DBD6B` `0xFCBC7E14` `0x577DD202` `0x73BF8338` `0xF020614A` `0xE4A26362` `0xDA8466A0` | `Get/SetFramerateLimit`、`IsFramerateLimitControlSupported` | FPS 限制器族（8 IDs，与 OC 无关） |
+| `0x0694D52E` `0xDAD9CFF8` `0x375DBD6B` `0xFCBC7E14` `0x577DD202` `0x73BF8338` `0xE4A26362` `0xDA8466A0` | `Get/SetFramerateLimit`、`IsFramerateLimitControlSupported` | **勘误（§4.2）**：这 8 个 ID 不是独立 FPS 接口族，而是 **DRS 驱动设置注册表**（NvAPI_DRS_Create/DestroySession/Load/SaveSettings/Set/Get/DeleteProfileSetting/GetBaseProfile）。AB 的帧率限制 = DRS 全局设置：setting id `0x10834FEE`，值 `fps\|0xF0000000`，GET 读回 u16 半字 |
 | `0xF951A4D1` `0x2926AAAD` `0xE5AC921F` `0xD9930B07` `0xBAABBFCC` | Init/SelectDevices/GetSystemType 路径 | |
 | `0xD22BDD7E` | `Uninit` | 公开已知 NvAPI_Unload，抽样校验点 |
 
@@ -151,3 +151,40 @@
 - SetControl 侧（电压轨/fan coolers）参数块未逐字段解码——补全实现时需在
   idalib 中反编译 `0x1004dcf0`/`0x1004da30` 提取控制结构（plan 内已列为第一步）。
 - `.oem/.oem1` 加密 blob 未解密；oem2（设备能力表）仅结构层面确认。
+
+## 6. 勘误 v2（2026-10-18，P2/P3 补全落地时核实）
+
+### 6.1 §1.5 "FPS 限制器族" 更名 DRS
+
+交叉比对 nvapi-rs `nvid.rs:595-631` 证实上表 8 个 ID 全部是 `NvAPI_DRS_*`（第一行
+原文误写 `0xF020614A`/`0xDAD9CFF8` 顺序亦有误，实为 CreateSession `0x0694D52E` 领衔）。
+AB 19412 的 `Get/SetFramerateLimit`/`IsFramerateLimitControlSupported` 是 **DRS 设置
+读写** 的薄封装：`CreateSession→LoadSettings→GetBaseProfile→Get/SetSetting→SaveSettings
+→DestroySession`，全局（无 GPU 句柄）。
+
+### 6.2 SetControl 参数块逐字段解码完成（原"局限"销账）
+
+- **`ClientVoltageRail_SetControl`**（RTHAL 0x1004dcf0）：40B 控制块，version 0x10028，
+  控制值写 +4 的**低字节**；GetControl（0x1004dba0）读同一字节。与 nvapi-rs
+  `NV_GPU_CLIENT_VOLT_RAILS_CONTROL_V1.percent`（u32 @+4，AmpereOC/HYDRA 交叉）
+  对齐——AB 用 u8 是实现取舍，字段语义同为 boost 百分比。
+- **`ClientFanCoolers_SetControl`**（RTHAL 0x1004da30）：RMW（先 GET 再改再 SET 全块），
+  version 0x105AC，count 取 +8 低字节；每 cooler 条目 44B stride，`level` @条目+4、
+  `flags` bit0=manual @条目+8——与 nvapi-rs
+  `NV_GPU_CLIENT_FAN_COOLERS_CONTROL_V1`（44B 条目：cooler_id/level/flags）逐字段吻合。
+
+### 6.3 P2/P3 塌缩与落地清单（相对第 3 节）
+
+| 第 3 节项 | 落地核查/结果 |
+|---|---|
+| P2 boost 范围（0x64B43A6A） | 已在中层+hi：`vfp_ranges` → `GpuInfo.vfp_limits`（`get-info` 自动携带）——无需新命令 |
+| P2 相对功率（0xEDCF624E） | 已在 hi：`GpuStatus.power: BTreeMap<PowerTopologyChannelId, Percentage>`（`get-status` 携带） |
+| P2 I2C 通道 | 中层 `i2c_read/i2c_write` 已有；本轮补 CLI `get-i2c`（读）+ `set-i2c --force`（写，卡级硬件写门控） |
+| P3 FRL 族 | 本轮落地：nvapi-rs sys `drs.rs`（8 FFI + NvDRSSetting 0x13020/12320B）+ 中层 `framerate_limit/set_framerate_limit` + CLI `get/set-framerate-limit --force` + pynvoc `query_framerate_limit` |
+| P3 显示器族/GetCustomDisplay | 维持不实现（非 OC 域） |
+| P0/P1（§4 勘误节） | 同前：全部已绑定；本轮另落 `get-perf-policies` 位名化诊断与 PerfStatus `_ns` 单位后缀 |
+
+### 6.4 单位记法
+
+PerfPolicies status 的计时器字段统一 SI 记法：类型字段 `timer_ns`/`policy_timers_ns`，
+CLI 输出键同名——全仓库无 `Ns` 拼写（单位大小写混用零容忍）。

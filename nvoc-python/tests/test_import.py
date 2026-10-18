@@ -59,6 +59,7 @@ EXPECTED_EXPORTS = [
     "query_throttle_reasons",
     "query_vbios_vf_curve",
     "query_vfp_point_voltage",
+    "query_framerate_limit",
     "query_volt_rails",
     "query_voltage_boost",
     "reset_all",

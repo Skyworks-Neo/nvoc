@@ -68,6 +68,10 @@ pub enum OperationKind {
     SetNvapiDNotifier,
     QueryNvapiPowerCeiling,
     QueryNvapiVoltRails,
+    QueryNvapiFramerateLimit,
+    SetNvapiFramerateLimit,
+    QueryNvapiI2cRead,
+    SetNvapiI2cWrite,
     /// Enumerate the melonVolt voltage domains (0xA38ACF9D): per-domain
     /// min/step/max/default µV window (see `nvapi::VoltDevice`).
     QueryNvapiVoltDevices,
@@ -421,6 +425,8 @@ impl OperationKind {
                 | SetNvapiTopRelsRatio
                 | SetNvapiVoltRailSlot
                 | ResetNvapiVoltRailLimit
+                | SetNvapiFramerateLimit
+                | SetNvapiI2cWrite
         )
     }
 }

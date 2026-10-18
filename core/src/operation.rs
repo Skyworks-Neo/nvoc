@@ -5369,6 +5369,155 @@ pub fn set_private_vf_oc_offset(
     Ok(report)
 }
 
+/// Global driver frame-rate limiter read (DRS setting 0x10834FEE — the exact
+/// path AB 19412's Framerate Limit uses). Driver-wide registry read: no GPU
+/// state is touched, the target is only the conventional pipeline anchor.
+/// `None` = unset (or GetSetting refused — AB-faithful).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiFramerateLimit;
+
+impl GpuOperation for QueryNvapiFramerateLimit {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiFramerateLimit
+    }
+
+    fn run(&self, _target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        nvapi::framerate_limit().map_err(Error::from)
+    }
+}
+
+/// Global driver frame-rate limiter write (DRS registry, persists via
+/// SaveSettings; effective on new 3D contexts). `fps: None` deletes the
+/// setting. This is a driver-profile write, not a hardware state write, but
+/// it IS global and persistent — `force` is required as the intent gate.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiFramerateLimit {
+    pub fps: Option<u32>,
+    pub force: bool,
+}
+
+impl GpuOperation for SetNvapiFramerateLimit {
+    type Output = AppliedValue<Option<u32>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiFramerateLimit
+    }
+
+    fn run(&self, _target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        if !self.force {
+            return Err(Error::Custom(
+                "refused: set-framerate-limit persists into the driver profile registry (global, survives reboot). Re-run with --force".to_owned(),
+            ));
+        }
+        nvapi::set_framerate_limit(self.fps).map_err(Error::from)?;
+        Ok(AppliedValue {
+            requested: self.fps,
+            applied: self.fps,
+        })
+    }
+}
+
+/// Parameters of one I2C transaction over NVAPI (the AB/VRM tooling
+/// transport). Reads are the diagnostics path; writes are card-level
+/// hardware writes gated behind `--force`.
+#[derive(Clone, Debug)]
+pub struct NvapiI2cTransaction {
+    pub display_mask: u32,
+    pub port: Option<u8>,
+    pub port_is_ddc: bool,
+    pub address: u8,
+    pub register: Vec<u8>,
+    pub length: usize,
+    pub speed_khz: u32,
+}
+
+impl NvapiI2cTransaction {
+    fn speed(&self) -> nvapi::sys::i2c::I2cSpeed {
+        match self.speed_khz {
+            3 => nvapi::sys::i2c::I2cSpeed::_3Khz,
+            10 => nvapi::sys::i2c::I2cSpeed::_10Khz,
+            33 => nvapi::sys::i2c::I2cSpeed::_33Khz,
+            100 => nvapi::sys::i2c::I2cSpeed::_100Khz,
+            200 => nvapi::sys::i2c::I2cSpeed::_200Khz,
+            400 => nvapi::sys::i2c::I2cSpeed::_400Khz,
+            _ => nvapi::sys::i2c::I2cSpeed::Default,
+        }
+    }
+}
+
+/// I2C read (up to `length` bytes from `address`[:`register`]).
+#[derive(Clone, Debug)]
+pub struct QueryNvapiI2cRead(pub NvapiI2cTransaction);
+
+impl GpuOperation for QueryNvapiI2cRead {
+    type Output = Vec<u8>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiI2cRead
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let tx = &self.0;
+        let mut buffer = vec![0u8; tx.length];
+        let read = gpu
+            .inner()
+            .i2c_read(
+                tx.display_mask,
+                tx.port,
+                tx.port_is_ddc,
+                tx.address,
+                &tx.register,
+                &mut buffer,
+                tx.speed(),
+            )
+            .map_err(Error::from)?;
+        buffer.truncate(read);
+        Ok(buffer)
+    }
+}
+
+/// I2C write — raw bytes onto the bus. Highest-risk surface in this crate
+/// (VRM controllers, EEPROMs live on these buses); `force` required.
+#[derive(Clone, Debug)]
+pub struct SetNvapiI2cWrite {
+    pub transaction: NvapiI2cTransaction,
+    pub bytes: Vec<u8>,
+    pub force: bool,
+}
+
+impl GpuOperation for SetNvapiI2cWrite {
+    type Output = Vec<u8>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiI2cWrite
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        if !self.force {
+            return Err(Error::Custom(
+                "refused: I2C write drives card-level hardware (VRM/EEPROM buses). Re-run with --force".to_owned(),
+            ));
+        }
+        let gpu = target.nvapi()?;
+        let tx = &self.transaction;
+        gpu.inner()
+            .i2c_write(
+                tx.display_mask,
+                tx.port,
+                tx.port_is_ddc,
+                tx.address,
+                &tx.register,
+                &self.bytes,
+                tx.speed(),
+            )
+            .map_err(Error::from)?;
+        Ok(self.bytes.clone())
+    }
+}
+
 #[cfg(test)]
 mod pair_plan_tests {
     use super::PrivateVfPairPlane::{Oc, PreOc};

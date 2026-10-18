@@ -5,47 +5,49 @@ use clap::{
 use nvoc_core::{
     BackendSet, ClearEdid, ClkVfDomainHint, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
     DisableNvapiThermalSim, FanCurvePointReadout, GetFanCurves, GetPowerMode, GpuSelector,
-    GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiPerfFreqCap, OemOcScanner,
-    OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost,
-    QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
-    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiBarInfo,
-    QueryNvapiBoostLocks, QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch,
-    QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains, QueryNvapiClkVfControl,
-    QueryNvapiClkVfPoints, QueryNvapiComputeCaps, QueryNvapiCoolerInfo,
+    GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiI2cTransaction, NvapiPerfFreqCap,
+    OemOcScanner, OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction,
+    QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo,
+    QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryNvapiBarInfo, QueryNvapiBoostLocks, QueryNvapiClkDomainFreqDetail,
+    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains,
+    QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiComputeCaps, QueryNvapiCoolerInfo,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPowerChannels,
-    QueryNvapiPowerCommand, QueryNvapiPstates20Private, QueryNvapiRatedTdp,
-    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
-    QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
-    QueryNvapiTopRelsRatio, QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits,
-    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage,
-    QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus,
-    QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
-    ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
-    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
-    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
-    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
-    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
-    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
-    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    QueryNvapiFramerateLimit, QueryNvapiI2cRead, QueryNvapiOcScannerIncomplete,
+    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
+    QueryNvapiPowerCeiling, QueryNvapiPowerChannels, QueryNvapiPowerCommand,
+    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalChannels,
+    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVoltDevices,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage, QueryVbiosSecurityInfo,
+    QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
+    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
+    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
+    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset,
+    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetSubdomainFreqRatio,
+    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
+    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
+    SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
+    SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
     SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
-    SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap,
-    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue,
-    SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta,
-    SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
-    SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
-    SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
-    SetPublicVftableRangeOffset, SetSubdomainFreqRatio, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpLockEntries, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
-    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
-    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
+    SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates, SetNvapiOvervolt,
+    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
+    SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
+    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate,
+    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
+    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
+    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
+    SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
+    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
+    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
+    sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -242,6 +244,10 @@ pub enum Command {
     GetPStateLock,
     GetLockStatus,
     GetPerfPolicies,
+    GetFramerateLimit,
+    SetFramerateLimit,
+    GetI2c,
+    SetI2c,
     SetPStateLock,
     SetPstateRangeLock,
     ResetPStateLock,
@@ -577,10 +583,23 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::GetFramerateLimit,
+                CommandSpec {
+                    ..CommandSpec::new("get-framerate-limit", Group::Perf, "Read the global driver Frame Rate Limiter (DRS setting 0x10834FEE — the exact path AB 19412's framerate cap uses: CreateSession→LoadSettings→GetBaseProfile→GetSetting). Driver-registry global, no per-GPU state")
+                },
+            ),
+            (
                 Command::GetGpuList,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     ..CommandSpec::new("get-gpu-list", Group::Info, "List discovered GPUs and available backends")
+                },
+            ),
+            (
+                Command::GetI2c,
+                CommandSpec {
+                    options: Box::leak(Box::new(["port", "address", "register", "len", "speed", "ddc", "display-mask"])),
+                    ..CommandSpec::new("get-i2c", Group::Info, "Read bytes from an I2C slave on the card's I2C bus (NVAPI I2CRead — the transport AB's VRM tooling uses; 24 controller drivers catalogued in the RE archive). --port N (access port), --address 0xXX (7-bit slave, default 0x2F), --register 0xXX (repeated reg bytes, default none), --len N (default 1), --speed KHZ (3/10/33/100/200/400, default driver default), --ddc (DDC port), --display-mask 0xX (default all)")
                 },
             ),
             (
@@ -1085,6 +1104,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetFramerateLimit,
+                CommandSpec {
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                        "arg_fps",
+                        "FPS|off",
+                        "FPS cap (e.g. 60, 165) or 'off' to delete the setting",
+                    )])),
+                    options: Box::leak(Box::new(["force"])),
+                    ..CommandSpec::new("set-framerate-limit", Group::Perf, "Write the global driver Frame Rate Limiter (DRS SetSetting + SaveSettings, value fps|0xF0000000; 'off' deletes the setting). Persists in the driver profile registry and survives reboot — --force required. Takes effect on new 3D contexts")
+                },
+            ),
+            (
                 Command::SetFreqLock,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
@@ -1106,6 +1138,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "VFP point index or voltage, for example 42, 900mV, or 900000uV",
                 )])),
                     ..CommandSpec::new("set-gpc-volt-lock", Group::Voltage, "Lock VFP by point or voltage")
+                },
+            ),
+            (
+                Command::SetI2c,
+                CommandSpec {
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                        "arg_bytes",
+                        "BYTES",
+                        "Hex bytes to write, e.g. 0xA5,00 or a5 00",
+                    )])),
+                    options: Box::leak(Box::new(["port", "address", "register", "speed", "ddc", "display-mask", "force"])),
+                    ..CommandSpec::new("set-i2c", Group::Info, "Write raw bytes to an I2C slave on the card's I2C bus (NVAPI I2CWrite). CARD-LEVEL HARDWARE WRITE — VRM controllers and EEPROMs live on these buses; wrong bytes can brick a board. --force required. Same port/address/register/speed/ddc/display-mask options as get-i2c")
                 },
             ),
             (
@@ -2411,6 +2456,40 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("pmxdrvpath")
             .value_name("FILE")
             .help("set-power-command --kmd: path to pmxdrv.sys (the Intel2019 signed build)"),
+        "port" => Arg::new("port")
+            .long("port")
+            .value_name("N")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: access port id"),
+        "address" => Arg::new("address")
+            .long("address")
+            .value_name("0xXX")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: 7-bit slave address (default 0x2F)"),
+        "register" => Arg::new("register")
+            .long("register")
+            .value_name("0xXX[,0xYY...]")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: register address byte(s) sent before the payload"),
+        "len" => Arg::new("len")
+            .long("len")
+            .value_name("N")
+            .action(ArgAction::Set)
+            .help("get-i2c: number of bytes to read (default 1)"),
+        "speed" => Arg::new("speed")
+            .long("speed")
+            .value_name("KHZ")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: bus speed 3/10/33/100/200/400 kHz (default driver default)"),
+        "ddc" => Arg::new("ddc")
+            .long("ddc")
+            .action(ArgAction::SetTrue)
+            .help("get/set-i2c: address the DDC port instead of the communication port"),
+        "display-mask" => Arg::new("display-mask")
+            .long("display-mask")
+            .value_name("0xX")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: display mask (default 0xFFFF = all)"),
         "unsafe" => Arg::new("unsafe")
             .long("unsafe")
             .action(ArgAction::SetTrue)
@@ -3296,9 +3375,69 @@ fn execute_target(
                 "limit_flags": perf_flag_names(status.perf.limits.bits()),
                 "active": status.perf.active.map(|bits| perf_flag_names(bits.bits())),
                 "active_raw": status.perf.unknown,
-                "timer_ns": status.perf.timer,
-                "policy_timers_ns": status.perf.policy_timers,
+                "timer_ns": status.perf.timer_ns,
+                "policy_timers_ns": status.perf.policy_timers_ns,
                 "decrease_reasons": status.performance_decrease,
+            }))
+        }
+        Command::GetFramerateLimit => {
+            let fps = run(target, QueryNvapiFramerateLimit)?.output;
+            Ok(json!({
+                "fps": fps,
+                "drs_setting_id": "0x10834FEE",
+                "unset": fps.is_none(),
+            }))
+        }
+        Command::SetFramerateLimit => {
+            let force = invocation.options.contains_key("force");
+            let raw = invocation.positionals[0].trim().to_ascii_lowercase();
+            let fps = match raw.as_str() {
+                "off" | "none" | "delete" => None,
+                other => Some(parse_u32_unit(other, "fps", "fps cap")?),
+            };
+            run(target, SetNvapiFramerateLimit { fps, force })?;
+            Ok(json!({
+                "applied": true,
+                "fps": fps,
+                "persistent": true,
+            }))
+        }
+        Command::GetI2c => {
+            let tx = parse_i2c_options(invocation)?;
+            let bytes = run(target, QueryNvapiI2cRead(tx))?.output;
+            let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
+            Ok(json!({
+                "len": bytes.len(),
+                "bytes_hex": hex.join(" "),
+            }))
+        }
+        Command::SetI2c => {
+            let force = invocation.options.contains_key("force");
+            let tx = parse_i2c_options(invocation)?;
+            let raw = invocation.positionals[0].replace(',', " ");
+            let mut bytes = Vec::new();
+            for token in raw.split_whitespace() {
+                let token = token.trim_start_matches("0x").trim_start_matches("0X");
+                bytes.push(
+                    u8::from_str_radix(token, 16).map_err(|_| {
+                        CliError::new(format!("invalid hex byte '{token}' in BYTES"))
+                    })?,
+                );
+            }
+            if bytes.is_empty() {
+                return Err(CliError::new("BYTES must contain at least one hex byte"));
+            }
+            run(
+                target,
+                SetNvapiI2cWrite {
+                    transaction: tx,
+                    bytes,
+                    force,
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "bytes_written": invocation.positionals[0].len(),
             }))
         }
         Command::GetPublicVftable => get_vfp(target, invocation),
@@ -9343,6 +9482,60 @@ fn parse_domain_offset_kHz(raw: &str) -> CliResult<i32> {
     Ok((mhz * 1000.0).round() as i32)
 }
 
+/// Shared `--port/--address/--register/--len/--speed/--ddc/--display-mask`
+/// option parser behind get-i2c / set-i2c.
+fn parse_i2c_options(invocation: &Invocation) -> CliResult<NvapiI2cTransaction> {
+    let mut transaction = NvapiI2cTransaction {
+        display_mask: 0xFFFF,
+        port: None,
+        port_is_ddc: false,
+        address: 0x2F,
+        register: Vec::new(),
+        length: 1,
+        speed_khz: 0,
+    };
+    if let Some(port) = option_one(invocation, "port") {
+        transaction.port = Some(parse_u32_unit(port, "", "port")? as u8);
+    }
+    if let Some(address) = option_one(invocation, "address") {
+        transaction.address = parse_hex_or_dec_u32(address, "address")? as u8;
+    }
+    if let Some(register) = option_one(invocation, "register") {
+        for token in register.replace(',', " ").split_whitespace() {
+            transaction
+                .register
+                .push(parse_hex_or_dec_u32(token, "register")? as u8);
+        }
+    }
+    if let Some(len) = option_one(invocation, "len") {
+        transaction.length = parse_u32_unit(len, "", "len")? as usize;
+    }
+    if let Some(speed) = option_one(invocation, "speed") {
+        transaction.speed_khz = parse_u32_unit(speed, "", "speed")?;
+    }
+    transaction.port_is_ddc = option_bool(invocation, "ddc", false)?;
+    if let Some(mask) = option_one(invocation, "display-mask") {
+        transaction.display_mask = parse_hex_or_dec_u32(mask, "display-mask")?;
+    }
+    Ok(transaction)
+}
+
+/// Accepts `0x1A`-style hex or decimal.
+fn parse_hex_or_dec_u32(raw: &str, label: &str) -> CliResult<u32> {
+    let trimmed = raw.trim();
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        u32::from_str_radix(hex, 16)
+            .map_err(|_| CliError::new(format!("invalid {label} hex value '{raw}'")))
+    } else {
+        trimmed
+            .parse::<u32>()
+            .map_err(|_| CliError::new(format!("invalid {label} value '{raw}'")))
+    }
+}
+
 fn parse_u32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<u32> {
     strip_unit(raw, suffix, label)
         .parse::<u32>()
@@ -9761,6 +9954,10 @@ mod tests {
             | Command::GetPStateLock
             | Command::GetLockStatus
             | Command::GetPerfPolicies
+            | Command::GetFramerateLimit
+            | Command::SetFramerateLimit
+            | Command::GetI2c
+            | Command::SetI2c
             | Command::SetPstateRangeLock
             | Command::SetPStateLock
             | Command::ResetPStateLock
