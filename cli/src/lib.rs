@@ -995,7 +995,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "NAME",
                     "Profile slot name to create/overwrite",
                 )])),
-                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state of every selected GPU (default: all; narrow with --gpu) into a named slot per GPU (default domains: clock-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, vfp-locks; --domains narrows)")
+                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state of every selected GPU (default: all; narrow with --gpu) into a named slot per GPU (default domains: clock-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, toprels-ratios, vfp-locks; --domains narrows)")
                 },
             ),
             (
@@ -2392,7 +2392,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("domains")
             .value_name("DOMAINS")
             .action(ArgAction::Set)
-            .help("Comma-separated profile domains to capture: clock-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, locked-clocks, vfp-locks (default: all except the lock families)"),
+            .help("Comma-separated profile domains to capture: clock-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, toprels-ratios, locked-clocks, vfp-locks (default: all except locked-clocks)"),
         "note" => Arg::new("note")
             .long("note")
             .value_name("TEXT")
@@ -3564,7 +3564,10 @@ fn execute_target(
             let (_, identity) = profile_live_identity(target)?;
             let doc = store.load_profile(&identity, invocation.positionals[0].trim())?;
             let settings = run(target, QueryGpuSettings)?.output;
-            Ok(profile_diff_value(&doc, &settings))
+            let toprels = run(target, QueryTopRelsRelations)
+                .map(|r| r.output)
+                .unwrap_or_default();
+            Ok(profile_diff_value(&doc, &settings, &toprels))
         }
         Command::ProfileApply => {
             let store = profile_store(invocation)?;
@@ -9652,7 +9655,11 @@ fn outcome_json(outcome: &DomainOutcome) -> Value {
 }
 
 /// Per-domain comparison of a profile against the live driver state.
-fn profile_diff_value(doc: &ProfileDoc, settings: &nvoc_core::GpuSettings) -> Value {
+fn profile_diff_value(
+    doc: &ProfileDoc,
+    settings: &nvoc_core::GpuSettings,
+    toprels: &[nvoc_core::TopRelsRelationRow],
+) -> Value {
     use nvoc_core::profile::ProfileDomains;
 
     let mut entries = Vec::new();
@@ -9694,6 +9701,19 @@ fn profile_diff_value(doc: &ProfileDoc, settings: &nvoc_core::GpuSettings) -> Va
             DomainKind::Fan => {
                 let recorded = domains.fan.as_ref().map(|f| f.curves.len()).unwrap_or(0);
                 (recorded == 0, "fan curves (recorded intent only)")
+            }
+            DomainKind::TopRelsRatios => {
+                let all_match = match domains.toprels_ratios.as_ref() {
+                    Some(records) => records.iter().all(|record| {
+                        toprels
+                            .iter()
+                            .find(|(index, ..)| index == &record.index)
+                            .map(|entry| entry.5 == Some(record.ratio_raw))
+                            .unwrap_or(false)
+                    }),
+                    None => true,
+                };
+                (all_match, "TopRels slot ratios")
             }
             DomainKind::LockedClocks | DomainKind::VfpLocks => (true, "recorded intent only in v1"),
         };

@@ -2912,11 +2912,15 @@ impl GpuOperation for SetSubdomainFreqRatio {
 /// payload, and the LIVE GetControl ratio per populated relation (the
 /// regime-variant slots 10-13 carry non-zero live records even though only
 /// slot 0 is engine-tracked).
+/// One TopRels relation row: (index, src, dst, dir, default payload, live
+/// control ratio).
+pub type TopRelsRelationRow = (usize, u32, u32, u32, u32, Option<u32>);
+
 #[derive(Clone, Copy, Debug)]
 pub struct QueryTopRelsRelations;
 
 impl GpuOperation for QueryTopRelsRelations {
-    type Output = Vec<(usize, u32, u32, u32, u32, Option<u32>)>;
+    type Output = Vec<TopRelsRelationRow>;
 
     fn kind(&self) -> OperationKind {
         OperationKind::QuerySubdomainFreqRatioSlot
@@ -2985,6 +2989,47 @@ impl GpuOperation for ResetSubdomainFreqRatio {
             )));
         }
         gpu.set_top_rels_ratio_at(slot, default)
+            .map_err(Error::from)
+    }
+}
+
+/// Profile applier: write ONE TopRels control slot verbatim (raw U16.16
+/// ratio captured by the profile). Hard gates mirror
+/// [`SetSubdomainFreqRatio`] (zero ratio and non-carrier edges hang the
+/// GPU); the soft gates do not apply here — a profile apply is an
+/// explicit restore of a captured state, guarded by backup-last +
+/// rollback.
+#[derive(Clone, Copy, Debug)]
+pub struct SetTopRelsRatioSlotRaw {
+    pub index: usize,
+    pub ratio_raw: u32,
+}
+
+impl GpuOperation for SetTopRelsRatioSlotRaw {
+    type Output = Option<u32>; // landed raw; None = not retained
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetTopRelsRatioSlotRaw
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        if self.ratio_raw == 0 {
+            return Err(Error::Custom(
+                "zero TopRels ratio hangs the GPU - refusing unconditionally".into(),
+            ));
+        }
+        let gpu = target.nvapi()?;
+        let carrier = gpu
+            .top_rels_default_ratio_at(self.index)
+            .map_err(Error::from)?;
+        if carrier.unwrap_or(0) <= 1 {
+            return Err(Error::Custom(format!(
+                "TopRels relation {} carries no ratio (GetInfo payload {}) - write face not applicable",
+                self.index,
+                carrier.unwrap_or(0)
+            )));
+        }
+        gpu.set_top_rels_ratio_at(self.index, self.ratio_raw)
             .map_err(Error::from)
     }
 }

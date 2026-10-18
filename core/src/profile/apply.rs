@@ -6,14 +6,15 @@
 use super::plan::ApplyPlan;
 use super::schema::{
     DomainKind, FanCurvePointRecord, FanCurveReadoutRecord, PowerSettings, ProfileDoc,
-    SettingsBackup, VoltRailLimit, VoltageSettings,
+    SettingsBackup, TopRelsRatioRecord, VoltRailLimit, VoltageSettings,
 };
 use crate::nvml::query_nvml_power_watts;
 use crate::operation::{
-    GetFanCurves, QueryGpuSettings, QueryNvapiVoltRails, ResetFanCurve, ResetNvapiSensorLimits,
-    ResetPublicVftableOffset, SetCoolerLevels, SetDomainVfpDeltas, SetFanCurve, SetNvapiOvervolt,
-    SetNvapiPowerLimits, SetNvapiSensorLimits, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot,
-    SetPowerLimit, SetPstateClockOffset, SetVfpLockEntries, SetVoltageBoost, run,
+    GetFanCurves, QueryGpuSettings, QueryNvapiVoltRails, QueryTopRelsRelations, ResetFanCurve,
+    ResetNvapiSensorLimits, ResetPublicVftableOffset, SetCoolerLevels, SetDomainVfpDeltas,
+    SetFanCurve, SetNvapiOvervolt, SetNvapiPowerLimits, SetNvapiSensorLimits,
+    SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetPowerLimit, SetPstateClockOffset,
+    SetTopRelsRatioSlotRaw, SetVfpLockEntries, SetVoltageBoost, run,
 };
 use crate::target::GpuTarget;
 use crate::types::VfpResetDomain;
@@ -92,6 +93,8 @@ struct DomainWrites {
     fan_curves: BTreeMap<u8, Vec<FanCurvePointRecord>>,
     /// Curve indices to reset (snapshot had no curve for them).
     fan_resets: std::collections::BTreeSet<u8>,
+    /// TopRels GPC:XBAR ratio records to restore verbatim (per slot).
+    toprels_ratios: Vec<TopRelsRatioRecord>,
     /// PerfClientLimits entries to write verbatim (freq/volt locks and
     /// PstateSelect pins — each entry carries its own mode). `None` =
     /// nothing.
@@ -120,6 +123,7 @@ impl DomainWrites {
                 .as_ref()
                 .map(|fan| fan.curves.clone())
                 .unwrap_or_default(),
+            toprels_ratios: doc.domains.toprels_ratios.clone().unwrap_or_default(),
             fan_resets: std::collections::BTreeSet::new(),
             vfp_locks: doc
                 .domains
@@ -310,6 +314,13 @@ fn rollback_writes(
                     }
                 }
                 w.vfp_locks = Some(entries.into_values().collect());
+            }
+            DomainKind::TopRelsRatios => {
+                // Restore the snapshot's captured slot values. A slot the
+                // snapshot lacks (older backup) is left alone — the
+                // driver-reported default would require a GetInfo lookup the
+                // pure rollback build cannot do.
+                w.toprels_ratios = backup.toprels_ratios.clone();
             }
             _ => {}
         }
@@ -628,6 +639,32 @@ fn apply_domain(
             }
             Ok(DomainWriteStatus::Applied)
         }
+        DomainKind::TopRelsRatios => {
+            if writes.toprels_ratios.is_empty() {
+                return Ok(DomainWriteStatus::Applied);
+            }
+            // Availability gate: the plane is 50-series-only. A card without
+            // it makes the domain Unavailable — the rest of the profile
+            // still applies.
+            let relations = run(target, QueryTopRelsRelations)?.output;
+            if relations.is_empty() {
+                return Ok(DomainWriteStatus::Unavailable(
+                    "TopRels plane not exposed by this driver (50-series only)".to_owned(),
+                ));
+            }
+            for record in &writes.toprels_ratios {
+                // Per-slot verbatim write with the hang-class hard gates
+                // inside the op (zero ratio / non-carrier edge).
+                run(
+                    target,
+                    SetTopRelsRatioSlotRaw {
+                        index: record.index,
+                        ratio_raw: record.ratio_raw,
+                    },
+                )?;
+            }
+            Ok(DomainWriteStatus::Applied)
+        }
         DomainKind::VfpLocks => {
             let Some(entries) = &writes.vfp_locks else {
                 return Ok(DomainWriteStatus::Applied);
@@ -821,6 +858,30 @@ fn verify_domain(
             }
             Ok(())
         }
+        DomainKind::TopRelsRatios => {
+            if writes.toprels_ratios.is_empty() {
+                return Ok(());
+            }
+            let relations = run(target, QueryTopRelsRelations).map_err(|e| e.to_string())?.output;
+            for record in &writes.toprels_ratios {
+                let live = relations
+                    .iter()
+                    .find(|(index, ..)| index == &record.index)
+                    .ok_or_else(|| format!("TopRels relation {} not in readback", record.index))?;
+                let live_raw = live.5.unwrap_or(0);
+                if live_raw != record.ratio_raw {
+                    return Err(format!(
+                        "TopRels relation {} ratio differs: expected {:#x} ({:.4}), read back {:#x} ({:.4})",
+                        record.index,
+                        record.ratio_raw,
+                        record.ratio_raw as f64 / 65536.0,
+                        live_raw,
+                        live_raw as f64 / 65536.0
+                    ));
+                }
+            }
+            Ok(())
+        }
         DomainKind::VfpLocks => {
             let Some(expected) = &writes.vfp_locks else {
                 return Ok(());
@@ -884,10 +945,12 @@ pub fn capture_backup_now(
             max: Some(max as u32),
         });
     let volt_rails = super::capture::read_volt_rail_limits(target);
+    let toprels_ratios = super::capture::read_toprels_ratios(target);
     let mut backup = SettingsBackup::new(identity.clone(), now_utc);
     backup.settings = settings;
     backup.fan_curves = fan_curves;
     backup.volt_rails = volt_rails;
+    backup.toprels_ratios = toprels_ratios;
     backup.power_watts = power_watts;
     Ok(backup)
 }
@@ -915,6 +978,9 @@ pub fn backup_domains(backup: &SettingsBackup) -> Vec<DomainKind> {
     }
     if !backup.volt_rails.is_empty() {
         domains.push(DomainKind::VoltRails);
+    }
+    if !backup.toprels_ratios.is_empty() {
+        domains.push(DomainKind::TopRelsRatios);
     }
     if !backup.settings.vfp_locks.is_empty() {
         domains.push(DomainKind::VfpLocks);
@@ -1062,6 +1128,20 @@ pub fn restore_backup(
                         entries: backup.settings.vfp_locks.values().copied().collect(),
                     },
                 )?;
+            }
+            DomainKind::TopRelsRatios => {
+                if backup.toprels_ratios.is_empty() {
+                    notes.push((*domain, "snapshot carries no TopRels ratios".to_owned()));
+                }
+                for record in &backup.toprels_ratios {
+                    run(
+                        target,
+                        SetTopRelsRatioSlotRaw {
+                            index: record.index,
+                            ratio_raw: record.ratio_raw,
+                        },
+                    )?;
+                }
             }
             DomainKind::LockedClocks => {
                 notes.push((

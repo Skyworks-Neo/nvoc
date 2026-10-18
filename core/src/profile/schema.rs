@@ -93,10 +93,15 @@ pub enum DomainKind {
     /// Per-perf-limit client locks (freq/voltage locks and PstateSelect
     /// pins, keyed by `PerfLimitId`). High-risk; never captured by default.
     VfpLocks,
+    /// TopRels GPC:XBAR propagation ratios (per relation slot, raw U16.16).
+    /// 50-series-only plane; captured as the live control record per
+    /// populated relation, restored verbatim through the per-slot SET with
+    /// the hang-class hard gates (zero ratio / non-carrier edge).
+    TopRelsRatios,
 }
 
 impl DomainKind {
-    pub const ALL: [DomainKind; 9] = [
+    pub const ALL: [DomainKind; 10] = [
         DomainKind::ClockOffsets,
         DomainKind::PublicVftable,
         DomainKind::Voltage,
@@ -104,6 +109,7 @@ impl DomainKind {
         DomainKind::Power,
         DomainKind::Thermal,
         DomainKind::Fan,
+        DomainKind::TopRelsRatios,
         DomainKind::LockedClocks,
         DomainKind::VfpLocks,
     ];
@@ -111,10 +117,10 @@ impl DomainKind {
     /// Domains `profile save` captures unless `--domains` says otherwise.
     /// The `vfp_locks` family IS the get-lock-status table (PerfClientLimits
     /// GET): saving it is read-only, and its apply replays the exact table
-    /// (mode-None entries unlock), so it rides along by default. The two
-    /// `locked_clocks`/authoring families stay out: that plane has no
-    /// capture source yet.
-    pub const DEFAULT_CAPTURE: [DomainKind; 8] = [
+    /// (mode-None entries unlock), so it rides along by default.
+    /// `toprels_ratios` is likewise a read at capture and a gated verbatim
+    /// restore at apply (50-series-only; absent planes capture as absent).
+    pub const DEFAULT_CAPTURE: [DomainKind; 9] = [
         DomainKind::ClockOffsets,
         DomainKind::PublicVftable,
         DomainKind::Voltage,
@@ -122,6 +128,7 @@ impl DomainKind {
         DomainKind::Power,
         DomainKind::Thermal,
         DomainKind::Fan,
+        DomainKind::TopRelsRatios,
         DomainKind::VfpLocks,
     ];
 
@@ -136,6 +143,7 @@ impl DomainKind {
             DomainKind::Fan => "fan",
             DomainKind::LockedClocks => "locked_clocks",
             DomainKind::VfpLocks => "vfp_locks",
+            DomainKind::TopRelsRatios => "toprels_ratios",
         }
     }
 
@@ -156,7 +164,7 @@ impl std::fmt::Display for DomainKind {
 /// need them (e.g. `PublicVftable` resets the public table before replaying
 /// deltas); the order exists so global offsets land before per-point curves
 /// and lock-style writes land last.
-pub const DOMAIN_APPLY_ORDER: [DomainKind; 9] = DomainKind::ALL;
+pub const DOMAIN_APPLY_ORDER: [DomainKind; 10] = DomainKind::ALL;
 
 /// Identity binding stored in every profile. `uuid` is the primary key (NVML
 /// `GPU-…`); the fingerprint is the apply-time second factor. The PCI address
@@ -215,6 +223,22 @@ pub struct ProfileDomains {
     pub locked_clocks: Option<BTreeMap<ClockDomain, LockedClocks>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vfp_locks: Option<BTreeMap<PerfLimitId, ClockLockEntry>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toprels_ratios: Option<Vec<TopRelsRatioRecord>>,
+}
+
+/// One TopRels relation's captured ratio (the `toprels_ratios` domain).
+/// `ratio_raw` is the live control record (U16.16, e.g. 0xE660 = 0.90);
+/// `index` is the GetInfo relation slot — on the live-proven Blackwell
+/// shape the five GPC:XBAR ratio slots share the (0,1) pair and only
+/// slot 0 is engine-tracked, so slots are addressed by index, never by
+/// (src, dst).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopRelsRatioRecord {
+    pub index: usize,
+    pub src: u32,
+    pub dst: u32,
+    pub ratio_raw: u32,
 }
 
 impl ProfileDomains {
@@ -238,6 +262,7 @@ impl ProfileDomains {
             DomainKind::Fan => self.fan.is_some(),
             DomainKind::LockedClocks => self.locked_clocks.is_some(),
             DomainKind::VfpLocks => self.vfp_locks.is_some(),
+            DomainKind::TopRelsRatios => self.toprels_ratios.is_some(),
         }
     }
 }
@@ -437,6 +462,10 @@ pub struct SettingsBackup {
     /// rollback source for the `volt_rails` domain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volt_rails: Vec<VoltRailLimit>,
+    /// TopRels GPC:XBAR ratio snapshot — the rollback source for the
+    /// `toprels_ratios` domain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toprels_ratios: Vec<TopRelsRatioRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_watts: Option<PowerWattsBounds>,
 }
@@ -452,6 +481,7 @@ impl SettingsBackup {
             settings: empty_gpu_settings(),
             fan_curves: Vec::new(),
             volt_rails: Vec::new(),
+            toprels_ratios: Vec::new(),
             power_watts: None,
         }
     }

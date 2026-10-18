@@ -5,7 +5,8 @@
 
 use super::schema::{
     BaselineBlock, DomainKind, FanSettings, GpuIdentity, PowerSettings, PowerWattsBounds,
-    ProfileDoc, ProfileDomains, SettingsBackup, VoltRailLimit, VoltageSettings, empty_gpu_settings,
+    ProfileDoc, ProfileDomains, SettingsBackup, TopRelsRatioRecord, VoltRailLimit, VoltageSettings,
+    empty_gpu_settings,
 };
 use super::schema::{FanCurveReadoutRecord, ValidationRecord};
 use ::nvapi::hi::{CoolerSettings, FanCoolerId, GpuSettings, SensorThrottle};
@@ -23,6 +24,9 @@ pub struct CaptureContext {
     /// VoltRails control-plane snapshot (all present rails; empty when the
     /// driver exposes no plane — the degradation is visible, never silent).
     pub volt_rails: Vec<VoltRailLimit>,
+    /// TopRels GPC:XBAR ratio records (live control value per populated
+    /// relation; empty when the plane is absent — 50-series only).
+    pub toprels_ratios: Vec<TopRelsRatioRecord>,
 }
 
 /// Capture the requested domains out of a `GpuSettings` snapshot plus the
@@ -93,6 +97,11 @@ pub fn capture_domains(
                     out.vfp_locks = Some(settings.vfp_locks.clone());
                 }
             }
+            DomainKind::TopRelsRatios => {
+                if !context.toprels_ratios.is_empty() {
+                    out.toprels_ratios = Some(context.toprels_ratios.clone());
+                }
+            }
         }
     }
     out
@@ -136,6 +145,7 @@ pub fn capture_backup(
     backup.settings = settings.clone();
     backup.fan_curves = context.fan_curves.clone();
     backup.volt_rails = context.volt_rails.clone();
+    backup.toprels_ratios = context.toprels_ratios.clone();
     backup.power_watts = context.power.clone();
     backup
 }
@@ -160,6 +170,32 @@ pub(crate) fn read_volt_rail_limits(target: &crate::target::GpuTarget<'_>) -> Ve
 /// Convert a VoltRails snapshot into profile records. The full 6-dword
 /// control payload (melonVolt slots) is carried verbatim and applied on
 /// restore via the slot write path.
+/// Read the TopRels relation table with live control ratios as profile
+/// records. Empty when the plane is absent (non-50-series: the control GET
+/// answers -103/-1) — visible degradation, never an error.
+pub(crate) fn read_toprels_ratios(
+    target: &crate::target::GpuTarget<'_>,
+) -> Vec<TopRelsRatioRecord> {
+    crate::operation::run(target, crate::operation::QueryTopRelsRelations)
+        .ok()
+        .map(|report| {
+            report
+                .output
+                .iter()
+                .filter_map(|(index, src, dst, _dir, _payload, live)| {
+                    let ratio_raw = (*live).filter(|raw| *raw > 0)?;
+                    Some(TopRelsRatioRecord {
+                        index: *index,
+                        src: *src,
+                        dst: *dst,
+                        ratio_raw,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn volt_rail_limits(rails: &::nvapi::VoltRails) -> Vec<VoltRailLimit> {
     rails
         .control
@@ -203,11 +239,13 @@ pub fn capture_context(
         })
         .unwrap_or_default();
     let volt_rails = read_volt_rail_limits(target);
+    let toprels_ratios = read_toprels_ratios(target);
     CaptureContext {
         identity,
         power,
         fan_curves,
         volt_rails,
+        toprels_ratios,
     }
 }
 
@@ -313,6 +351,34 @@ mod tests {
         // The get-lock-status table (PerfClientLimits GET) rides along by
         // default: capture is a read, and apply replays the exact table.
         assert!(DomainKind::DEFAULT_CAPTURE.contains(&DomainKind::VfpLocks));
+    }
+
+    #[test]
+    fn toprels_ratios_domain_roundtrip_and_default() {
+        assert!(DomainKind::DEFAULT_CAPTURE.contains(&DomainKind::TopRelsRatios));
+        assert_eq!(
+            DomainKind::parse("toprels_ratios"),
+            Some(DomainKind::TopRelsRatios)
+        );
+        let settings = empty_gpu_settings();
+        let mut context = CaptureContext::default();
+        context.toprels_ratios.push(TopRelsRatioRecord {
+            index: 0,
+            src: 0,
+            dst: 1,
+            ratio_raw: 0xE660,
+        });
+        let domains = capture_domains(&settings, &context, &[DomainKind::TopRelsRatios]);
+        let records = domains.toprels_ratios.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].ratio_raw, 0xE660);
+        // absent plane -> absent domain (apply must not touch it)
+        let empty = capture_domains(
+            &settings,
+            &CaptureContext::default(),
+            &[DomainKind::TopRelsRatios],
+        );
+        assert!(empty.present().is_empty());
     }
 
     #[test]

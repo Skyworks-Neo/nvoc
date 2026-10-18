@@ -65,7 +65,6 @@ pub use operation::{
     SetEdid, SetFanCurve, SetFanPercent, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate,
     SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
     SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
-<<<<<<< HEAD
     SetNvapiEccConfiguration, SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates,
     SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
     SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue, SetNvapiPowerCommand,
@@ -75,7 +74,6 @@ pub use operation::{
     SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
     SetNvmlPstateLock, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
     SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
-=======
     SetNvapiEccConfiguration, SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative,
     SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
     SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp,
@@ -83,7 +81,6 @@ pub use operation::{
     SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
     SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage,
     SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
->>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
     SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
     SetWm2Mode, TgpWattRangeInfo, detect_gpu_type, fetch_gpu_type, find_matching_vfp_point,
     is_server_pascal_dual_plane, legacy_core_overvolt_ranges, legacy_p0_core_max_voltage_delta,
@@ -93,6 +90,16 @@ pub use operation::{
     run_many, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks,
     set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta, set_private_vf_oc_offset,
     set_private_vf_pair_offset, sync_memory_pstate_as_p0, try_parse_nvml_pstate,
+    SetWm2Mode, TOPRELS_MIN_TESTED_RAW, TgpWattRangeInfo, TopRelsRelationRow, detect_gpu_type,
+    fetch_gpu_type, find_matching_vfp_point, is_server_pascal_dual_plane,
+    legacy_core_overvolt_ranges, legacy_p0_core_max_voltage_delta, nvapi_status_name,
+    nvml_pstate_to_index, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, plan_private_vf_oc_order,
+    plan_private_vf_pair_order, query_domain_vf_points_indexed, query_domain_vfp_indices,
+    resolve_toprels_relation, run, run_many, set_nvapi_cooler_settings,
+    set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks, set_nvapi_pstate_clock_offsets,
+    set_nvapi_vfp_curve_delta, set_private_vf_oc_offset, set_private_vf_pair_offset,
+    sync_memory_pstate_as_p0, try_parse_nvml_pstate,
 };
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
