@@ -599,7 +599,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::GetI2c,
                 CommandSpec {
                     options: Box::leak(Box::new(["port", "address", "register", "len", "speed", "ddc", "display-mask"])),
-                    ..CommandSpec::new("get-i2c", Group::Info, "Read bytes from an I2C slave on the card's I2C bus (NVAPI I2CRead — the transport AB's VRM tooling uses; 24 controller drivers catalogued in the RE archive). --port N (access port), --address 0xXX (7-bit slave, default 0x2F), --register 0xXX (repeated reg bytes, default none), --len N (default 1), --speed KHZ (3/10/33/100/200/400, default driver default), --ddc (DDC port), --display-mask 0xX (default all)")
+                    ..CommandSpec::new("get-i2c", Group::Info, "Read bytes from an I2C slave on the card's I2C bus (NVAPI I2CRead — the transport AB's VRM tooling uses; 24 controller drivers catalogued in the RE archive). --port N (access port), --address 0xXX (7-bit slave, default 0x2F), --register 0xXX (repeated reg bytes, default none), --len N (default 1), --speed KHZ (3/10/33/100/200/400, default driver default), --ddc (DDC port), --display-mask 0xX (default 0x1; ports 0-2 auto-map to DDC mask bits per AB convention)")
                 },
             ),
             (
@@ -1150,7 +1150,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "Hex bytes to write, e.g. 0xA5,00 or a5 00",
                     )])),
                     options: Box::leak(Box::new(["port", "address", "register", "speed", "ddc", "display-mask", "force"])),
-                    ..CommandSpec::new("set-i2c", Group::Info, "Write raw bytes to an I2C slave on the card's I2C bus (NVAPI I2CWrite). CARD-LEVEL HARDWARE WRITE — VRM controllers and EEPROMs live on these buses; wrong bytes can brick a board. --force required. Same port/address/register/speed/ddc/display-mask options as get-i2c")
+                    ..CommandSpec::new("set-i2c", Group::Info, "Write raw bytes to an I2C slave on the card's I2C bus (NVAPI I2CWrite). CARD-LEVEL HARDWARE WRITE — VRM controllers and EEPROMs live on these buses; wrong bytes can brick a board. --force required. Same port/address/register/speed/ddc/display-mask options as get-i2c (port 0-2 auto-map to DDC mask bits; 0F-style bare hex accepted)")
                 },
             ),
             (
@@ -9491,8 +9491,10 @@ fn parse_domain_offset_kHz(raw: &str) -> CliResult<i32> {
 /// Shared `--port/--address/--register/--len/--speed/--ddc/--display-mask`
 /// option parser behind get-i2c / set-i2c.
 fn parse_i2c_options(invocation: &Invocation) -> CliResult<NvapiI2cTransaction> {
+    // AB never sends displayMask=0xFFFF on the I2C Ex path (INVALID_ARGUMENT);
+    // default to display 1, override with --display-mask.
     let mut transaction = NvapiI2cTransaction {
-        display_mask: 0xFFFF,
+        display_mask: 0x1,
         port: None,
         port_is_ddc: false,
         address: 0x2F,
@@ -9535,10 +9537,15 @@ fn parse_hex_or_dec_u32(raw: &str, label: &str) -> CliResult<u32> {
     {
         u32::from_str_radix(hex, 16)
             .map_err(|_| CliError::new(format!("invalid {label} hex value '{raw}'")))
+    } else if let Ok(dec) = trimmed.parse::<u32>() {
+        Ok(dec)
+    } else if trimmed.chars().all(|c| c.is_ascii_hexdigit()) && !trimmed.is_empty() {
+        u32::from_str_radix(trimmed, 16)
+            .map_err(|_| CliError::new(format!("invalid {label} hex value '{raw}'")))
     } else {
-        trimmed
-            .parse::<u32>()
-            .map_err(|_| CliError::new(format!("invalid {label} value '{raw}'")))
+        Err(CliError::new(format!(
+            "invalid {label} value '{raw}' (accepts 0x-prefixed hex, bare hex, or decimal)"
+        )))
     }
 }
 
