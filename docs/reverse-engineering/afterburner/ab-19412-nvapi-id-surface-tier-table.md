@@ -26,7 +26,7 @@
 | NVAPI ID | AB 方法 | 备注 |
 |---|---|---|
 | `0xE440B867` | `VFCurve_GetCurve(VOLTAGE_FREQUENCY_CURVE_DESC*)` | 曲线描述符读 |
-| **`0x39442CFB`** | **`VFCurve_SetCurve`** | **命名偏差 #1：nvoc 叫 PerfClientLimits SET**（7 字段锁表写器）。AB 把同一接口当 V/F 曲线主写入器。两个名字、一个接口 |
+| **`0x39442CFB`** | `VFCurve_SetCurve`（内部步骤） | 命名偏差 #1（§6.5 修正）：nvoc 叫 PerfClientLimits SET（7 字段锁表写器）。AB 在曲线应用事务里调用同一 id，但只管**锁表侧条件**（见 §6.5）——曲线点数据走 ClockClient VF points 族 |
 | `0x64B43A6A` | `VFCurve_GetClockBoostRanges` | 各域 boost 范围查询 |
 | `0x507B4B59` | `VFCurve_GetClockBoost/GetCurve/SetClockBoost`（10 xrefs） | boost 读/写 |
 | `0x0733E009` | `VFCurve_GetClockBoost/GetCurve/SetClockBoost/SetCurve` | |
@@ -188,3 +188,34 @@ AB 19412 的 `Get/SetFramerateLimit`/`IsFramerateLimitControlSupported` 是 **DR
 
 PerfPolicies status 的计时器字段统一 SI 记法：类型字段 `timer_ns`/`policy_timers_ns`，
 CLI 输出键同名——全仓库无 `Ns` 拼写（单位大小写混用零容忍）。
+
+## 6.5 勘误 v3：`VFCurve_SetCurve` 事务解剖（2026-10-19，函数体级复核）
+
+对 §1.2/§2 N1 的"AB 把 0x39442CFB 当 V/F 曲线主写入器"表述的**修正**——函数体
+反编译（RTHAL 0x10054ab0，0x5e5B）证明曲线点数据不经此 id：
+
+```
+VFCurve_SetCurve(desc) 事务：
+1. VFCurve_GetClockBoostRanges            — 合法点索引窗 [lo, hi]
+2. 0x507B4B59 (stamp 0x117EC)             — 当前曲线状态读
+3. 0x21537AD4 + 0x23F1B133 (stamp 0x21BE8/0x22400 族) — ClockClient VF 点表读
+   （VFCurve_FindPoint 签名的 _NV_GPU_CLOCK_CLIENT_CLK_VF_POINTS_STATUS）
+4. 逐曲线点：按电压 FindPoint → 写 0x12420/0x22400 stamped 逐点增量表
+   ← 曲线点数据走这里（ClockClient VF points 族，nvoc private_vfp 同族）
+5. 0x39442CFB 调用①：stamp 0x2030C，count=1，entry=6（VOLTAGE）
+   mode=0 清除；若 desc 带定压点 → mode=3 钉住（值=该点频率）
+6. 0x39442CFB 调用②：同结构，entry=0（GPU 频率上限）
+   mode=0 清除；若 desc 带频率帽 → mode=2 钉住（值=1000*mV→kHz）
+7. desc 带功率限制 → ClientPowerPolicies GetStatus(0x70916171)→改→SetStatus(0xAD95F5ED)
+   desc 带热限制   → ClientThermalPolicies GetStatus(0xE9C425A1)→改→SetStatus(0x34C0B13D)
+   （§4.2 的"写前先拉 GET"修正：实为 Get→改→Set，策略在同一事务内被写入）
+8. 0x23F1B133 收尾校验（-217 记入状态槽）
+```
+
+**修正后的判决**：0x39442CFB 的语义两侧一致——就是**锁表写器**。nvoc 用它做
+pstate/freq/voltage 锁；AB 在曲线应用事务里用它管理曲线的两个锁表侧条件
+（定压点 → entry 6 mode 3；频率帽 → entry 0 mode 2）。AB 填的 stamp（0x2030C）、
+count-per-call=1、mode 语义（3=ManualVoltage，2=ManualFrequency）、clock_id=0
+（Graphics）与 nvapi-rs 的 `ClockLockEntry` 模型逐字段吻合——这是对 7 字段锁表
+建模的第三方佐证，不是"曲线主写入器"。原 N1 的"Applied 但被钳 ⇒ 策略层裁决"
+推论不受影响（反而更强：策略写入就在同一事务里）。
