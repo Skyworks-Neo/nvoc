@@ -1111,6 +1111,7 @@ name = "nvoc-core"
 version = "0.3.0-alpha.1"
 dependencies = [
  "capstone",
+ "libc",
  "libloading 0.9.0",
  "nvapi",
  "nvml-wrapper",

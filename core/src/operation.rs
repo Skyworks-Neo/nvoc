@@ -2531,6 +2531,70 @@ impl GpuOperation for QueryNvapiThermalChannels {
     }
 }
 
+/// LACT-parity raw-register thermal views (NvAPI_GPU_RegisterOp
+/// 0x2EB3C140, READ|32BIT|GLOBAL): per-chip GDDR6x/GDDR7 sensor
+/// temperatures (0x9024C0/0x9024D0 family, poison-filtered, clamshell
+/// Front/Back split) and the Blackwell+ aggregated hotspot register
+/// (0xAD0AA0) — the fallback LACT prefers over the ThermChannel map on
+/// Blackwell, where `priChIdx` often carries no usable hotspot channel.
+#[derive(Debug, Clone)]
+pub struct RegisterThermalViews {
+    /// Driver-reported RAM type name; gates the per-chip probe.
+    pub ram_type: String,
+    /// Per-chip VRAM temps (label `A0`..`I1`, + `(Front)`/`(Back)` on
+    /// clamshell, °C). Empty when the RAM type is not GDDR6x/GDDR7 or no
+    /// partition answered.
+    pub vram_chips: Vec<(String, u64)>,
+    /// Error text when the per-chip walk aborted mid-partition (a failed
+    /// data-register read ends the walk, mirroring LACT).
+    pub vram_chip_error: Option<String>,
+    /// Blackwell+ register hotspot fallback (°C); `None` off-Blackwell or
+    /// when the register reports the absent-sensor sentinels (0/255).
+    pub blackwell_hotspot_c: Option<u32>,
+}
+
+pub struct QueryNvapiRegisterThermals;
+
+impl GpuOperation for QueryNvapiRegisterThermals {
+    type Output = RegisterThermalViews;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiRegisterThermals
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+
+        let (ram_type, vram_chips, vram_chip_error) = match gpu.ram_type() {
+            Ok(ram_type) => {
+                let name = ram_type.to_string();
+                match gpu.vram_chip_temps(ram_type) {
+                    Ok(chips) => (name, chips, None),
+                    Err(e) => (name, Vec::new(), Some(e.to_string())),
+                }
+            }
+            Err(e) => ("unknown".to_owned(), Vec::new(), Some(e.to_string())),
+        };
+
+        // LACT gates the register hotspot on Blackwell+ (arch >= Blackwell);
+        // generation classification reuses the project-canonical GpuType.
+        let blackwell_hotspot_c = match QueryGpuInfo.run(target) {
+            Ok(info) => match fetch_gpu_type(&info) {
+                Ok(gpu_type) if gpu_type.is_blackwell() => gpu.blackwell_hotspot_register_c().ok(),
+                _ => None,
+            },
+            Err(_) => None,
+        };
+
+        Ok(RegisterThermalViews {
+            ram_type,
+            vram_chips,
+            vram_chip_error,
+            blackwell_hotspot_c,
+        })
+    }
+}
+
 /// PowerChannels control write (raw driver-unit value: mA on OCP current
 /// channels, mW on the board-power row; the CLI resolves nvvdd/msvdd to
 /// the generation's OCP pair or takes any `get-pwr-cur-info` index).

@@ -109,6 +109,11 @@ pub enum OperationKind {
     /// temperatures (0x65FE3AAD v2, 8.8 fixed point ÷256 °C; index
     /// semantics 0=GPU/1=hotspot/VRAM=2(RTX50)/7(RTX40)/9(older)).
     QueryNvapiThermalChannels,
+    /// Raw-register thermal views (NvAPI_GPU_RegisterOp 0x2EB3C140, read
+    /// flag): per-chip GDDR6x/GDDR7 sensor temperatures (0x9024C0 family,
+    /// LACT-parity) plus the Blackwell+ aggregated hotspot register
+    /// (0xAD0AA0) fallback.
+    QueryNvapiRegisterThermals,
     /// PowerChannels control write (0xAFFC2279): raw driver-unit value on
     /// any populated channel identity (mA on OCP current channels, mW on
     /// the board-power row), generation-resolved by nvapi-rs

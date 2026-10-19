@@ -16,22 +16,22 @@ use nvoc_core::{
     QueryNvapiFramerateLimit, QueryNvapiI2cRead, QueryNvapiOcScannerIncomplete,
     QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
     QueryNvapiPowerCeiling, QueryNvapiPowerChannels, QueryNvapiPowerCommand,
-    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
-    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalChannels,
-    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVoltDevices,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage, QueryVbiosSecurityInfo,
-    QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
-    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
-    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
-    ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset,
-    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetSubdomainFreqRatio,
-    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
-    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
-    SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
-    SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiRegisterThermals,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
+    QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
+    QueryNvapiTopRelsRatio, QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage,
+    QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus,
+    QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
+    ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
+    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
+    ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
+    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
+    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
+    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
     SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
     SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates, SetNvapiOvervolt,
     SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
@@ -214,6 +214,7 @@ pub enum Command {
     GetPmgrArbiter,
     SetPmgrArbiter,
     GetRatedTdp,
+    GetRmInfo,
     GetPrivateFreqDomainInfo,
     GetPrivateFreqDomainStatus,
     SetPrivateFreqDomainGlobalOffset,
@@ -751,6 +752,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec::new("get-pwr-cur-info", Group::Power, "Read the power/current info table (0x67F31384 v4): board power in raw mW (policyId 0, defaults = the card TGP spec) + per-rail OCP current in raw mA (50-series (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none) with the resolved NVVDD/MSVDD OCP channels, the live control value paired to each row, and the geometry detection (xocd audit §16.1). Row unit taxonomy: min=1 → current (mA), min≥1000 → power (mW) — every row renders with units. Each row's `index` is a valid set-pwr-cur-limit write target")
             ),
             (Command::GetRatedTdp, CommandSpec::new("get-rated-tdp", Group::Power, "Rated-TDP readback trio (0xED2BEA09/0x87BD35EF/0xFCBDF642)")),
+            (
+                Command::GetRmInfo,
+                CommandSpec {
+                    adapters: &NVML_ONLY,
+                    ..CommandSpec::new("get-rm-info", Group::Info, "Read the Linux RM info summary through /dev/nvidiactl (NVOS54 RM control on a client/device/subdevice stack, LACT parity): FB_INFO RAM type/vendor, bus width, VRAM size, L2 cache + GR ROP trio and global SM order — the surfaces NVAPI does not expose. NVML resolves the /dev/nvidiaN minor number; Linux-only (other platforms report supported:false)")
+                },
+            ),
             (
                 Command::GetSettings,
                 CommandSpec {
@@ -4507,6 +4515,30 @@ fn execute_target(
                 None => json!({"supported": false}),
             })
         }
+        Command::GetRmInfo => {
+            if !nvoc_core::rm::platform_supported() {
+                return Ok(json!({
+                    "supported": false,
+                    "reason": "/dev/nvidiactl RM info requires Linux",
+                }));
+            }
+            let minor = nvoc_core::nvml::query_nvml_minor_number(target.nvml()?, target.id.0)?;
+            let info = nvoc_core::rm::collect(minor)?;
+            Ok(json!({
+                "device": format!("/dev/nvidia{minor}"),
+                "ram_type": info.ram_type,
+                "ram_vendor": info.ram_vendor,
+                "bus_width": info.bus_width,
+                "ram_size_kb": info.ram_size_kb,
+                "l2_cache_size": info.l2_cache_size,
+                "rop": {
+                    "unit_count": info.rop_unit_count,
+                    "operations_factor": info.rop_operations_factor,
+                    "operations_count": info.rop_operations_count,
+                },
+                "sm_count": info.sm_count,
+            }))
+        }
         Command::SetPrivatePermanentPstateLockUser => {
             let level = parse_usize(&invocation.positionals[0], "level")? as u32;
             let out = run(target, SetNvapiPerfLevelLock { level })?.output;
@@ -4740,6 +4772,25 @@ fn execute_target(
                     })
                 })).collect::<Vec<_>>(),
                 "status_supported": snap.status.is_some(),
+                // RegisterOp raw reads (LACT parity): per-chip GDDR6x/7
+                // sensors + the Blackwell+ hotspot register fallback. On
+                // Blackwell prefer blackwell_hotspot_register_c over the
+                // channel map's hotspot slot (LACT does the same).
+                "register_views": match run(target, QueryNvapiRegisterThermals) {
+                    Ok(report) => {
+                        let views = report.output;
+                        json!({
+                            "ram_type": views.ram_type,
+                            "vram_chips": views.vram_chips.iter().map(|(label, temp)| json!({
+                                "label": label,
+                                "temp_c": temp,
+                            })).collect::<Vec<_>>(),
+                            "vram_chip_error": views.vram_chip_error,
+                            "blackwell_hotspot_register_c": views.blackwell_hotspot_c,
+                        })
+                    }
+                    Err(e) => json!({"supported": false, "error": e.to_string()}),
+                },
             }))
         }
         Command::SetPwrCurLimit => {
@@ -10032,6 +10083,7 @@ mod tests {
             | Command::GetPmgrArbiter
             | Command::SetPmgrArbiter
             | Command::GetRatedTdp
+            | Command::GetRmInfo
             | Command::GetPrivateFreqDomainInfo
             | Command::GetPrivateFreqDomainStatus
             | Command::SetPrivateFreqDomainGlobalOffset

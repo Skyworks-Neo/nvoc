@@ -42,6 +42,25 @@ pub fn query_nvml_uuid(nvml: &Nvml, gpu_id: u32) -> Option<String> {
     device.uuid().ok()
 }
 
+/// Query the driver minor number (`/dev/nvidia{N}` device index) via NVML —
+/// the handle-open key for the Linux RM lane (`rm::collect`). NVML only
+/// exposes the query on Linux; elsewhere this is a defined error (the CLI
+/// gate `rm::platform_supported()` intercepts first).
+pub fn query_nvml_minor_number(nvml: &Nvml, gpu_id: u32) -> Result<u32, Error> {
+    #[cfg(target_os = "linux")]
+    {
+        let device = find_nvml_device_err(nvml, gpu_id)?;
+        device
+            .minor_number()
+            .map_err(|e| Error::Custom(format!("NVML minor number query failed: {e}")))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (nvml, gpu_id);
+        Err(Error::Custom("NVML minor number requires Linux".to_owned()))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Power queries
 // ---------------------------------------------------------------------------

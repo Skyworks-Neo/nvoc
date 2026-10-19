@@ -3268,6 +3268,87 @@ pub(super) fn format_thermal_channels(output: &Value) -> Vec<String> {
     if output.get("status_supported").and_then(Value::as_bool) == Some(false) {
         lines.push("  (live STATUS refused — metadata only)".to_string());
     }
+    // RegisterOp raw reads (LACT parity): per-chip GDDR6x/7 sensors + the
+    // Blackwell+ hotspot register fallback. On Blackwell prefer the register
+    // hotspot over the channel map's HOT_SPOT slot (LACT does the same).
+    match output.get("register_views") {
+        Some(views) if views.get("supported").and_then(Value::as_bool) == Some(false) => {
+            let reason = views
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("RegisterOp unavailable");
+            lines.push(format!(
+                "  {} {}",
+                nvoc_cli_common::color::stylize_title("Register views:"),
+                nvoc_cli_common::color::stylize(&format!("N/A ({reason})"), false)
+            ));
+        }
+        Some(views) => {
+            lines.push(nvoc_cli_common::color::stylize_title("Register views").to_string());
+            if let Some(ram) = views.get("ram_type").and_then(Value::as_str) {
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("ram_type"),
+                    nvoc_cli_common::color::stylize(ram, false)
+                ));
+            }
+            if let Some(error) = views.get("vram_chip_error").and_then(Value::as_str) {
+                // A call-level NVAPI_ERROR (-1) is the non-admin signature of
+                // the kernel register lane (RE-proven on 610.47; every user-
+                // mode check passes first). Hint so the reading is actionable.
+                let hint = if error.contains("NVAPI_ERROR") {
+                    "; the register lane requires an elevated (admin) process"
+                } else {
+                    ""
+                };
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("VRAM chip probe"),
+                    nvoc_cli_common::color::stylize(&format!("aborted ({error}){hint}"), false)
+                ));
+            } else {
+                match views.get("vram_chips").and_then(Value::as_array) {
+                    Some(chips) if !chips.is_empty() => {
+                        for chip in chips {
+                            let label = chip.get("label").and_then(Value::as_str).unwrap_or("?");
+                            let temp = temp_text(chip.get("temp_c"))
+                                .unwrap_or_else(|| "no reading".to_string());
+                            lines.push(format!(
+                                "  {}: {}",
+                                nvoc_cli_common::color::stylize_title(&format!(
+                                    "VRAM chip {label}"
+                                )),
+                                nvoc_cli_common::color::stylize(&temp, false)
+                            ));
+                        }
+                    }
+                    Some(_) => {
+                        let ram = views.get("ram_type").and_then(Value::as_str).unwrap_or("?");
+                        lines.push(format!(
+                            "  {}: {}",
+                            nvoc_cli_common::color::stylize_title("VRAM chips"),
+                            nvoc_cli_common::color::stylize(
+                                &format!("none (probe set is GDDR6x/GDDR7; this is {ram})"),
+                                false
+                            )
+                        ));
+                    }
+                    None => {}
+                }
+            }
+            if let Some(temp) = views
+                .get("blackwell_hotspot_register_c")
+                .and_then(Value::as_f64)
+            {
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("Blackwell hotspot register"),
+                    nvoc_cli_common::color::stylize(&format_measurement(temp, "C"), false)
+                ));
+            }
+        }
+        None => {}
+    }
     lines
 }
 
@@ -3905,6 +3986,67 @@ mod tests {
         assert!(rendered.contains("offset_hw 3736"), "{rendered}");
         assert!(rendered.contains("scaling 256"), "{rendered}");
         assert!(rendered.contains("range -40 C..150 C"), "{rendered}");
+    }
+
+    #[test]
+    fn thermal_channels_formatter_renders_register_views() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "channel_mask": "0x000000ff",
+            "primary": [],
+            "channels": [],
+            "status_supported": true,
+            "register_views": {
+                "ram_type": "GDDR7",
+                "vram_chips": [
+                    {"label": "A0 (Front)", "temp_c": 45},
+                    {"label": "A0 (Back)", "temp_c": 41}
+                ],
+                "vram_chip_error": null,
+                "blackwell_hotspot_register_c": 52
+            }
+        });
+        let rendered = super::format_thermal_channels(&output).join("\n");
+        assert!(rendered.contains("Register views"), "{rendered}");
+        assert!(rendered.contains("ram_type: GDDR7"), "{rendered}");
+        assert!(
+            rendered.contains("VRAM chip A0 (Front): 45 C"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("VRAM chip A0 (Back): 41 C"), "{rendered}");
+        assert!(
+            rendered.contains("Blackwell hotspot register: 52 C"),
+            "{rendered}"
+        );
+
+        // Gated-out card: the probe set note carries the RAM type…
+        let gddr6 = json!({
+            "primary": [],
+            "channels": [],
+            "register_views": {
+                "ram_type": "GDDR6",
+                "vram_chips": [],
+                "vram_chip_error": null,
+                "blackwell_hotspot_register_c": null
+            }
+        });
+        let rendered = super::format_thermal_channels(&gddr6).join("\n");
+        assert!(
+            rendered.contains("VRAM chips: none (probe set is GDDR6x/GDDR7; this is GDDR6)"),
+            "{rendered}"
+        );
+
+        // …and an errored op degrades to the N/A line with the reason.
+        let failed = json!({
+            "primary": [],
+            "channels": [],
+            "register_views": {"supported": false, "error": "RegisterOp refused"}
+        });
+        let rendered = super::format_thermal_channels(&failed).join("\n");
+        assert!(
+            rendered.contains("Register views: N/A (RegisterOp refused)"),
+            "{rendered}"
+        );
     }
 
     #[test]
