@@ -43,7 +43,6 @@ use nvoc_core::{
     SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
     SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-<<<<<<< HEAD
     SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate,
     SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
     SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
@@ -52,15 +51,6 @@ use nvoc_core::{
     SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
     SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
     nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-=======
-    SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
-    SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
-    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
-    SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets,
-    fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
->>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
     parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
     query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
     sync_memory_pstate_as_p0,
@@ -1747,11 +1737,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "Volt-rail limit value, millivolts in both modes (e.g. 1125 or 56.25; `uv` suffix = raw µV): --offset (default) writes the offset directly; --target takes an absolute target and derives the offset from the live control/status snapshot. The driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
                     )])),
-<<<<<<< HEAD
                     ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV --slot N (0..3, default 0) selects the melonVolt payload dword: 0 = the uV offset (offset/target modes above); 1 = VBIOS max wall offset (user A/B); 2 = VRM max wall offset; 3 = VMIN/min-hold offset (all mV-in/uV-out like offset mode; 2/3 pinned on P100/582.41, status VRM wall/Min Hold follow 1:1). Slots 4/5: no known use — -300 crashed the driver on 4060 Laptop / 610, -100..-200 observed safe; honored as-is, know what you are writing. --slot >0 conflicts with --target")
-=======
-                    ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV --slot N (0..5, default 0) selects the melonVolt payload dword: 0 = the uV offset (offset/target modes above); 2 = VRM max wall offset; 3 = VMIN/min-hold offset (both mV-in/uV-out like offset mode, P100/582.41-pinned, status Min Hold/VRM wall follow 1:1); 1/4/5 = retained-but-quiet firmware-opaque dwords (raw i32 in, no unit semantics). --slot >0 conflicts with --target")
->>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
                 },
             ),
                         (
@@ -2114,7 +2100,6 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
         }
     }
 
-<<<<<<< HEAD
     // Protocol bound: the melonVolt payload is 0..5. Slots 4/5 are legal
     // but dangerous (honored as-is per user choice; see the --slot help).
     if matches!(
@@ -2122,11 +2107,6 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
         Command::SetVoltRailLimit | Command::ResetVoltRailLimit
     ) && option_one(invocation, "slot")
         .is_some_and(|raw| raw.parse::<usize>().map(|v| v > 5).unwrap_or(true))
-=======
-    if command == Command::SetVoltRailLimit
-        && option_one(invocation, "slot")
-            .is_some_and(|raw| raw.parse::<usize>().map(|v| v > 5).unwrap_or(true))
->>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
     {
         return Err(CliError::new(
             "--slot out of range (melonVolt payload is 0..5)",
@@ -2283,11 +2263,8 @@ fn option_takes_value(token: &str) -> bool {
             | "--policy"
             | "--policy-index"
             | "--slot"
-<<<<<<< HEAD
             | "--channel"
             | "--command"
-=======
->>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
     )
 }
 
@@ -2564,11 +2541,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("slot")
             .value_name("SLOT")
             .action(ArgAction::Set)
-<<<<<<< HEAD
             .help("set-volt-rail-limit: melonVolt payload dword 0..3 (0 = the uV offset; 1 = VBIOS max wall offset, user A/B; 2 = VRM max wall offset; 3 = VMIN/min-hold offset, P100/582.41-pinned; ⚠️ 4/5 no known use — -300 crashed 4060L/610, -100..-200 observed safe, honored as-is). ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
-=======
-            .help("set-volt-rail-limit: melonVolt payload dword 0..5 (0 = the uV offset; 2 = VRM max wall offset; 3 = VMIN/min-hold offset, P100/582.41-pinned; 1/4/5 firmware-opaque). ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
->>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
         "freq" => Arg::new("freq")
             .long("freq")
             .action(ArgAction::SetTrue)
@@ -10749,6 +10722,8 @@ mod tests {
         assert!(parse_power_channel_value("abc").is_err());
         assert!(parse_power_channel_value("nan").is_err());
         assert!(parse_power_channel_value("inf").is_err());
+    }
+
     /// Profile commands fan out per GPU (the store is keyed per GPU
     /// identity); only the package commands deviate — import runs once,
     /// export aggregates into one file.
@@ -11424,7 +11399,6 @@ mod tests {
         assert_eq!(Command::GetEdid.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::SetEdid.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::ClearEdid.adapters(), &NVAPI_ONLY);
-<<<<<<< HEAD
         assert_eq!(Command::GetPwrCurInfo.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::GetPowerCommand.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::SetPowerCommand.adapters(), &NVAPI_ONLY);
@@ -11528,14 +11502,11 @@ mod tests {
         // --force feeds the pre-Ampere poison-write gate (default = refuse).
         let invocation = parse_args(["set-pwr-cur-limit", "nvvdd", "150", "--force"]).unwrap();
         assert!(invocation.options.contains_key("force"));
-=======
->>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
         // --slot selects the melonVolt payload dword (0..5); raw passthrough.
         let invocation = parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "3"]).unwrap();
         assert_eq!(invocation.command, Some(Command::SetVoltRailLimit));
         assert_eq!(option_one(&invocation, "slot"), Some("3"));
         assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "6"]).is_err());
-<<<<<<< HEAD
         // slots 4/5: refused at parse (no known use; -300 crashed 4060L/610,
         // -100..-200 observed safe — kept lab-only)
         // slots 4/5 honored as-is (user choice; crash matrix in help)
@@ -11553,8 +11524,6 @@ mod tests {
         // Old names are gone.
         assert!(parse_args(["set-power-limit", "140"]).is_err());
         assert!(parse_args(["set-ocp-limit", "nvvdd", "140"]).is_err());
-=======
->>>>>>> d35d5b6 (volt: expose the melonVolt payload slots in the CLI — set-volt-rail-limit --slot (0..5), P100/582.41 slot semantics pinned)
     }
 
     #[test]

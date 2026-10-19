@@ -433,7 +433,6 @@ impl OperationKind {
                 | ResetNvapiVoltRailLimit
                 | SetNvapiFramerateLimit
                 | SetNvapiI2cWrite
-                | SetNvapiTopRelsRatio
                 | SetTopRelsRatioSlotRaw
                 | SetSubdomainFreqRatio
                 | ResetSubdomainFreqRatio
