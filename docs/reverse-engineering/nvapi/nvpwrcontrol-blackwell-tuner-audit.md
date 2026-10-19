@@ -318,3 +318,53 @@ status=0、controllable mask=0xFF，**8 条记录在 bit 0..7**：dom 0-5/7 = ty
 §3 缺口收尾：TopRels 语义（已落）、V/F SET 0x0733E009（**早已注册**——nvid.rs 枚举 + typed 结构 + 函数声明俱全，首次 grep 因大小写漏检）、Pstates20 SET V1 魔数 0x11C94（**早已在** gpu.rs 级联，工具的最小 V1 SET 与本仓 minimal-build 模式一致，文档已互引）。
 
 **测量宇宙勘误（用户 CLI 对照触发）**：`nvoc-cli get-private-freq-domain-status`（计数器双采样 0xFB8F61EC）与探针（直读 0x527FC458）**共用同一 MEASURE 位宇宙（RTSS 序）**，CLI 的 name→bit 表（cli/src/lib.rs parse_clk_domain_table，含 Turing TU116 活体 ground truth）与本文 7 槽归因逐一吻合——两 ID/两代/两路径四重互证。据此**撤回"MSD 无测量槽"**：该结论基于 0..15 扫表，而 CLI 位表定义 **msd=21、pwr=20、utils=22、host1x=28** 均在同一宇宙；探针已扩至 +4=0..28，40/50 系重跑即枚举完整可测集。三宇宙分立备忘（CLI 注释既有的结论，本文再证）：MEASURE=RTSS 序 ≠ FreqsEnum selector 序（disp=7）≠ WRITE-record 位空间。
+
+### 2.8 源码树二次确认（2026-10-06）：「30~50 系」声明定性 + 两阶段写协议
+
+拿到工具源码树（`reverse/NvpwrControl_61692_v1_8_0_unified_blackwell_tuner/`，
+app/main.cpp + driver/driver.c），对 §2 的二进制结论做源码级核对，全部一致
+（RVA 表、偏移、门禁、生成器语义逐一吻合），并补充三点：
+
+**① 「支持 30~50 系」的真实含义 = 多 GPU 型号 × 单一驱动构建。**
+driver.c 顶部 `NVPWR_EXPECTED_TIMESTAMP 0x6A9B4070` + `NVPWR_EXPECTED_SIZE
+0x06D3E000` + ValidateBuild 的 **6 处 RVA 代码签名字节门**（§2.4 表）——内核
+镜像不逐字节匹配 616.92 就拒跑。所谓 30~50 系支持是**GPU 型号菜单**
+（driver.c `POWER_3050_MIN 35000/MAX 150000`、3060 60-190W、3070 80-200W、
+3080 150-250W……40/50 系为实验抬顶区间；main.cpp:1179 label 逐型号列明），
+这些型号的笔电都能装同一个 616.92 驱动。**没有任何跨驱动版本适配机制**——
+610/582 上该工具按设计直接拒跑。
+
+**② 两阶段连贯写协议**（`StageTargetAtStockCeiling`，driver.c:986-1052）：
+
+```text
+Phase A — 檐下整备（OEM 顶不动，先证生成器连贯）
+  CallBoardSet(MAX, 0xFE, Stock)          # MAX 槽钉回出厂顶
+  UPPER(0x3D24) = Stock                    # 顶也钉回
+  cTGP(0x3D14) = base = Target − Amount   # 生成器 C 项
+  CallSetAmount(Amount)                    # A 项（原生 0x4E4610，内部重跑生成器）
+  CallSetEligibility(1)                    # 原生 0x4E4680，again 重跑
+  验证（一项不满足即 DATA_ERROR 回滚）：
+    Upper==Max==Stock ∧ init==1 ∧ elig==1 ∧ amountActive==1
+    ∧ cTGP+Amount==Target ∧ F7==expected ∧ CURRENT==expected
+Phase B — 抬顶
+  CallBoardSet(MAX, 0xFE, Target) + UPPER=Target（顺序/屏障同源码）
+  验证 F7/UPPER/CURRENT 收敛到 Target
+Rollback：镜像逆序（RestoreSavedRoot → BoardSet(MAX,FE,Saved) → UPPER=Saved → 验证）
+```
+
+要点：**每次生成器输入变更都经原生 setter 触发重跑**（不手搓 F7），验证链
+把 F7/CURRENT/PredictedF7 三方对齐后才动顶——这是「内核写保持 RM 状态
+连贯」的完整范本，直接可抄进我们的 4060L L3。
+
+**③ 给 610/582 适配的可迁移资产**（工具本身零跨版本帮助，按设计拒跑）：
+
+- **Root 形状签名**（差分扫描的消歧器）：候选策略对象处应有字节/字段序列
+  `init=1(u8)@3D10, elig(u8), amountActive(u8), pad, cTGP(u32)@3D14,
+  amount(u32)@3D18, policy_key(u32)@3D1C(<0x40), LOWER(u32)@3D20,
+  UPPER(u32)@3D24`——出厂 4060L 上 cTGP=amount=UPPER=100000 且 LOWER=min；
+  差分（90→95W）时 amount 变、其余不动。
+- **有效性门**：root+0x3D10==1 ∧ policy_key<0x40 ∧ Board+0x2D0 指向镜像内。
+- **610 待逆向清单**（idalib）：对应 §2.4 的 6 个 RVA + 签名字节、GPU 表链
+  （0x13B2E18→0x208→0x48A48/0x48C48, stride 0x10）、Major+0x25B0→Root、
+  Board+0x2D0 setter。**只有要「生成器连贯写」才需要全部**；若只做粗验证
+  （直写 UPPER+amount 观察是否被生成器回写），差分定位+形状签名即可起步。

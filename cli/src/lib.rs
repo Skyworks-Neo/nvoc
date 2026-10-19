@@ -5,39 +5,45 @@ use clap::{
 use nvoc_core::{
     BackendSet, ClearEdid, ClkVfDomainHint, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
     DisableNvapiThermalSim, FanCurvePointReadout, GetFanCurves, GetPowerMode, GpuSelector,
-    GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiPerfFreqCap, OemOcScanner,
-    OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost,
-    QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo,
-    QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiBarInfo,
-    QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum,
-    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
+    GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiI2cTransaction, NvapiPerfFreqCap,
+    OemOcScanner, OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction,
+    QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo,
+    QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryNvapiBarInfo, QueryNvapiBoostLocks, QueryNvapiClkDomainFreqDetail,
+    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains,
+    QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiComputeCaps, QueryNvapiCoolerInfo,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPstates20Private,
-    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltDevices,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
-    QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus,
-    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock,
-    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
+    QueryNvapiFramerateLimit, QueryNvapiI2cRead, QueryNvapiOcScannerIncomplete,
+    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
+    QueryNvapiPowerCeiling, QueryNvapiPowerChannels, QueryNvapiPowerCommand,
+    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiRegisterThermals,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
+    QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
+    QueryNvapiTopRelsRatio, QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage,
+    QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus,
+    QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
+    ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
     ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus,
-    SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels, SetEdid, SetFanCurve,
-    SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock, SetLegacyClocks,
-    SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
+    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
+    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
+    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
     SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
-    SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap,
-    SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates, SetNvapiOvervolt,
+    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
+    SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-    SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
-    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode,
-    VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
+    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate,
+    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
+    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
+    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
+    SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
     nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
     query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
@@ -181,23 +187,34 @@ pub enum Command {
     GetAutoboostSupport,
     GetEdid,
     SetPstateGlobalFreqOffset,
+    SetSubdomainFreqRatio,
+    ResetSubdomainFreqRatio,
     SetOverclockedPstates,
     GetPstates20Private,
     SetPstates20PrivateDelta,
     SetPublicTgpPercent,
     SetPpabStatus,
-    SetPowerLimit,
     ResetPowerLimit,
     GetDNotifier,
     SetDNotifier,
     GetPowerCeiling,
+    GetPwrCurInfo,
+    GetPowerCommand,
+    GetBoostLocks,
+    GetThermalChannels,
+    SetPwrCurLimit,
+    SetPowerCommand,
+    GetTopRelsRatio,
+    SetTopRelsRatio,
     GetVoltRailInfo,
     SetVoltRailLimit,
+    ResetVoltRailLimit,
     GetCoreVoltageControl,
     SetCoreVoltageControl,
     GetPmgrArbiter,
     SetPmgrArbiter,
     GetRatedTdp,
+    GetRmInfo,
     GetPrivateFreqDomainInfo,
     GetPrivateFreqDomainStatus,
     SetPrivateFreqDomainGlobalOffset,
@@ -226,7 +243,14 @@ pub enum Command {
     SetPublicVftableRangeOffset,
     SetPstateLockViaMemRange,
     GetPStateLock,
+    GetLockStatus,
+    GetPerfPolicies,
+    GetFramerateLimit,
+    SetFramerateLimit,
+    GetI2c,
+    SetI2c,
     SetPStateLock,
+    SetPstateRangeLock,
     ResetPStateLock,
     SetLegacyApplicationFreqLock,
     SetLegacyGpcRailOvervoltLimit,
@@ -461,6 +485,31 @@ fn find_bit_signature(image: &[u8]) -> Option<usize> {
     vbios::find_bit(image)
 }
 
+/// PerfFlags bit names for the get-perf-policies view (nvapi-rs
+/// `NV_GPU_PERF_FLAGS`; AB 19412 RE + ccminer cross-refs agree on semantics).
+const PERF_FLAG_NAMES: &[(u32, &str)] = &[
+    (1, "power-limit"),
+    (2, "thermal-limit"),
+    (4, "voltage-rel-limit"),
+    (8, "voltage-op-limit"),
+    (16, "no-load-limit"),
+    (32, "unknown-32"),
+];
+
+fn perf_flag_names(bits: u32) -> Vec<String> {
+    let mut names: Vec<String> = PERF_FLAG_NAMES
+        .iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|(_, name)| (*name).to_owned())
+        .collect();
+    let named = PERF_FLAG_NAMES.iter().fold(0u32, |acc, (bit, _)| acc | bit);
+    let unknown = bits & !named;
+    if unknown != 0 {
+        names.push(format!("unknown-{unknown:#x}"));
+    }
+    names
+}
+
 /// `--help` listing order; kept sorted by test). Adding a command = one enum
 /// variant, one row here, one `execute_target` arm; the
 /// `table_covers_every_variant` test rejects a variant with no row.
@@ -501,6 +550,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-autoboost-support", Group::Perf, "Read NVML API restriction state")
                 },
             ),
+            (
+                Command::GetBoostLocks,
+                CommandSpec::new("get-boost-locks", Group::Perf, "Read the PerfClientLimits 7-domain lock table (0xE440B867 v2): clock-range locks (id 0/1, mode 2, kHz bounds — the -lgc family) and the V/F voltage lock (id 6, mode 3, µV); all mode 0 = unlocked. Live-verified on RTX 2070 both ways")
+            ),
             (Command::GetCoreVoltageControl, CommandSpec::new("get-core-voltage-control", Group::Voltage, "Read the core-voltage control object (0xA91F88EB, escape 0x07000045)")),
             (
                 Command::GetDisplayList,
@@ -531,10 +584,23 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::GetFramerateLimit,
+                CommandSpec {
+                    ..CommandSpec::new("get-framerate-limit", Group::Perf, "Read the global driver Frame Rate Limiter (DRS setting 0x10834FEE — the exact path AB 19412's framerate cap uses: CreateSession→LoadSettings→GetBaseProfile→GetSetting). Driver-registry global, no per-GPU state")
+                },
+            ),
+            (
                 Command::GetGpuList,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     ..CommandSpec::new("get-gpu-list", Group::Info, "List discovered GPUs and available backends")
+                },
+            ),
+            (
+                Command::GetI2c,
+                CommandSpec {
+                    options: Box::leak(Box::new(["port", "address", "register", "len", "speed", "ddc", "display-mask", "scan", "scan-ports"])),
+                    ..CommandSpec::new("get-i2c", Group::Info, "Read bytes from an I2C slave on the card's I2C bus (NVAPI I2CRead — the transport AB's VRM tooling uses; 24 controller drivers catalogued in the RE archive). --port N (access port), --address 0xXX (7-bit slave address, default 0x2F; shifted to 8-bit internally), --register 0xXX (repeated reg bytes, default none), --len N (default 1), --speed KHZ (3/10/33/100/200/400, default driver default), --ddc (DDC port), --display-mask 0xX (default 0x1; ports 0-2 auto-map to DDC mask bits per AB convention). --scan [START [END]] probes a 7-bit address range for responding slaves (default 0x08-0x77, the standard addressable range) instead of a single read; --scan-ports [START [END]] (default 0-15) probes ports instead, paired with --address")
                 },
             ),
             (
@@ -567,12 +633,32 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-legacy-temp-sensor", Group::Thermal, "Read NVAPI legacy 3-sensor thermal view (GPU/Memory/Board, live + physical range)")
                 },
             ),
+            (
+                Command::GetLockStatus,
+                CommandSpec {
+                    ..CommandSpec::new("get-lock-status", Group::Voltage, "Read the PerfClientLimits lock table — all 7 entries (GPU/Memory frequency upper+lower bounds, P-State select pins, Voltage lock) with decoded mode and value. Dual-named interface: AB 19412 drives the same id (0x39442CFB) as its VFCurve_SetCurve writer")
+                },
+            ),
+            (
+                Command::GetPerfPolicies,
+                CommandSpec {
+                    ..CommandSpec::new("get-perf-policies", Group::Perf, "Read the performance-policy diagnostic view: supported limit mask (PerfPoliciesGetInfo 0x409D9841), armed limit-source bits (GetStatus 0x3D358A0C — power/thermal/voltage/no-load; RAW SEMANTICS: idle desktops read 15 constantly while decrease-reasons stay 0, so treat the mask as 'sources present/armed', not 'currently throttling' — ccminer-era cross-refs saw it vary under load, confirm with an idle-vs-load A/B), raw+named, plus performance-decrease reasons — the 'why is the GPU below peak' readout; AB 19412 names the same family GetRelPower/PowerPolicies")
+                },
+            ),
             (Command::GetPmgrArbiter, CommandSpec::new("get-pmgr-arbiter", Group::Perf, "Read the PMGR voltage-request arbiter values (0x717648FD, escape 0x0700019F)")),
             (
                 Command::GetPowerCeiling,
                 CommandSpec {
                     formatter: Some(output::format_power_ceiling),
                     ..CommandSpec::new("get-power-ceiling", Group::Power, "Read the effective power wall on PPAB mobiles (nvidia-smi's Ceiling trio): requested TGP (ClientTgpWattGetStatus) + active D-Notifier cap, ceiling = min of the two")
+                },
+            ),
+            (
+                Command::GetPowerCommand,
+                CommandSpec {
+                    options: Box::leak(Box::new(["channel", "command"])),
+                    formatter: Some(output::format_power_command),
+                    ..CommandSpec::new("get-power-command", Group::Power, "Read one ExtendedLimits power-command lease cell (NDA 0x33AB0353 GET, packet stamp v1|1320; xOCD 2.0 ReadPowerCommand) — a per-channel command/lease surface distinct from the TGP-watt/PowerChannels control (0x8B3E7343/0xAFFC2279). --command observed (0xF8, observed-only readback) | request (0xFE, the writable request/lease; live unit mW); --channel 0..31 (default 0; only channel 0 carries data on Pascal/Ada). 0xFFFFFFFF = unset sentinel. ECHO LAYER: the request cell is what GET/NVML/nvidia-smi display as the cap, but load-time enforcement stays at the legal slider window (P100 load-proven 2026-10-06)")
                 },
             ),
             (
@@ -661,7 +747,18 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-public-vftable", Group::Vfp, "Read the public V-F curve table: default dumps all domains (graphics points plus the trailing memory entries, e.g. index 127..131 on 30/40 series); --domain gpc|memory narrows to one segment; --output-csv PATH writes the single-domain curve as CSV (voltage,frequency,delta,default_frequency). Faithful read by default (driver-reported default column, zeros included); --infer-missing-field derives the default as current − delta where the driver leaves it empty (Pascal/Turing)")
                 },
             ),
+            (
+                Command::GetPwrCurInfo,
+                CommandSpec::new("get-pwr-cur-info", Group::Power, "Read the power/current info table (0x67F31384 v4): board power in raw mW (policyId 0, defaults = the card TGP spec) + per-rail OCP current in raw mA (50-series (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none) with the resolved NVVDD/MSVDD OCP channels, the live control value paired to each row, and the geometry detection (xocd audit §16.1). Row unit taxonomy: min=1 → current (mA), min≥1000 → power (mW) — every row renders with units. Each row's `index` is a valid set-pwr-cur-limit write target")
+            ),
             (Command::GetRatedTdp, CommandSpec::new("get-rated-tdp", Group::Power, "Rated-TDP readback trio (0xED2BEA09/0x87BD35EF/0xFCBDF642)")),
+            (
+                Command::GetRmInfo,
+                CommandSpec {
+                    adapters: &NVML_ONLY,
+                    ..CommandSpec::new("get-rm-info", Group::Info, "Read the Linux RM info summary through /dev/nvidiactl (NVOS54 RM control on a client/device/subdevice stack, LACT parity): FB_INFO RAM type/vendor, bus width, VRAM size, L2 cache + GR ROP trio and global SM order — the surfaces NVAPI does not expose. NVML resolves the /dev/nvidiaN minor number; Linux-only (other platforms report supported:false)")
+                },
+            ),
             (
                 Command::GetSettings,
                 CommandSpec {
@@ -675,6 +772,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     options: Box::leak(Box::new(["verbose"])),
                     ..CommandSpec::new("get-status", Group::Info, "Read NVAPI live GPU status")
                 },
+            ),
+            (
+                Command::GetTopRelsRatio,
+                CommandSpec::new("get-subdomain-freq-ratio", Group::Clock, "Read the TopRels GPC:XBAR propagation ratio (XBAR = ratio x GPC; raw U16.16). LIVE-VERIFIED on Blackwell server 580.173.02: down-free 0.70-0.90 instant/reversible, up-clamped at the devinit 0.9 by engine policy (five ratio slots 0.8/0.9/1.2/1.5/2.0 exist; only the 0.9 slot is engine-tracked)"),
             ),
             (
                 Command::GetSupportedLegacyApplicationFreq,
@@ -692,6 +793,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     preferred: BackendAdapter::Nvml,
                     formatter: Some(output::format_temperature_thresholds_output),
                     ..CommandSpec::new("get-temp-thresholds", Group::Thermal, "Read temperature thresholds (NVML by default; --nvapi exposes target-temp policy)")
+                },
+            ),
+            (
+                Command::GetThermalChannels,
+                CommandSpec {
+                    formatter: Some(output::format_thermal_channels),
+                    ..CommandSpec::new("get-thermal-channels", Group::Thermal, "Read the FULL ThermChannel map (the research-detail view; get-status only surfaces the classified primaries): populated channel metadata (type/offset_sw/offset_hw/scaling/range) + the primary channel per thermal type (GPU_AVG/hotspot/board/VRAM/PWR_SUPPLY) joined with live temperatures (0x0BC8163D + 0x65FE3AAD, 8.8 fixed point; hotspot=idx1, VRAM=idx2 on RTX50 / 7 on RTX40 / 9 on older)")
                 },
             ),
             (
@@ -822,7 +930,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("reset-pstate-global-freq-offset", Group::Clock, "Reset NVAPI P-State clock offsets (all touched pstate/domain pairs by default; --domain filters to one clock domain)")
                 },
             ),
-            (Command::ResetPStateLock, CommandSpec::new("reset-pstate-lock", Group::Clock, "Clear all native NVAPI P-State locks")),
+                        (Command::ResetPStateLock, CommandSpec::new("reset-pstate-lock", Group::Clock, "Clear all native NVAPI P-State locks")),
             (Command::ResetPublicGpcRailVoltBoost, CommandSpec::new("reset-public-gpc-rail-volt-boost", Group::Voltage, "Reset NVAPI voltage boost percent")),
             (Command::ResetPublicTgpPercent, CommandSpec::new("reset-public-tgp-percent", Group::Power, "Reset NVAPI power limits")),
             (Command::ResetPublicVftableGpcLock, CommandSpec::new("reset-public-vftable-gpc-lock", Group::Vfp, "Reset NVAPI VFP lock")),
@@ -833,8 +941,29 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("reset-public-vftable-offset", Group::Vfp, "Reset NVAPI VFP deltas")
                 },
             ),
+            (
+                Command::ResetSubdomainFreqRatio,
+                CommandSpec {
+                    adapters: &BOTH_BACKENDS,
+                    options: Box::leak(Box::new(["src", "dst", "index", "force"])),
+                    ..CommandSpec::new("reset-subdomain-freq-ratio", Group::Clock, "Restore the addressed TopRels relation ratio to the DRIVER-REPORTED default (GetInfo payload — 0xE660 = 0.90 on Blackwell GPC:XBAR). --src/--dst (default GPC=0 -> XBAR=1) or --index address the relation; an un-enabled ratio arm (live control record = 0) is refused unless --force")
+                },
+            ),
             (Command::ResetTempLimit, CommandSpec::new("reset-temp-limit", Group::Thermal, "Reset NVAPI sensor limits")),
             (Command::ResetTempSim, CommandSpec::new("reset-temp-sim", Group::Thermal, "Disable temperature simulation and restore the real sensor reading")),
+(
+                Command::ResetVoltRailLimit,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["expect-type", "slot"])),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                        "arg_rail_bit",
+                        "RAIL_BIT",
+                        "Volt-rail bit index from get-volt-rail-info (e.g. 0 for the single rail on a 4060 laptop, 1 for 5090 MSVDD)",
+                    )])),
+                    ..CommandSpec::new("reset-volt-rail-limit", Group::Voltage, "Zero melonVolt payload slots back to stock (offsets are deltas from the driver baseline — 0 = factory). Default resets the mapped slots 0..3 (uV offset, VBIOS wall offset, VRM max wall offset, VMIN/min-hold offset; slot 2/3 semantics P100/582.41-pinned); --slot N (0..5) resets only that slot — 4/5 honored as-is per user choice (no known use; -300 crashed 4060L/610, -100..-200 observed safe). Post-reset VRM wall / Min Hold echoed for verification")
+                },
+            ),
             (Command::RestartDisplayDriver, CommandSpec::new("restart-display-driver", Group::Info, "Restart the display driver (0xB4B26B65); legacy apply-OC trigger")),
             (
                 Command::SetAutoboostStatus,
@@ -983,6 +1112,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetFramerateLimit,
+                CommandSpec {
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                        "arg_fps",
+                        "FPS|off",
+                        "FPS cap (e.g. 60, 165) or 'off' to delete the setting",
+                    )])),
+                    options: Box::leak(Box::new(["force"])),
+                    ..CommandSpec::new("set-framerate-limit", Group::Perf, "Write the global driver Frame Rate Limiter (DRS SetSetting + SaveSettings, value fps|0xF0000000; 'off' deletes the setting). Persists in the driver profile registry and survives reboot — --force required. Takes effect on new 3D contexts")
+                },
+            ),
+            (
                 Command::SetFreqLock,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
@@ -1004,6 +1146,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "VFP point index or voltage, for example 42, 900mV, or 900000uV",
                 )])),
                     ..CommandSpec::new("set-gpc-volt-lock", Group::Voltage, "Lock VFP by point or voltage")
+                },
+            ),
+            (
+                Command::SetI2c,
+                CommandSpec {
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                        "arg_bytes",
+                        "BYTES",
+                        "Hex bytes to write, e.g. 0xA5,00 or a5 00",
+                    )])),
+                    options: Box::leak(Box::new(["port", "address", "register", "speed", "ddc", "display-mask", "force"])),
+                    ..CommandSpec::new("set-i2c", Group::Info, "Write raw bytes to an I2C slave on the card's I2C bus (NVAPI I2CWrite). CARD-LEVEL HARDWARE WRITE — VRM controllers and EEPROMs live on these buses; wrong bytes can brick a board. --force required. Same port/address/register/speed/ddc/display-mask options as get-i2c (port 0-2 auto-map to DDC mask bits; 0F-style bare hex accepted)")
                 },
             ),
             (
@@ -1093,17 +1248,17 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
-                Command::SetPowerLimit,
+                Command::SetPowerCommand,
                 CommandSpec {
-                    adapters: &BOTH_BACKENDS,
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["policy-index"])),
+                    options: Box::leak(Box::new(["channel", "command", "force", "kmd", "pmxdrvpath"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
-                    "arg_tgp_watt",
-                    "WATT",
-                    "TGP in watts, for example 140 or 140W",
+                    "arg_value",
+                    "VALUE",
+                    "Raw cell value; a bare number is watts (×1000 = the mW driver unit), a `mw` suffix is the raw integer. 0 and 0xFFFFFFFF are rejected (unset sentinels)",
                 )])),
-                    ..CommandSpec::new("set-power-limit", Group::Power, "Set TGP in watts: NVAPI path writes the mobile TGP slider (ClientPowerPolicies, --policy-index); NVML path writes the power-management limit (nvidia-smi -pl). Auto prefers NVAPI")
+                    formatter: Some(output::format_set_power_command),
+                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value. --kmd KERNEL PATH (HIGH RISK, admin): one-shot kernel cycle via the kmd lane (pmxdrv service register → page-walk + static layout probe → GPU-table chain walk → arm select: ROOT ARM (armed PowerRoot, mobile/board-config form) UPPER single-u32 write with readback + native tgp write (window follows UPPER) | BOARD ARM (desktop form: PowerRoot never arms, constructor finds no board-config object) live-window triplet locate of the Board control table → window-max single-u32 write with readback + GET follow verification (mirror-copy guard) + percent write (0xAD95F5ED safe path; the poisonous 0xAFFC2279 SET is never touched) → this lease write LAST (echo sync) → re-verify → service unregister). --pmxdrvpath <file> is the driver binary (required with --kmd). The wall field is volatile (resets on reboot); absolute cap 500 W; --force required (it also bypasses the lease envelope)")
                 },
             ),
             (
@@ -1292,6 +1447,17 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetPstateRangeLock,
+                CommandSpec {
+                    arity: (2, 2),
+                    positionals: Box::leak(Box::new([
+                    PositionalArg::free("arg_low_pstate", "LOW_PSTATE", "Perf-ceiling end of the band: lowest P-State number (e.g. P2)"),
+                    PositionalArg::free("arg_high_pstate", "HIGH_PSTATE", "Perf-floor end of the band: highest P-State number (e.g. P5)"),
+                ])),
+                    ..CommandSpec::new("set-pstate-range-lock", Group::Clock, "Lock the native NVAPI P-State to a RANGE: PstateSelect pair (ids 5/4) written with DIFFERENT pstates — the band analog of set-pstate-lock's exact pin. Self-verifies via the lock table + the locked-pstate set")
+                },
+            ),
+            (
                 Command::SetPublicGpcRailVoltBoost,
                 CommandSpec {
                     arity: (1, 1),
@@ -1344,6 +1510,41 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetPwrCurLimit,
+                CommandSpec {
+                    adapters: &BOTH_BACKENDS,
+                    arity: (2, 2),
+                    options: Box::leak(Box::new(["policy-index", "force"])),
+                    positionals: Box::leak(Box::new([
+                        PositionalArg::free(
+                            "arg_target",
+                            "TARGET",
+                            "Write target: tgp/board (the board-power / TGP policy row; `--policy-index` and `--nvml` apply here), nvvdd (core OCP) / msvdd (memory OCP), or a numeric index from get-pwr-cur-info to write any populated channel (value units then follow the row: A/mA on current channels, W/mW on board power)",
+                        ),
+                        PositionalArg::hyphen(
+                            "arg_value",
+                            "VALUE",
+                            "Limit value: watts on tgp/board (one decimal allowed), amperes on OCP current channels; `ma`/`mw` suffix (case-insensitive) = raw driver integer in the row's own unit (e.g. 240 or 240000ma)",
+                        ),
+                    ])),
+                    ..CommandSpec::new("set-pwr-cur-limit", Group::Power, "Set a power/current limit. Unified writer for the PowerChannels control table (0xAFFC2279; HIGH RISK — raising an OCP ceiling disables a safety net, no confirmation gate): tgp/board writes the TGP/board-power row (NVAPI compact core with --policy-index, or --nvml for the nvidia-smi -pl path), nvvdd/msvdd/INDEX writes any populated channel printed by get-pwr-cur-info. nvapi-rs resolves the identity, clamps to the driver [min,max] window (plus the 1..5001 A envelope on OCP current channels), and runs the full RMW + readback + rollback recipe against the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET); the buffer geometry is feature-detected at runtime (xocd audit E3/§18). Pre-Ampere (pre-RTX-30) GPUs are refused on the NVAPI paths by default — there the SET faults the driver (nvlddmkm 14/153) and the control table reverts to defaults; --force attempts the write anyway for debugging. --nvml (nvidia-smi -pl) is unaffected")
+                },
+            ),
+            (
+                Command::SetSubdomainFreqRatio,
+                CommandSpec {
+                    adapters: &BOTH_BACKENDS,
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["src", "dst", "index", "force"])),
+                    positionals: Box::leak(Box::new([PositionalArg::hyphen(
+                        "arg_ratio",
+                        "RATIO",
+                        "GPC:XBAR propagation ratio 0.70-1.20 (XBAR = ratio x GPC; e.g. 0.85 = -10% XBAR)",
+                    )])),
+                    ..CommandSpec::new("set-subdomain-freq-ratio", Group::Clock, "Set the TopRels GPC:XBAR propagation ratio (XBAR = ratio x GPC; XBAR down-clock trim). LIVE on Blackwell server 580.173.02: 0.70-0.90 applies instantly and reversibly; values above the devinit 0.9 are stored but engine-clamped (down-only policy). Gates: zero ratio and non-carrier relations are hard-rejected; an un-enabled ratio arm (live control record = 0) or a ratio below the lowest tested landing (0x1199) requires --force. Dangerous policy write — rescales the whole XBAR interconnect")
+                },
+            ),
+            (
                 Command::SetTempLimit,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
@@ -1373,7 +1574,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::SetVoltRailLimit,
                 CommandSpec {
                     arity: (2, 2),
-                    options: Box::leak(Box::new(["expect-type", "offset", "target"])),
+                    options: Box::leak(Box::new(["expect-type", "offset", "target", "slot"])),
                     positionals: Box::leak(Box::new([PositionalArg::free(
                         "arg_rail_bit",
                         "RAIL_BIT",
@@ -1384,10 +1585,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "VALUE",
                         "Volt-rail limit value, millivolts in both modes (e.g. 1125 or 56.25; `uv` suffix = raw µV): --offset (default) writes the offset directly; --target takes an absolute target and derives the offset from the live control/status snapshot. The driver clamps the effective wall to min(target, vbios_wall, vrm_max_wall)",
                     )])),
-                    ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV")
+                    ..CommandSpec::new("set-volt-rail-limit", Group::Voltage, "Set a volt-rail limit: --offset (default) writes an mV offset directly (melonVolt write path; 5090 MSVDD = rail 1 type 3); --target takes an absolute mV target and derives the offset from the live control/status snapshot. Both take millivolts by default, `uv` suffix = raw µV --slot N (0..3, default 0) selects the melonVolt payload dword: 0 = the uV offset (offset/target modes above); 1 = VBIOS max wall offset (user A/B); 2 = VRM max wall offset; 3 = VMIN/min-hold offset (all mV-in/uV-out like offset mode; 2/3 pinned on P100/582.41, status VRM wall/Min Hold follow 1:1). Slots 4/5: no known use — -300 crashed the driver on 4060 Laptop / 610, -100..-200 observed safe; honored as-is, know what you are writing. --slot >0 conflicts with --target")
                 },
             ),
-            (
+                        (
                 Command::SetWhisperMode2Status,
                 CommandSpec {
                     arity: (1, 1),
@@ -1747,6 +1948,19 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
         }
     }
 
+    // Protocol bound: the melonVolt payload is 0..5. Slots 4/5 are legal
+    // but dangerous (honored as-is per user choice; see the --slot help).
+    if matches!(
+        command,
+        Command::SetVoltRailLimit | Command::ResetVoltRailLimit
+    ) && option_one(invocation, "slot")
+        .is_some_and(|raw| raw.parse::<usize>().map(|v| v > 5).unwrap_or(true))
+    {
+        return Err(CliError::new(
+            "--slot out of range (melonVolt payload is 0..5)",
+        ));
+    }
+
     if command == Command::ResetFanSpeed
         && option_one(invocation, "fan").is_some_and(|fan| !fan.eq_ignore_ascii_case("all"))
         && invocation.backend != BackendChoice::Nvml
@@ -1767,6 +1981,89 @@ fn parse_output_format(raw: &str) -> CliResult<OutputFormat> {
             "invalid output format {other:?}; expected human or json"
         ))),
     }
+}
+
+/// Power-channel value grammar (set-pwr-cur-limit): the plain number is the
+/// channel's natural big unit — amperes on OCP current channels, watts on
+/// the board-power row (both ×1000 = the raw driver unit) — and a `ma`/`mw`
+/// suffix (case-insensitive) is the raw integer in that same driver unit,
+/// whatever it is.
+fn parse_power_channel_value(raw: &str) -> CliResult<u32> {
+    let raw = raw.trim();
+    let lower = raw.to_ascii_lowercase();
+    if lower.ends_with("ma") || lower.ends_with("mw") {
+        return raw[..raw.len() - 2]
+            .trim()
+            .parse::<u32>()
+            .map_err(|e| CliError::new(format!("invalid raw value: {e}")));
+    }
+    let big: f64 = raw
+        .parse()
+        .map_err(|e| CliError::new(format!("invalid value: {e}")))?;
+    if !big.is_finite() || big < 0.0 {
+        return Err(CliError::new(format!("invalid value: {raw}")));
+    }
+    Ok((big * 1000.0).round() as u32)
+}
+
+/// ExtendedLimits power-command channel: 0..=31 (the packet mask is 32 bits;
+/// nvapi-rs validates the same bound). Live, only channel 0 carries data.
+fn parse_power_command_channel(invocation: &Invocation) -> CliResult<u8> {
+    let Some(raw) = option_one(invocation, "channel") else {
+        return Ok(0);
+    };
+    let channel: u8 = raw
+        .trim()
+        .parse()
+        .map_err(|_| CliError::new(format!("invalid --channel value {raw:?} (0..31)")))?;
+    if channel > 31 {
+        return Err(CliError::new(format!(
+            "--channel {channel} out of range (the power-command mask is 32 bits, 0..31)"
+        )));
+    }
+    Ok(channel)
+}
+
+/// ExtendedLimits power-command selector: observed (0xF8, the observed-only
+/// readback command) | request (0xFE, the writable request/lease that xOCD
+/// drives; live unit mW), or the raw dword.
+fn parse_power_command_selector(raw: &str) -> CliResult<u32> {
+    let lower = raw.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "observed" | "0xf8" | "248" => Ok(0xF8),
+        "request" | "0xfe" | "254" => Ok(0xFE),
+        other => Err(CliError::new(format!(
+            "invalid --command {other:?}; expected observed (0xF8) or request (0xFE)"
+        ))),
+    }
+}
+
+/// JSON shape shared by get-power-command / set-power-command: the raw cell
+/// plus the derived mW/W view on the request command (0xFE — the one whose
+/// live unit is known: the board power in mW). `unset` marks the
+/// 0xFFFFFFFF xOCD sentinel.
+fn power_command_json(channel: u8, command: u32, value: u32, applied: bool) -> Value {
+    let name = match command {
+        0xF8 => "observed",
+        0xFE => "request",
+        _ => "unknown",
+    };
+    let unset = value == u32::MAX;
+    let mut out = json!({
+        "channel": channel,
+        "command": name,
+        "command_raw": command,
+        "value": value,
+        "unset": unset,
+    });
+    if applied {
+        out["applied"] = json!(true);
+    }
+    if command == 0xFE && !unset {
+        out["value_mW"] = json!(value);
+        out["value_W"] = json!(value as f64 / 1000.0);
+    }
+    out
 }
 
 fn parse_command(raw: &str) -> CliResult<Command> {
@@ -1813,6 +2110,9 @@ fn option_takes_value(token: &str) -> bool {
             | "--fan"
             | "--policy"
             | "--policy-index"
+            | "--slot"
+            | "--channel"
+            | "--command"
     )
 }
 
@@ -1960,6 +2260,16 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("INDEX")
             .action(ArgAction::Set)
             .help("TGP power-policy table index (default 2); see get-public-power-limit --nvapi (tgp_range)"),
+        "channel" => Arg::new("channel")
+            .long("channel")
+            .value_name("CHANNEL")
+            .action(ArgAction::Set)
+            .help("ExtendedLimits power-command channel (0..31; only channel 0 carries data on Pascal/Ada)"),
+        "command" => Arg::new("command")
+            .long("command")
+            .value_name("COMMAND")
+            .action(ArgAction::Set)
+            .help("ExtendedLimits power-command selector: observed (0xF8, observed-only readback) | request (0xFE, writable request/lease) | the raw dword"),
         "infer-missing-field" => Arg::new("infer-missing-field")
             .long("infer-missing-field")
             .action(ArgAction::SetTrue)
@@ -2038,7 +2348,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("slot")
             .value_name("SLOT")
             .action(ArgAction::Set)
-            .help("ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
+            .help("set-volt-rail-limit: melonVolt payload dword 0..3 (0 = the uV offset; 1 = VBIOS max wall offset, user A/B; 2 = VRM max wall offset; 3 = VMIN/min-hold offset, P100/582.41-pinned; ⚠️ 4/5 no known use — -300 crashed 4060L/610, -100..-200 observed safe, honored as-is). ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
         "freq" => Arg::new("freq")
             .long("freq")
             .action(ArgAction::SetTrue)
@@ -2125,6 +2435,79 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("activate")
             .action(ArgAction::SetTrue)
             .help("Switch the cooler policy to TemperatureContinuous (8) in the same transaction, so the written curve actually drives the fan"),
+        "force" => Arg::new("force")
+            .long("force")
+            .action(ArgAction::SetTrue)
+            .help("set-power-command: bypass the safety envelope (board default × 2, floor 1 W). The write still only moves the echo layer (GET/NVML/nvidia-smi readback), not load-time enforcement. set/reset-subdomain-freq-ratio: override the soft gates — write an un-enabled ratio arm (live control record = 0) or a ratio below the lowest tested landing (0x1199). Never overrides the zero-ratio or non-carrier hard rejects"),
+        "src" => Arg::new("src")
+            .long("src")
+            .value_name("DOMAIN")
+            .action(ArgAction::Set)
+            .help("subdomain-freq-ratio: source domain of the TopRels edge (default 0 = GPC)"),
+        "dst" => Arg::new("dst")
+            .long("dst")
+            .value_name("DOMAIN")
+            .action(ArgAction::Set)
+            .help("subdomain-freq-ratio: destination domain of the TopRels edge (default 1 = XBAR)"),
+        "index" => Arg::new("index")
+            .long("index")
+            .value_name("IDX")
+            .action(ArgAction::Set)
+            .help("subdomain-freq-ratio: address the TopRels relation by table index directly (overrides --src/--dst; see get-subdomain-freq-ratio --table)"),
+        "kmd" => Arg::new("kmd")
+            .long("kmd")
+            .action(ArgAction::SetTrue)
+            .conflicts_with("channel")
+            .conflicts_with("command")
+            .help("set-power-command: KERNEL wall raise via the kmd lane (pmxdrv). The positional becomes the target wall in watts; the command runs the full one-shot cycle (service register -> chain walk -> arm select (root: UPPER+tgp / board: window max+percent) -> lease -> verify -> unregister). Admin + --force + --pmxdrvpath required; the wall field is volatile; hard cap 500 W"),
+        "pmxdrvpath" => Arg::new("pmxdrvpath")
+            .long("pmxdrvpath")
+            .value_name("FILE")
+            .help("set-power-command --kmd: path to pmxdrv.sys (the Intel2019 signed build)"),
+        "port" => Arg::new("port")
+            .long("port")
+            .value_name("N")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: access port id"),
+        "address" => Arg::new("address")
+            .long("address")
+            .value_name("0xXX")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: 7-bit slave address (default 0x2F)"),
+        "register" => Arg::new("register")
+            .long("register")
+            .value_name("0xXX[,0xYY...]")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: register address byte(s) sent before the payload"),
+        "len" => Arg::new("len")
+            .long("len")
+            .value_name("N")
+            .action(ArgAction::Set)
+            .help("get-i2c: number of bytes to read (default 1)"),
+        "scan-ports" => Arg::new("scan-ports")
+            .long("scan-ports")
+            .num_args(0..=2)
+            .value_names(["START", "END"])
+            .help("get-i2c: probe a port range instead of an address range (pair with --address of a device you know answers, e.g. --address 0x50); no values = 0-15 (driver accepts u8; 0-2 = DDC per AB convention, >=3 = access ports, 0xFF = driver auto-probe)"),
+        "scan" => Arg::new("scan")
+            .long("scan")
+            .num_args(0..=2)
+            .value_names(["START", "END"])
+            .help("get-i2c: probe a 7-bit address range for responding slaves instead of a single read; no values = full standard range (0x08-0x77), one value = start..0x77, two values = start..end"),
+        "speed" => Arg::new("speed")
+            .long("speed")
+            .value_name("KHZ")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: bus speed 3/10/33/100/200/400 kHz (default driver default)"),
+        "ddc" => Arg::new("ddc")
+            .long("ddc")
+            .action(ArgAction::SetTrue)
+            .help("get/set-i2c: address the DDC port instead of the communication port"),
+        "display-mask" => Arg::new("display-mask")
+            .long("display-mask")
+            .value_name("0xX")
+            .action(ArgAction::Set)
+            .help("get/set-i2c: display mask (default 0xFFFF = all)"),
         "unsafe" => Arg::new("unsafe")
             .long("unsafe")
             .action(ArgAction::SetTrue)
@@ -2251,6 +2634,9 @@ fn collect_named_options(
             | "freq"
             | "volt"
             | "dump-records"
+            | "force"
+            | "kmd"
+            | "ddc"
             | "unsafe" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
@@ -2307,6 +2693,12 @@ fn execute(invocation: &Invocation) -> CliResult<Execution> {
             .filter(|p| !p.is_empty())
     {
         return execute_get_vbios_file(invocation, command, path);
+    }
+
+    // set-power-command --kmd:内核功率墙原子流。系统级(无 GPU backend、
+    // 无 NVAPI 依赖的入口),在 backend 机器前短路。
+    if command == Command::SetPowerCommand && invocation.options.contains_key("kmd") {
+        return execute_set_power_command_kmd(invocation, command);
     }
 
     match invocation.backend {
@@ -2371,7 +2763,7 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
                 }
                 return Ok(execution);
             }
-            Ok(nvapi_execution) if supports_nvml => {
+            Ok(nvapi_execution) if supports_nvml && nvml_fallback_applies(invocation, command) => {
                 let mut nvml_execution =
                     execute_backend(invocation, command, BackendAdapter::Nvml)?;
                 nvml_execution.warnings.insert(
@@ -2393,7 +2785,7 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
                 return Ok(nvml_execution);
             }
             Ok(execution) => return Ok(execution),
-            Err(nvapi_error) if supports_nvml => {
+            Err(nvapi_error) if supports_nvml && nvml_fallback_applies(invocation, command) => {
                 let mut nvml_execution =
                     execute_backend(invocation, command, BackendAdapter::Nvml)?;
                 nvml_execution.warnings.insert(
@@ -2414,6 +2806,20 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
         "{} has no runnable backend",
         command.name()
     )))
+}
+
+/// Whether an auto-mode NVML fallback can act on this invocation at all.
+/// set-pwr-cur-limit's nvvdd/msvdd/INDEX targets are PowerChannels-only —
+/// an NVML fallback can only re-reject the target string there and bury the
+/// real NVAPI error, so it must not run for them.
+fn nvml_fallback_applies(invocation: &Invocation, command: Command) -> bool {
+    if command != Command::SetPwrCurLimit {
+        return true;
+    }
+    invocation
+        .positionals
+        .first()
+        .is_some_and(|target| matches!(target.to_ascii_lowercase().as_str(), "tgp" | "board"))
 }
 
 fn execute_backend(
@@ -2745,6 +3151,15 @@ fn execute_target(
                     ),
                 );
             }
+            // Compute/topology capability counters (GPU-Z 2.71 audit
+            // gap-fill): best-effort — each entry is null where the board
+            // refuses that counter. Rendered alphabetically by the generic
+            // object renderer.
+            if let Ok(caps) = run(target, QueryNvapiComputeCaps).map(|r| r.output)
+                && let Some(map) = value.as_object_mut()
+            {
+                map.insert("compute_caps".to_string(), json!(caps));
+            }
             Ok(value)
         }
         Command::GetUuid => {
@@ -2890,6 +3305,249 @@ fn execute_target(
             Ok(value)
         }
         Command::GetSettings => Ok(serde_json::to_value(run(target, QueryGpuSettings)?.output)?),
+        Command::GetLockStatus => {
+            // The PerfClientLimits lock table (GET 0x9962C97C-adjacent view via
+            // the typed ClockLockEntry decode): all 7 seeded entries with the
+            // decoded lock mode. Entry 6 is the nvapioc-style VOLTAGE lock
+            // (mode 3, µV); entries 4/5 are PstateSelect pins (mode 1, value =
+            // pstate number) written by set-pstate-lock.
+            let settings = run(target, QueryGpuSettings)?.output;
+            let mut entries = Vec::new();
+            let mut active = 0usize;
+            use nvoc_core::PerfLimitId;
+            // Field numbering 1..7 follows the seeded id order (0..6). The
+            // Display names mirror the limit variants (Gpu -> "GpuUpperbound").
+            // `domain` is DERIVED from the limit id (0/1 = GPU pair, 2/3 =
+            // Memory pair — the id already encodes the plane); the raw
+            // clock_id field is NOT shown: on GET the driver does not echo a
+            // per-entry domain (it reads as our seed default, Graphics), so
+            // the raw value carries no signal on this generation.
+            for (index, (limit, entry)) in settings.vfp_locks.iter().enumerate() {
+                let field_id = index + 1;
+                let display = match limit {
+                    PerfLimitId::Gpu => "GpuUpperbound".to_owned(),
+                    PerfLimitId::Memory => "MemoryUpperbound".to_owned(),
+                    other => format!("{other:?}"),
+                };
+                let domain = match limit {
+                    PerfLimitId::Memory | PerfLimitId::MemoryLowerbound => "Memory",
+                    _ => "Graphics",
+                };
+                let (mode, state) = match entry.mode {
+                    nvoc_core::ClockLockMode::None => ("none".to_owned(), "unlocked".to_owned()),
+                    nvoc_core::ClockLockMode::PstateSelect => (
+                        "pstate-select".to_owned(),
+                        format!("pin P{}", entry.select_pstate.unwrap_or(0)),
+                    ),
+                    nvoc_core::ClockLockMode::ManualFrequency => (
+                        "manual-frequency".to_owned(),
+                        format!(
+                            "freq lock {}",
+                            entry
+                                .lock_value
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "0".to_owned())
+                        ),
+                    ),
+                    nvoc_core::ClockLockMode::ManualVoltage => (
+                        "manual-voltage".to_owned(),
+                        format!(
+                            "voltage lock {}",
+                            entry
+                                .lock_value
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "0".to_owned())
+                        ),
+                    ),
+                    other => (format!("{other:?}"), "unknown mode".to_owned()),
+                };
+                if entry.mode != nvoc_core::ClockLockMode::None {
+                    active += 1;
+                }
+                entries.push(json!({
+                    "id": field_id,
+                    "limit": limit,
+                    "display": display,
+                    "domain": domain,
+                    "mode": mode,
+                    "state": state,
+                    "lock_value": entry.lock_value,
+                    "select_pstate": entry.select_pstate,
+                }));
+            }
+            Ok(json!({
+                "active": active,
+                "entries": entries,
+            }))
+        }
+        Command::GetPerfPolicies => {
+            // PerfPolicies diagnostic: supported limit mask (INFO) vs ACTIVE
+            // throttling sources (STATUS `unknown` dword, same PerfFlags bit
+            // semantics — bit-named below) + performance-decrease reasons.
+            // The active mask is the driver-side "why below peak" readout that
+            // pairs with get-lock-status's client-side lock table.
+            let info = run(target, QueryGpuInfo)?.output;
+            let status = run(target, QueryGpuStatus)?.output;
+            Ok(json!({
+                "supported": perf_flag_names(info.perf.limits.bits()),
+                "supported_raw": info.perf.limits.bits(),
+                "limit_flags": perf_flag_names(status.perf.limits.bits()),
+                "active": status.perf.active.map(|bits| perf_flag_names(bits.bits())),
+                "active_raw": status.perf.unknown,
+                "timer_ns": status.perf.timer_ns,
+                "policy_timers_ns": status.perf.policy_timers_ns,
+                "decrease_reasons": status.performance_decrease,
+            }))
+        }
+        Command::GetFramerateLimit => {
+            let fps = run(target, QueryNvapiFramerateLimit)?.output;
+            // AB parity: IsFramerateLimitControlSupported gates the limiter UI
+            // on the DRS setting answering at all — drivers without the legacy
+            // FRL surface report SettingNotFound on Set/GetSetting (-160).
+            let supported = nvoc_core::framerate_limit_supported().unwrap_or(false);
+            Ok(json!({
+                "supported": supported,
+                "fps": fps,
+                "drs_setting_id": "0x10834FEE",
+                "unset": fps.is_none(),
+            }))
+        }
+        Command::SetFramerateLimit => {
+            let force = invocation.options.contains_key("force");
+            let raw = invocation.positionals[0].trim().to_ascii_lowercase();
+            let fps = match raw.as_str() {
+                "off" | "none" | "delete" => None,
+                other => Some(parse_u32_unit(other, "fps", "fps cap")?),
+            };
+            run(target, SetNvapiFramerateLimit { fps, force })?;
+            Ok(json!({
+                "applied": true,
+                "fps": fps,
+                "persistent": true,
+            }))
+        }
+        Command::GetI2c => {
+            // --scan-ports [START [END]]: probe each port in the range with
+            // one single-byte read at --address (a known-present device);
+            // lists the ports where it answers.
+            if let Some(range) = invocation.options.get("scan-ports") {
+                let (start, end) = match range.len() {
+                    0 => (0, 15),
+                    1 => {
+                        let start = parse_hex_or_dec_u32(&range[0], "scan-ports start")?;
+                        (start, 15)
+                    }
+                    _ => (
+                        parse_hex_or_dec_u32(&range[0], "scan-ports start")?,
+                        parse_hex_or_dec_u32(&range[1], "scan-ports end")?,
+                    ),
+                };
+                let (start, end) = (start.clamp(0, 15), end.clamp(0, 15));
+                let mut tx = parse_i2c_options(invocation)?;
+                tx.register.clear();
+                tx.length = 1;
+                let mut responding = Vec::new();
+                for port in start..=end {
+                    tx.port = Some(port as u8);
+                    if let Ok(report) = run(target, QueryNvapiI2cRead(tx.clone())) {
+                        let first = report.output.first().copied().unwrap_or(0xFF);
+                        responding.push(json!({
+                            "port": port,
+                            "first_byte": format!("{first:02X}"),
+                        }));
+                    }
+                }
+                let ports: Vec<u32> = responding
+                    .iter()
+                    .filter_map(|v| v.get("port").and_then(|p| p.as_u64()))
+                    .map(|p| p as u32)
+                    .collect();
+                return Ok(json!({
+                    "scan_ports": { "start": start, "end": end, "address": format!("{:02X}", tx.address) },
+                    "responding": responding,
+                    "ports": ports,
+                    "count": responding.len(),
+                }));
+            }
+            // --scan [START [END]]: probe an address range for responding
+            // slaves (one read of 1 byte each, no register); any error is
+            // treated as "no device at this address". Absent = single read.
+            if let Some(range) = invocation.options.get("scan") {
+                let (start, end) = match range.len() {
+                    0 => (0x08, 0x77),
+                    1 => {
+                        let start = parse_hex_or_dec_u32(&range[0], "scan start")?;
+                        (start, 0x77)
+                    }
+                    _ => (
+                        parse_hex_or_dec_u32(&range[0], "scan start")?,
+                        parse_hex_or_dec_u32(&range[1], "scan end")?,
+                    ),
+                };
+                let (start, end) = (start.clamp(0x08, 0x77), end.clamp(0x08, 0x77));
+                let mut tx = parse_i2c_options(invocation)?;
+                tx.register.clear();
+                let mut responding = Vec::new();
+                for address in start..=end {
+                    tx.address = address as u8;
+                    // A NACK surfaces as Err — that's the "no device here"
+                    // outcome, not a scan failure.
+                    if let Ok(report) = run(target, QueryNvapiI2cRead(tx.clone())) {
+                        let first = report.output.first().copied().unwrap_or(0xFF);
+                        responding.push(json!({
+                            "address": format!("0x{address:02X}"),
+                            "first_byte": format!("{first:02X}"),
+                        }));
+                    }
+                }
+                let addresses: Vec<String> = responding
+                    .iter()
+                    .filter_map(|v| v.get("address").and_then(|a| a.as_str().map(String::from)))
+                    .collect();
+                return Ok(json!({
+                    "scan": { "start": format!("{start:#04x}"), "end": format!("{end:#04x}") },
+                    "responding": responding,
+                    "addresses": addresses,
+                    "count": responding.len(),
+                }));
+            }
+            let tx = parse_i2c_options(invocation)?;
+            let bytes = run(target, QueryNvapiI2cRead(tx))?.output;
+            let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
+            Ok(json!({
+                "len": bytes.len(),
+                "bytes_hex": hex.join(" "),
+            }))
+        }
+        Command::SetI2c => {
+            let force = invocation.options.contains_key("force");
+            let tx = parse_i2c_options(invocation)?;
+            let raw = invocation.positionals[0].replace(',', " ");
+            let mut bytes = Vec::new();
+            for token in raw.split_whitespace() {
+                let token = token.trim_start_matches("0x").trim_start_matches("0X");
+                bytes.push(
+                    u8::from_str_radix(token, 16).map_err(|_| {
+                        CliError::new(format!("invalid hex byte '{token}' in BYTES"))
+                    })?,
+                );
+            }
+            if bytes.is_empty() {
+                return Err(CliError::new("BYTES must contain at least one hex byte"));
+            }
+            run(
+                target,
+                SetNvapiI2cWrite {
+                    transaction: tx,
+                    bytes,
+                    force,
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "bytes_written": invocation.positionals[0].len(),
+            }))
+        }
         Command::GetPublicVftable => get_vfp(target, invocation),
         Command::SyncVfpMemoryPstate => {
             sync_memory_pstate_as_p0(target)?;
@@ -3463,6 +4121,71 @@ fn execute_target(
             let domain = option_domain(invocation, ClockDomain::Graphics)?;
             set_clock_offset(target, adapter, invocation, domain)
         }
+        Command::SetSubdomainFreqRatio => {
+            let ratio: f64 = invocation.positionals[0]
+                .trim()
+                .parse()
+                .map_err(|e| CliError::new(format!("invalid ratio: {e}")))?;
+            let src = option_u32(invocation, "src")?.unwrap_or(0);
+            let dst = option_u32(invocation, "dst")?.unwrap_or(1);
+            let index = option_usize(invocation, "index")?;
+            let landed = run(
+                target,
+                SetSubdomainFreqRatio {
+                    ratio,
+                    src,
+                    dst,
+                    index,
+                    force: invocation.options.contains_key("force"),
+                },
+            )?
+            .output;
+            match landed {
+                Some(raw) => Ok(json!({
+                    "applied": true,
+                    "relation": match index {
+                        Some(i) => json!(i),
+                        None => json!(format!("src={src} dst={dst}")),
+                    },
+                    "raw": raw,
+                    "ratio": raw as f64 / 65536.0,
+                })),
+                None => Ok(json!({
+                    "applied": false,
+                    "note": "driver did not retain the value",
+                })),
+            }
+        }
+        Command::ResetSubdomainFreqRatio => {
+            let src = option_u32(invocation, "src")?.unwrap_or(0);
+            let dst = option_u32(invocation, "dst")?.unwrap_or(1);
+            let index = option_usize(invocation, "index")?;
+            let landed = run(
+                target,
+                ResetSubdomainFreqRatio {
+                    src,
+                    dst,
+                    index,
+                    force: invocation.options.contains_key("force"),
+                },
+            )?
+            .output;
+            match landed {
+                Some(raw) => Ok(json!({
+                    "applied": true,
+                    "relation": match index {
+                        Some(i) => json!(i),
+                        None => json!(format!("src={src} dst={dst}")),
+                    },
+                    "raw": raw,
+                    "ratio": raw as f64 / 65536.0,
+                })),
+                None => Ok(json!({
+                    "applied": false,
+                    "note": "driver did not retain the value",
+                })),
+            }
+        }
         Command::SetOverclockedPstates => {
             let enable = parse_bool(&invocation.positionals[0])?;
             run(target, SetNvapiOverclockedPstates { enable })?;
@@ -3606,6 +4329,71 @@ fn execute_target(
             )?;
             Ok(json!({"applied": true, "pstate": format!("P{pstate}")}))
         }
+        Command::SetPstateRangeLock => {
+            // CONFIRMED LIVE (2070 desktop / 610.47, band P5-P8): the
+            // PstateSelect pair IS a range form — the same count=2
+            // partial-write modality as set-pstate-lock's exact pin, with
+            // DIFFERENT pstate numbers in ids 5/4. The driver echoes the two
+            // values back faithfully (Upper=5, Lower=8 — no collapse) and
+            // 0x9962C97C reports BOTH endpoints locked ("Locked: P5, P8").
+            //   id5 PstateSelectUpper <- LOW pstate number (perf ceiling)
+            //   id4 PstateSelectLower <- HIGH pstate number (perf floor)
+            let parse_pstate = |raw: &str| -> Result<u8, CliError> {
+                raw.trim_start_matches(['P', 'p'])
+                    .parse::<u8>()
+                    .map_err(|e| CliError::new(format!("invalid P-State {raw:?}: {e}")))
+            };
+            let low = parse_pstate(&invocation.positionals[0])?;
+            let high = parse_pstate(&invocation.positionals[1])?;
+            if low > high {
+                return Err(CliError::new(format!(
+                    "pstate band inverted: {low} > {high} (LOW_PSTATE must be <= HIGH_PSTATE)"
+                )));
+            }
+            use nvoc_core::{ClockLockEntry, ClockLockMode, PerfLimitId};
+            let pins = [
+                (PerfLimitId::PstateSelectUpper, low),
+                (PerfLimitId::PstateSelectLower, high),
+            ];
+            run(
+                target,
+                SetVfpLockEntries {
+                    entries: pins
+                        .iter()
+                        .map(|&(limit, pstate)| ClockLockEntry {
+                            limit,
+                            mode: ClockLockMode::PstateSelect,
+                            lock_value: None,
+                            select_pstate: Some(pstate),
+                            clock: ClockDomain::Graphics,
+                        })
+                        .collect(),
+                },
+            )?;
+            // Self-readback: the typed table + the driver's own locked set.
+            let settings = run(target, QueryGpuSettings)?.output;
+            let locked_set = run(target, QueryNvapiPStateLockStatus)?.output;
+            let readback: Vec<_> = [
+                PerfLimitId::PstateSelectUpper,
+                PerfLimitId::PstateSelectLower,
+            ]
+            .iter()
+            .filter_map(|limit| settings.vfp_locks.get(limit))
+            .map(|entry| {
+                json!({
+                    "limit": entry.limit,
+                    "mode": entry.mode,
+                    "select_pstate": entry.select_pstate,
+                })
+            })
+            .collect();
+            Ok(json!({
+                "applied": true,
+                "band": format!("P{low}-P{high}"),
+                "readback": readback,
+                "locked_pstates": locked_set.unwrap_or_default(),
+            }))
+        }
         Command::ResetPStateLock => {
             run(
                 target,
@@ -3616,38 +4404,6 @@ fn execute_target(
             Ok(json!({"applied": true}))
         }
 
-        Command::SetPowerLimit => {
-            // Merged TGP-watt setter: NVAPI path writes ClientPowerPolicies
-            // (SetNvapiTgpWatt, mobile watts-form TGP slider, honors
-            // --policy-index); NVML path writes the power-management limit
-            // (SetNvmlPowerLimit, the classic nvidia-smi -pl input). On auto the
-            // NVAPI path is preferred (it understands the mobile TGP table);
-            // NVML is the fallback for desktops without ClientPowerPolicies.
-            let watts = parse_u32_unit(&invocation.positionals[0], "w", "watt")?;
-            match adapter {
-                BackendAdapter::Nvapi => {
-                    let policy_index = option_one(invocation, "policy-index")
-                        .map(|s| s.parse::<usize>())
-                        .transpose()
-                        .map_err(|e| CliError::new(format!("invalid --policy-index: {e}")))?;
-                    let mw = run(
-                        target,
-                        SetNvapiTgpWatt {
-                            watts,
-                            policy_index,
-                        },
-                    )?
-                    .output;
-                    Ok(
-                        json!({"applied": true, "backend": "nvapi", "tgp_watt": watts, "tgp_mw": mw}),
-                    )
-                }
-                BackendAdapter::Nvml => {
-                    run(target, SetNvmlPowerLimit { watts })?;
-                    Ok(json!({"applied": true, "backend": "nvml", "power_watt": watts}))
-                }
-            }
-        }
         Command::ResetPowerLimit => {
             let policy_index = option_one(invocation, "policy-index")
                 .map(|s| s.parse::<usize>())
@@ -3759,6 +4515,30 @@ fn execute_target(
                 None => json!({"supported": false}),
             })
         }
+        Command::GetRmInfo => {
+            if !nvoc_core::rm::platform_supported() {
+                return Ok(json!({
+                    "supported": false,
+                    "reason": "/dev/nvidiactl RM info requires Linux",
+                }));
+            }
+            let minor = nvoc_core::nvml::query_nvml_minor_number(target.nvml()?, target.id.0)?;
+            let info = nvoc_core::rm::collect(minor)?;
+            Ok(json!({
+                "device": format!("/dev/nvidia{minor}"),
+                "ram_type": info.ram_type,
+                "ram_vendor": info.ram_vendor,
+                "bus_width": info.bus_width,
+                "ram_size_kb": info.ram_size_kb,
+                "l2_cache_size": info.l2_cache_size,
+                "rop": {
+                    "unit_count": info.rop_unit_count,
+                    "operations_factor": info.rop_operations_factor,
+                    "operations_count": info.rop_operations_count,
+                },
+                "sm_count": info.sm_count,
+            }))
+        }
         Command::SetPrivatePermanentPstateLockUser => {
             let level = parse_usize(&invocation.positionals[0], "level")? as u32;
             let out = run(target, SetNvapiPerfLevelLock { level })?.output;
@@ -3843,13 +4623,437 @@ fn execute_target(
                         "control": r.control.iter().map(|e| json!({
                             "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
                         })).collect::<Vec<_>>(),
-                        "status": r.status.iter().map(|e| json!({
-                            "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
-                        })).collect::<Vec<_>>(),
+                        "status": r.status.iter().map(|e| {
+                            let mut entry = json!({
+                                "rail_bit": e.rail_bit, "type": e.entry_type, "values_uV": e.values,
+                            });
+                            // V2 nine-slot extras (payload dwords 6..8) — the
+                            // V1 status back-copies them; semantics open.
+                            if let Some(extra) = e.extra_values {
+                                entry["extra_values_uV"] = json!(extra);
+                            }
+                            entry
+                        }).collect::<Vec<_>>(),
                     })
                 }
                 None => json!({"supported": false}),
             })
+        }
+        Command::GetPwrCurInfo => {
+            let Some(snap) = run(target, QueryNvapiPowerChannels)?.output else {
+                return Ok(json!({"supported": false}));
+            };
+            // raw + derived display per identity. Unit taxonomy (2026-10-05
+            // user classification): min == 1 → current channel (the mA driver
+            // unit, rendered A); min >= 1000 → power channel (the mW driver
+            // unit, rendered W — the degenerate all-zero policyId-0 rows land
+            // here too). Every populated row renders with units; there is no
+            // "unbounded" branch — the 5001000 mA / 5001 A ceilings are just
+            // that number in the row's own unit. `current_raw` is the live
+            // control value paired to this index (index = the
+            // set-pwr-cur-limit write target).
+            let control_values = snap.control.as_ref().map(|(values, _)| values.clone());
+            Ok(json!({
+                "policies": snap.policies.iter().enumerate().map(|(i, c)| {
+                    let current = c.is_current_channel();
+                    // Display carries the full window in the row's own unit,
+                    // 3 decimals: min / default / live current / max.
+                    let unit = if current { "A" } else { "W" };
+                    let big = |raw: u32| raw as f64 / 1000.0;
+                    let current_seg = match control_values.as_ref().and_then(|v| v.get(i)) {
+                        Some(raw) => format!("{:.3} {unit} current / ", big(*raw)),
+                        None => String::new(),
+                    };
+                    let display = format!(
+                        "{:.3} {unit} min / {:.3} {unit} default / {current_seg}{:.3} {unit} max",
+                        big(c.min_raw),
+                        big(c.default_raw),
+                        big(c.max_raw)
+                    );
+                    json!({
+                        "index": c.index,
+                        "policy_id": c.policy_id,
+                        "subtype": c.subtype,
+                        "unit_kind": if current { "current" } else { "power" },
+                        "is_board_power": c.is_board_power(),
+                        "is_ocp_current": c.is_ocp_current(),
+                        "min_raw": c.min_raw,
+                        "default_raw": c.default_raw,
+                        "max_raw": c.max_raw,
+                        "current_raw": control_values.as_ref().and_then(|v| v.get(i)).copied(),
+                        "display": display,
+                    })
+                }).collect::<Vec<_>>(),
+                "nvvdd_ocp": snap.nvvdd_ocp.map(|c| json!({
+                    "identity": format!("({},{})", c.policy_id, c.subtype),
+                    "default_mA": c.default_raw,
+                    "max_mA": c.max_raw,
+                    "default_A": c.default_raw as f64 / 1000.0,
+                    "max_A": c.max_raw as f64 / 1000.0,
+                })),
+                "msvdd_ocp": snap.msvdd_ocp.map(|c| json!({
+                    "identity": format!("({},{})", c.policy_id, c.subtype),
+                    "default_mA": c.default_raw,
+                    "max_mA": c.max_raw,
+                    "default_A": c.default_raw as f64 / 1000.0,
+                    "max_A": c.max_raw as f64 / 1000.0,
+                })),
+                "control": snap.control.map(|(values, compact)| json!({
+                    "values": values,
+                    "compact_geometry": compact,
+                })),
+            }))
+        }
+        Command::GetPowerCommand => {
+            let channel = parse_power_command_channel(invocation)?;
+            let command = parse_power_command_selector(
+                option_one(invocation, "command").unwrap_or("request"),
+            )?;
+            let value = run(target, QueryNvapiPowerCommand { channel, command })?.output;
+            Ok(power_command_json(channel, command, value, false))
+        }
+        Command::GetBoostLocks => {
+            let Some(entries) = run(target, QueryNvapiBoostLocks)?.output else {
+                return Ok(json!({"supported": false}));
+            };
+            Ok(json!({
+                "entries": entries.iter().map(|e| json!({
+                    "id": e.id,
+                    "mode": e.mode,
+                    "value": e.value,
+                    "clock_range_lock": e.is_clock_range_lock(),
+                    "voltage_lock": e.is_voltage_lock(),
+                })).collect::<Vec<_>>(),
+                "hint": "id0/1+mode2 = clock-range lock (kHz bounds, -lgc family); id6+mode3 = V/F voltage lock (uV); all mode 0 = unlocked",
+            }))
+        }
+        Command::GetThermalChannels => {
+            let Some(snap) = run(target, QueryNvapiThermalChannels)?.output else {
+                return Ok(json!({"supported": false}));
+            };
+            let type_names = [
+                "GPU_AVG",
+                "GPU_MAX(hotspot)",
+                "BOARD",
+                "MEMORY(vram)",
+                "PWR_SUPPLY",
+            ];
+            // (dev, 0) → channel index, for the same_sensor_as backref on the
+            // (dev, 1) half (the reading that already carries offset_hw).
+            let raw_sibling = |want_dev: u8| -> Option<usize> {
+                snap.info.channels.iter().position(|c| {
+                    c.as_ref()
+                        .is_some_and(|c| c.therm_dev_idx == want_dev && c.therm_dev_prov_idx == 0)
+                })
+            };
+            Ok(json!({
+                "channel_mask": format!("0x{:08X}", snap.info.channel_mask),
+                "primary": snap.info.primary.iter().enumerate().map(|(ty, slot)| json!({
+                    "type": type_names.get(ty).copied().unwrap_or("UNKNOWN"),
+                    "channel": slot,
+                    "temp_c": slot.and_then(|i| snap.status.as_ref().and_then(|s| s.get(i as usize))),
+                })).collect::<Vec<_>>(),
+                "channels": snap.info.channels.iter().enumerate().filter_map(|(i, c)| c.as_ref().map(|c| {
+                    let sibling = (c.therm_dev_prov_idx == 1)
+                        .then(|| raw_sibling(c.therm_dev_idx))
+                        .flatten();
+                    json!({
+                        "channel": i,
+                        "ch_type": c.ch_type,
+                        "ch_class": c.ch_class,
+                        "therm_dev": [c.therm_dev_idx, c.therm_dev_prov_idx],
+                        "same_sensor_as": sibling,
+                        "offset_sw": c.offset_sw,
+                        "offset_hw": c.offset_hw,
+                        "scaling": c.scaling,
+                        "range_c": (c.min_temp != 0 || c.max_temp != 0)
+                            .then_some([c.min_temp / 256, c.max_temp / 256]),
+                        "temp_c": snap.status.as_ref().and_then(|s| s.get(i)),
+                    })
+                })).collect::<Vec<_>>(),
+                "status_supported": snap.status.is_some(),
+                // RegisterOp raw reads (LACT parity): per-chip GDDR6x/7
+                // sensors + the Blackwell+ hotspot register fallback. On
+                // Blackwell prefer blackwell_hotspot_register_c over the
+                // channel map's hotspot slot (LACT does the same).
+                "register_views": match run(target, QueryNvapiRegisterThermals) {
+                    Ok(report) => {
+                        let views = report.output;
+                        json!({
+                            "ram_type": views.ram_type,
+                            "vram_chips": views.vram_chips.iter().map(|(label, temp)| json!({
+                                "label": label,
+                                "temp_c": temp,
+                            })).collect::<Vec<_>>(),
+                            "vram_chip_error": views.vram_chip_error,
+                            "blackwell_hotspot_register_c": views.blackwell_hotspot_c,
+                        })
+                    }
+                    Err(e) => json!({"supported": false, "error": e.to_string()}),
+                },
+            }))
+        }
+        Command::SetPwrCurLimit => {
+            let target_name = invocation.positionals[0].to_ascii_lowercase();
+            let raw_value = &invocation.positionals[1];
+            // Feeds the pre-Ampere poison-write gate (default = refuse).
+            let force = invocation.options.contains_key("force");
+
+            // tgp/board: the board-power / TGP policy row. This is the retired
+            // `set-power-limit` surface — it keeps the NVML backend (nvidia-smi
+            // -pl) and `--policy-index`. Both names are the same row (xocd audit
+            // §18.1: same GET/SET table); `board` is the get-pwr-cur-info
+            // vocabulary, `tgp` the watts-form one.
+            if matches!(target_name.as_str(), "tgp" | "board") {
+                let watts = parse_u32_unit(raw_value, "w", "watt")?;
+                return match adapter {
+                    BackendAdapter::Nvml => {
+                        run(target, SetNvmlPowerLimit { watts })?;
+                        Ok(json!({
+                            "applied": true,
+                            "backend": "nvml",
+                            "target": target_name,
+                            "power_watt": watts,
+                        }))
+                    }
+                    BackendAdapter::Nvapi => {
+                        let policy_index = option_one(invocation, "policy-index")
+                            .map(|s| s.parse::<usize>())
+                            .transpose()
+                            .map_err(|e| CliError::new(format!("invalid --policy-index: {e}")))?;
+                        let mw = run(
+                            target,
+                            SetNvapiTgpWatt {
+                                watts,
+                                policy_index,
+                                force,
+                            },
+                        )?
+                        .output;
+                        Ok(json!({
+                            "applied": true,
+                            "backend": "nvapi",
+                            "target": target_name,
+                            "tgp_watt": watts,
+                            "tgp_mw": mw,
+                        }))
+                    }
+                };
+            }
+
+            // nvvdd/msvdd/INDEX: PowerChannels rows, NVAPI-table only — the
+            // OCP current channels have no NVML equivalent.
+            if adapter == BackendAdapter::Nvml {
+                return Err(CliError::new(format!(
+                    "--nvml applies to the tgp/board target only; '{target_name}' is a PowerChannels (NVAPI) channel"
+                )));
+            }
+            let value_raw = parse_power_channel_value(raw_value)?;
+            let snap = run(target, QueryNvapiPowerChannels)?
+                .output
+                .ok_or_else(|| {
+                    CliError::new("PowerChannels table not supported on this GPU/driver")
+                })?;
+            // Rail resolution: named NVVDD/MSVDD aliases, or a numeric index
+            // straight off get-pwr-cur-info (any populated channel —
+            // value units follow the row: A/mA on current channels, W/mW on
+            // the board-power row).
+            let channel = if let Ok(index) = target_name.parse::<u32>() {
+                snap.policies
+                    .iter()
+                    .find(|c| c.index == index)
+                    .ok_or_else(|| {
+                        CliError::new(format!(
+                            "no populated power channel at index {index} (available: {})",
+                            snap.policies
+                                .iter()
+                                .map(|c| c.index.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                    })?
+            } else {
+                let named = match target_name.as_str() {
+                    "nvvdd" | "core" => snap.nvvdd_ocp.as_ref(),
+                    "msvdd" | "memory" => snap.msvdd_ocp.as_ref(),
+                    other => {
+                        return Err(CliError::new(format!(
+                            "unknown target '{other}' (expected tgp|board|nvvdd|msvdd or a numeric index from get-pwr-cur-info)"
+                        )));
+                    }
+                };
+                named.ok_or_else(|| {
+                    CliError::new(format!(
+                        "no OCP current channel resolved for '{target_name}' on this generation (Pascal has none; see get-pwr-cur-info)"
+                    ))
+                })?
+            };
+            let applied = run(
+                target,
+                SetNvapiPowerChannelValue {
+                    policy_id: channel.policy_id,
+                    subtype: channel.subtype,
+                    value_raw,
+                    force,
+                },
+            )?
+            .output;
+            // Unit-suffixed keys so the human labels carry the row's own
+            // unit (same min-based taxonomy as get-pwr-cur-info): "Raw mA" /
+            // "Driver Window mA" on a current channel, "Raw mW" / "Watts" on
+            // a power channel.
+            let current = channel.is_current_channel();
+            let (raw_key, window_key, big_key) = if current {
+                ("raw_mA", "driver_window_mA", "amperes")
+            } else {
+                ("raw_mW", "driver_window_mW", "watts")
+            };
+            let mut output = serde_json::Map::new();
+            output.insert("applied".to_string(), json!(true));
+            output.insert("target".to_string(), json!(target_name));
+            output.insert("index".to_string(), json!(channel.index));
+            output.insert(
+                "identity".to_string(),
+                json!(format!("({},{})", channel.policy_id, channel.subtype)),
+            );
+            output.insert(big_key.to_string(), json!(applied as f64 / 1000.0));
+            output.insert(raw_key.to_string(), json!(applied));
+            output.insert(
+                window_key.to_string(),
+                json!([channel.min_raw, channel.max_raw]),
+            );
+            if applied != value_raw {
+                // The write went through the driver's [min,max] window (the
+                // user's own run: 140 A asked, 135 A window max stored).
+                output.insert(
+                    format!("requested_{}", if current { "mA" } else { "mW" }),
+                    json!(value_raw),
+                );
+                output.insert("clamped_to_driver_window".to_string(), json!(true));
+            }
+            Ok(Value::Object(output))
+        }
+        Command::SetPowerCommand => {
+            let channel = parse_power_command_channel(invocation)?;
+            let command = parse_power_command_selector(
+                option_one(invocation, "command").unwrap_or("request"),
+            )?;
+            let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
+            let force = invocation.options.contains_key("force");
+            let outcome = match run(
+                target,
+                SetNvapiPowerCommand {
+                    channel,
+                    command,
+                    value: value_raw,
+                    force,
+                },
+            ) {
+                Ok(report) => report.output,
+                Err(err) if !force => {
+                    // Distinguish an envelope refusal from a driver refusal:
+                    // re-read the anchor the gate would have used and state
+                    // the bound (the nvapi-rs gate itself stays silent).
+                    let anchor = run(target, QueryNvapiPowerChannels)
+                        .ok()
+                        .and_then(|report| report.output)
+                        .and_then(|snapshot| {
+                            snapshot
+                                .policies
+                                .iter()
+                                .find(|row| row.policy_id == 0)
+                                .map(|row| row.default_raw)
+                        });
+                    if let Some(default_mw) = anchor {
+                        let max = nvoc_core::power_command_envelope_max_mw(default_mw);
+                        if value_raw < nvoc_core::POWER_COMMAND_ENVELOPE_FLOOR_MW || value_raw > max
+                        {
+                            return Err(CliError::new(format!(
+                                "set-power-command: {value_raw} mW outside the safety envelope [{} .. {max}] mW (board default {default_mw} mW × {}). Reminder: this write moves the ECHO layer only (GET/NVML/nvidia-smi), not load-time enforcement — use set-pwr-cur-limit for the enforced window, or --force to bypass the envelope",
+                                nvoc_core::POWER_COMMAND_ENVELOPE_FLOOR_MW,
+                                nvoc_core::POWER_COMMAND_ENVELOPE_MULTIPLE,
+                            )));
+                        }
+                    }
+                    return Err(err.into());
+                }
+                Err(err) => return Err(err.into()),
+            };
+            let mut output = power_command_json(channel, command, outcome.applied_mw, true)
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            if let Some(baseline) = outcome.baseline_mw {
+                output.insert("baseline_before".to_string(), json!(baseline));
+                if command == 0xFE && baseline != u32::MAX {
+                    output.insert(
+                        "baseline_before_W".to_string(),
+                        json!(baseline as f64 / 1000.0),
+                    );
+                }
+            }
+            if let Some(default_mw) = outcome.board_default_mw {
+                output.insert("board_default_mW".to_string(), json!(default_mw));
+            }
+            output.insert(
+                "envelope".to_string(),
+                json!(if outcome.envelope_bypassed {
+                    "bypassed (--force)"
+                } else {
+                    "board_default_x2"
+                }),
+            );
+            output.insert(
+                "enforcement_note".to_string(),
+                json!("echo-layer only: GET/NVML/nvidia-smi read this cell, load-time enforcement stays at the legal slider window (set-pwr-cur-limit)"),
+            );
+            Ok(Value::Object(output))
+        }
+        Command::GetTopRelsRatio => {
+            // full relation table (GetInfo): idx, src, dst, dir, default
+            let relations = run(target, QueryTopRelsRelations)?.output;
+            let mut out = serde_json::Map::new();
+            if !relations.is_empty() {
+                let rows: Vec<Value> = relations
+                    .iter()
+                    .map(|(idx, src, dst, dir, payload, live)| {
+                        json!({
+                            "index": idx,
+                            "src": src,
+                            "dst": dst,
+                            "dir": dir,
+                            "default_raw": payload,
+                            "default_ratio": *payload as f64 / 65536.0,
+                            "live_raw": live,
+                            "live_ratio": live.map(|r| r as f64 / 65536.0),
+                        })
+                    })
+                    .collect();
+                out.insert("relations".into(), json!(rows));
+            }
+            let Some((offset, raw)) = run(target, QueryNvapiTopRelsRatio)?.output else {
+                out.insert(
+                    "control".into(),
+                    json!({"supported": false, "note": "TopRels control answers on 50-series only (Pascal/Turing -103, Ampere-only -1 live; Pascal/Turing -103)"}),
+                );
+                return Ok(Value::Object(out));
+            };
+            out.insert("offset".into(), json!(offset));
+            out.insert("raw".into(), json!(raw));
+            out.insert("raw_hex".into(), json!(format!("{raw:#x}")));
+            out.insert("ratio".into(), json!(raw as f64 / 65536.0));
+            Ok(Value::Object(out))
+        }
+        Command::SetTopRelsRatio => {
+            let ratio: f64 = invocation.positionals[0]
+                .parse()
+                .map_err(|e| CliError::new(format!("invalid ratio: {e}")))?;
+            let readback = run(target, SetNvapiTopRelsRatio { ratio })?.output;
+            Ok(json!({
+                "applied": true,
+                "requested": ratio,
+                "readback": readback,
+            }))
         }
         Command::SetVoltRailLimit => {
             // Merged volt-rail setter: --offset (default) writes a µV offset
@@ -3869,6 +5073,57 @@ fn execute_target(
                 return Err(CliError::new(
                     "--offset and --target are mutually exclusive",
                 ));
+            }
+            let slot = match option_one(invocation, "slot") {
+                Some(raw) => {
+                    let slot = raw
+                        .parse::<usize>()
+                        .map_err(|_| CliError::new(format!("invalid --slot {raw:?} (0..5)")))?;
+                    if slot > 5 {
+                        return Err(CliError::new(format!(
+                            "--slot {slot} out of range (melonVolt payload is 0..5)"
+                        )));
+                    }
+                    Some(slot)
+                }
+                None => None,
+            };
+            if target_mode && slot.is_some_and(|v| v != 0) {
+                return Err(CliError::new(
+                    "--target only writes slot 0 — use --offset semantics (a bare offset) for --slot > 0",
+                ));
+            }
+            if let Some(slot) = slot.filter(|v| *v != 0) {
+                // melonVolt payload slots 1..5: slot 2 = VRM max wall offset,
+                // slot 3 = VMIN/min-hold offset (mV→µV like slot 0), 1/4/5 =
+                // firmware-opaque (raw i32 in — accept the same mV/uv grammar
+                // and document that the unit does not survive the firmware).
+                #[allow(non_snake_case)] // uV suffix matches the nvapi-rs naming
+                let value_uV = parse_domain_voltage_uV(&invocation.positionals[1])?;
+                let out = run(
+                    target,
+                    SetNvapiVoltRailSlot {
+                        rail_bit,
+                        slot,
+                        value_uV,
+                        expected_type: expect_type,
+                    },
+                )?
+                .output;
+                return Ok(match out {
+                    Some(a) => json!({
+                        "applied": true,
+                        "mode": "slot",
+                        "rail_bit": a.rail_bit,
+                        "slot": a.slot,
+                        "previous": a.previous,
+                        "applied": a.applied,
+                        "uV_note": "payload dwords are firmware-opaque for slots 1/4/5; slots 2/3 are uV offsets (VRM max wall / VMIN min-hold)",
+                        "vrm_max_wall_mv": a.vrm_max_wall_uV as f64 / 1000.0,
+                        "min_hold_mv": a.min_hold_uV as f64 / 1000.0,
+                    }),
+                    None => json!({"supported": false}),
+                });
             }
             if target_mode {
                 // Absolute-target convenience: the caller thinks in mV (one
@@ -3945,6 +5200,50 @@ fn execute_target(
                     None => json!({"supported": false}),
                 })
             }
+        }
+        Command::ResetVoltRailLimit => {
+            let rail_bit = parse_usize(&invocation.positionals[0], "rail-bit")? as u32;
+            let expect_type = option_one(invocation, "expect-type")
+                .map(|v| v.parse::<u32>())
+                .transpose()
+                .map_err(|e| CliError::new(format!("invalid --expect-type: {e}")))?;
+            let slot = match option_one(invocation, "slot") {
+                Some(raw) => {
+                    let slot = raw
+                        .parse::<usize>()
+                        .map_err(|_| CliError::new(format!("invalid --slot {raw:?} (0..5)")))?;
+                    if slot > 5 {
+                        return Err(CliError::new(format!(
+                            "--slot {slot} out of range (melonVolt payload is 0..5)"
+                        )));
+                    }
+                    Some(slot)
+                }
+                None => None,
+            };
+            let out = run(
+                target,
+                ResetNvapiVoltRailLimit {
+                    rail_bit,
+                    slot,
+                    expected_type: expect_type,
+                },
+            )?
+            .output;
+            Ok(match out {
+                Some(a) => json!({
+                    "applied": true,
+                    "rail_bit": a.rail_bit,
+                    "resets": a.resets.iter().map(|r| json!({
+                        "slot": r.slot,
+                        "previous": r.previous,
+                    })).collect::<Vec<_>>(),
+                    "vrm_max_wall_mv": a.vrm_max_wall_uV as f64 / 1000.0,
+                    "min_hold_mv": a.min_hold_uV as f64 / 1000.0,
+                    "note": "payload slots zeroed = factory offsets; walls re-clamp from the driver baseline",
+                }),
+                None => json!({"supported": false}),
+            })
         }
         Command::GetPrivateFreqDomainInfo => {
             let ctrl = run(target, QueryNvapiClkDomains)?.output;
@@ -6154,6 +7453,98 @@ fn vfp_point_type_label(point_type: VfPointType) -> &'static str {
 /// `get-vbios -i <file>`: parse a local ROM dump offline. Mirrors the live
 /// paths' output shapes (same decode functions, same formatter sniffing);
 /// NvAPI-only metadata (security_flags, status_string) is absent by design.
+/// `set-power-command --kmd` 处理器:位置参数 = 目标墙(W 或 mw 后缀),
+/// 调 core::kmd::power 的全周期原子流,输出步骤日志与已验证事实。
+fn execute_set_power_command_kmd(
+    invocation: &Invocation,
+    command: Command,
+) -> CliResult<Execution> {
+    if !invocation.options.contains_key("force") {
+        return Err(CliError::new(
+            "--kmd requires --force (kernel wall raise is beyond every driver envelope)",
+        ));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = invocation;
+        let _ = command;
+        Err(CliError::new("--kmd is Windows-only"))
+    }
+    #[cfg(windows)]
+    {
+        let Some(raw) = option_one(invocation, "pmxdrvpath") else {
+            return Err(CliError::new(
+                "--kmd requires --pmxdrvpath <pmxdrv.sys> (the Intel2019 signed driver binary)",
+            ));
+        };
+        let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
+        // kmd 语义:目标墙(租约单位 mW;墙下限 50 W 由 core 门把守)
+        let wall_mw = value_raw;
+        let outcome = nvoc_core::kmd::power::set_power_wall_kmd(wall_mw, std::path::Path::new(raw))
+            .map_err(|e| CliError::new(format!("kmd wall raise failed: {e}")))?;
+        let steps = outcome
+            .steps
+            .iter()
+            .map(|s| format!("  {s}"))
+            .collect::<Vec<_>>();
+        let mut value = json!({
+            "kmd": true,
+            "arm": outcome.arm.as_str(),
+            "wall_before_mw": outcome.wall_before_mw,
+            "wall_after_mw": outcome.wall_after_mw,
+            "tgp_written_w": outcome.tgp_written_w,
+            "tgp_note": outcome.tgp_write_note,
+            "lease_written_mw": outcome.lease_written_mw,
+            "lease_note": outcome.lease_note,
+            "layout": outcome.layout_summary,
+            "service": outcome.service,
+            "steps": steps,
+            "note": "wall field write is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
+        });
+        if let Some(root) = &outcome.root {
+            value["root_va"] = json!(format!("{:#016X}", root.root_va));
+            value["root_frame"] = json!(format!("{:#X}", root.frame_root));
+            value["upper_frame"] = json!(format!("{:#X}", root.frame_upper));
+        }
+        if let Some(board) = &outcome.board {
+            value["board_page_va"] = json!(format!("{:#016X}", board.page_va));
+            value["board_frame"] = json!(format!("{:#X}", board.frame));
+            value["window_offsets"] = json!({
+                "kind": board.row_kind,
+                "max": board.max_off,
+                "max_all": board.max_offs,
+                "cur": board.cur_off,
+                "def": board.def_off,
+                "min": board.min_off,
+            });
+            value["live_window"] = json!({
+                "current_mw": board.live_current_mw,
+                "default_mw": board.live_default_mw,
+                "max_mw": board.live_max_mw,
+                "min_mw": board.live_min_mw,
+            });
+            value["window_followed"] = json!(board.window_followed);
+            value["followers"] = json!(board.followers);
+            value["percent_written"] = json!(board.percent_written);
+            value["current_readback_mw"] = json!(board.current_readback_mw);
+            value["candidates_seen"] = json!(board.candidates_seen);
+        }
+        Ok(Execution {
+            function: command.name(),
+            command,
+            backend: "kmd".to_string(),
+            warnings: Vec::new(),
+            results: vec![TargetResult {
+                gpu_id: None,
+                backend: "kmd",
+                ok: true,
+                output: Some(value),
+                error: None,
+            }],
+        })
+    }
+}
+
 fn execute_get_vbios_file(
     invocation: &Invocation,
     command: Command,
@@ -7410,6 +8801,26 @@ fn parse_edid_hex(raw: &str) -> CliResult<Vec<u8>> {
         .collect()
 }
 
+fn option_usize(invocation: &Invocation, name: &str) -> CliResult<Option<usize>> {
+    match option_one(invocation, name) {
+        Some(raw) => raw
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|e| CliError::new(format!("invalid --{name}: {e}"))),
+        None => Ok(None),
+    }
+}
+
+fn option_u32(invocation: &Invocation, name: &str) -> CliResult<Option<u32>> {
+    match option_one(invocation, name) {
+        Some(raw) => raw
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|e| CliError::new(format!("invalid --{name}: {e}"))),
+        None => Ok(None),
+    }
+}
+
 fn option_one<'a>(invocation: &'a Invocation, name: &str) -> Option<&'a str> {
     invocation
         .options
@@ -7939,7 +9350,9 @@ fn parse_clk_domain_table(trimmed: &str) -> CliResult<u32> {
         "sys2" => Ok(17),
         "hub2" => Ok(18),
         "leg" => Ok(19),
-        "pwr" => Ok(20),
+        // 20 = Pwr (RTSS) = uProc (xOCD / 50-series third-party): on GB202 it
+        // reads core-adjacent 1990.8 MHz (was a fixed 540 MHz on Ada 4060L).
+        "pwr" | "uproc" => Ok(20),
         "msd" => Ok(21),
         "utils" => Ok(22),
         "coldnv" => Ok(23),
@@ -8220,6 +9633,67 @@ fn parse_domain_offset_kHz(raw: &str) -> CliResult<i32> {
     Ok((mhz * 1000.0).round() as i32)
 }
 
+/// Shared `--port/--address/--register/--len/--speed/--ddc/--display-mask`
+/// option parser behind get-i2c / set-i2c.
+fn parse_i2c_options(invocation: &Invocation) -> CliResult<NvapiI2cTransaction> {
+    // AB never sends displayMask=0xFFFF on the I2C Ex path (INVALID_ARGUMENT);
+    // default to display 1, override with --display-mask.
+    let mut transaction = NvapiI2cTransaction {
+        display_mask: 0x1,
+        port: None,
+        port_is_ddc: false,
+        address: 0x2F,
+        register: Vec::new(),
+        length: 1,
+        speed_khz: 0,
+    };
+    if let Some(port) = option_one(invocation, "port") {
+        transaction.port = Some(parse_u32_unit(port, "", "port")? as u8);
+    }
+    if let Some(address) = option_one(invocation, "address") {
+        transaction.address = parse_hex_or_dec_u32(address, "address")? as u8;
+    }
+    if let Some(register) = option_one(invocation, "register") {
+        for token in register.replace(',', " ").split_whitespace() {
+            transaction
+                .register
+                .push(parse_hex_or_dec_u32(token, "register")? as u8);
+        }
+    }
+    if let Some(len) = option_one(invocation, "len") {
+        transaction.length = parse_u32_unit(len, "", "len")? as usize;
+    }
+    if let Some(speed) = option_one(invocation, "speed") {
+        transaction.speed_khz = parse_u32_unit(speed, "", "speed")?;
+    }
+    transaction.port_is_ddc = option_bool(invocation, "ddc", false)?;
+    if let Some(mask) = option_one(invocation, "display-mask") {
+        transaction.display_mask = parse_hex_or_dec_u32(mask, "display-mask")?;
+    }
+    Ok(transaction)
+}
+
+/// Accepts `0x1A`-style hex or decimal.
+fn parse_hex_or_dec_u32(raw: &str, label: &str) -> CliResult<u32> {
+    let trimmed = raw.trim();
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        u32::from_str_radix(hex, 16)
+            .map_err(|_| CliError::new(format!("invalid {label} hex value '{raw}'")))
+    } else if let Ok(dec) = trimmed.parse::<u32>() {
+        Ok(dec)
+    } else if trimmed.chars().all(|c| c.is_ascii_hexdigit()) && !trimmed.is_empty() {
+        u32::from_str_radix(trimmed, 16)
+            .map_err(|_| CliError::new(format!("invalid {label} hex value '{raw}'")))
+    } else {
+        Err(CliError::new(format!(
+            "invalid {label} value '{raw}' (accepts 0x-prefixed hex, bare hex, or decimal)"
+        )))
+    }
+}
+
 fn parse_u32_unit(raw: &str, suffix: &str, label: &str) -> CliResult<u32> {
     strip_unit(raw, suffix, label)
         .parse::<u32>()
@@ -8306,6 +9780,7 @@ fn parse_private_domain_id(raw: &str) -> Result<u32, String> {
         ("hub2", 18),
         ("leg", 19),
         ("pwr", 20),
+        ("uproc", 20),
         ("msd", 21),
         ("utils", 22),
         ("coldnv", 23),
@@ -8377,6 +9852,25 @@ fn summarize_errors(execution: &Execution) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// set-pwr-cur-limit value grammar: the plain number is the channel's big
+    /// unit (A on OCP rows, W on the board-power row) ×1000 = raw; a `ma`/
+    /// `mw` suffix (case-insensitive) is the raw driver integer; negatives/
+    /// NaN are rejected.
+    #[test]
+    fn power_channel_value_grammar() {
+        assert_eq!(parse_power_channel_value("240").unwrap(), 240_000);
+        assert_eq!(parse_power_channel_value("0.5").unwrap(), 500);
+        assert_eq!(parse_power_channel_value("240000ma").unwrap(), 240_000);
+        assert_eq!(parse_power_channel_value(" 125000ma ").unwrap(), 125_000);
+        assert_eq!(parse_power_channel_value("140000mA").unwrap(), 140_000);
+        assert_eq!(parse_power_channel_value("175mw").unwrap(), 175);
+        assert_eq!(parse_power_channel_value("250 MW").unwrap(), 250);
+        assert!(parse_power_channel_value("-5").is_err());
+        assert!(parse_power_channel_value("abc").is_err());
+        assert!(parse_power_channel_value("nan").is_err());
+        assert!(parse_power_channel_value("inf").is_err());
+    }
 
     /// Mode-0 control VALUE is signed (i32 kHz, stored two's complement):
     /// -100000 kHz ×2 Pascal axis must render -100.0 MHz, not the
@@ -8563,22 +10057,33 @@ mod tests {
             | Command::GetAutoboostSupport
             | Command::GetEdid
             | Command::SetPstateGlobalFreqOffset
+            | Command::SetSubdomainFreqRatio
+            | Command::ResetSubdomainFreqRatio
             | Command::SetPstates20PrivateDelta
             | Command::SetOverclockedPstates
             | Command::SetPublicTgpPercent
             | Command::SetPpabStatus
-            | Command::SetPowerLimit
             | Command::ResetPowerLimit
             | Command::GetDNotifier
             | Command::SetDNotifier
             | Command::GetPowerCeiling
+            | Command::GetPwrCurInfo
+            | Command::GetPowerCommand
+            | Command::GetBoostLocks
+            | Command::GetThermalChannels
+            | Command::SetPwrCurLimit
+            | Command::SetPowerCommand
+            | Command::GetTopRelsRatio
+            | Command::SetTopRelsRatio
             | Command::GetVoltRailInfo
             | Command::SetVoltRailLimit
+            | Command::ResetVoltRailLimit
             | Command::GetCoreVoltageControl
             | Command::SetCoreVoltageControl
             | Command::GetPmgrArbiter
             | Command::SetPmgrArbiter
             | Command::GetRatedTdp
+            | Command::GetRmInfo
             | Command::GetPrivateFreqDomainInfo
             | Command::GetPrivateFreqDomainStatus
             | Command::SetPrivateFreqDomainGlobalOffset
@@ -8606,6 +10111,13 @@ mod tests {
             | Command::SetPublicVftableRangeOffset
             | Command::SetPstateLockViaMemRange
             | Command::GetPStateLock
+            | Command::GetLockStatus
+            | Command::GetPerfPolicies
+            | Command::GetFramerateLimit
+            | Command::SetFramerateLimit
+            | Command::GetI2c
+            | Command::SetI2c
+            | Command::SetPstateRangeLock
             | Command::SetPStateLock
             | Command::ResetPStateLock
             | Command::SetLegacyApplicationFreqLock
@@ -8988,7 +10500,7 @@ mod tests {
                 .adapters()
                 .contains(&BackendAdapter::Nvml)
         );
-        assert_eq!(Command::SetPowerLimit.adapters(), &BOTH_BACKENDS);
+        assert_eq!(Command::SetPwrCurLimit.adapters(), &BOTH_BACKENDS);
         assert_eq!(Command::SetPublicTgpPercent.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::GetDisplayList.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::GetAutoboostStatus.adapters(), &NVML_ONLY);
@@ -8996,6 +10508,131 @@ mod tests {
         assert_eq!(Command::GetEdid.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::SetEdid.adapters(), &NVAPI_ONLY);
         assert_eq!(Command::ClearEdid.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::GetPwrCurInfo.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::GetPowerCommand.adapters(), &NVAPI_ONLY);
+        assert_eq!(Command::SetPowerCommand.adapters(), &NVAPI_ONLY);
+    }
+
+    #[test]
+    fn power_command_commands_parse() {
+        // Renamed read command: get-power-channels is gone.
+        let invocation = parse_args(["get-pwr-cur-info"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPwrCurInfo));
+        assert!(parse_args(["get-power-channels"]).is_err());
+
+        // ExtendedLimits power-command lease read: channel + selector options.
+        let invocation = parse_args([
+            "get-power-command",
+            "--channel",
+            "0",
+            "--command",
+            "observed",
+        ])
+        .unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPowerCommand));
+        assert_eq!(option_one(&invocation, "channel"), Some("0"));
+        assert_eq!(option_one(&invocation, "command"), Some("observed"));
+        // Defaults + validation live in the dispatch helpers.
+        assert_eq!(
+            parse_power_command_channel(&parse_args(["get-power-command"]).unwrap()).unwrap(),
+            0
+        );
+        assert!(
+            parse_power_command_channel(
+                &parse_args(["get-power-command", "--channel", "32"]).unwrap()
+            )
+            .is_err()
+        );
+        assert_eq!(parse_power_command_selector("observed").unwrap(), 0xF8);
+        assert_eq!(parse_power_command_selector("REQUEST").unwrap(), 0xFE);
+        assert_eq!(parse_power_command_selector("0xfe").unwrap(), 0xFE);
+        assert!(parse_power_command_selector("0xAA").is_err());
+
+        // Write form takes one VALUE positional.
+        let invocation = parse_args(["set-power-command", "100", "--command", "request"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetPowerCommand));
+        assert_eq!(invocation.positionals, vec!["100"]);
+        assert_eq!(option_one(&invocation, "command"), Some("request"));
+        assert!(!invocation.options.contains_key("force"));
+        assert!(parse_args(["set-power-command"]).is_err());
+        // --force is a flag (no value), collected as "true".
+        let invocation = parse_args(["set-power-command", "100000", "--force"]).unwrap();
+        assert_eq!(
+            invocation.options.get("force").map(Vec::as_slice),
+            Some(&["true".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn get_i2c_options_parse_without_flag_downcast_panic() {
+        // Regression: `--ddc` is a SetTrue flag; before it joined the flag
+        // list in collect_named_options, the value branch downcast it to
+        // String and panicked the parser.
+        let invocation = parse_args([
+            "get-i2c",
+            "--ddc",
+            "--address",
+            "0x49",
+            "--register",
+            "0x00,0x01",
+            "--len",
+            "4",
+            "--speed",
+            "100",
+            "--port",
+            "2",
+        ])
+        .expect("parse get-i2c");
+        let tx = parse_i2c_options(&invocation).expect("i2c options");
+        assert!(tx.port_is_ddc);
+        assert_eq!(tx.address, 0x49);
+        assert_eq!(tx.register, vec![0x00, 0x01]);
+        assert_eq!(tx.length, 4);
+        assert_eq!(tx.speed_khz, 100);
+        assert_eq!(tx.port, Some(2));
+    }
+
+    #[test]
+    fn set_pwr_cur_limit_parses_all_targets() {
+        // Merged power/current writer: every target name, and the NVML flag
+        // only meaningful for the tgp/board form.
+        for target in ["tgp", "board", "nvvdd", "msvdd", "2"] {
+            let invocation =
+                parse_args(["set-pwr-cur-limit", target, "140"]).expect("target parses");
+            assert_eq!(invocation.command, Some(Command::SetPwrCurLimit));
+            assert_eq!(invocation.positionals, vec![target, "140"]);
+        }
+        // --policy-index + --nvml are accepted (tgp/board form).
+        let invocation =
+            parse_args(["set-pwr-cur-limit", "tgp", "140", "--policy-index", "2"]).unwrap();
+        assert_eq!(option_one(&invocation, "policy-index"), Some("2"));
+        let invocation = parse_args(["set-pwr-cur-limit", "board", "140", "--nvml"]).unwrap();
+        assert_eq!(invocation.backend, BackendChoice::Nvml);
+        // --force feeds the pre-Ampere poison-write gate (default = refuse).
+        let invocation = parse_args(["set-pwr-cur-limit", "nvvdd", "150", "--force"]).unwrap();
+        assert!(invocation.options.contains_key("force"));
+        // --slot selects the melonVolt payload dword (0..5); raw passthrough.
+        let invocation = parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "3"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetVoltRailLimit));
+        assert_eq!(option_one(&invocation, "slot"), Some("3"));
+        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "6"]).is_err());
+        // slots 4/5: refused at parse (no known use; -300 crashed 4060L/610,
+        // -100..-200 observed safe — kept lab-only)
+        // slots 4/5 honored as-is (user choice; crash matrix in help)
+        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "4"]).is_ok());
+        assert!(parse_args(["set-volt-rail-limit", "0", "12.5", "--slot", "5"]).is_ok());
+
+        // reset command: rail-bit positional + optional --slot (0..5)
+        let invocation = parse_args(["reset-volt-rail-limit", "0"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::ResetVoltRailLimit));
+        assert_eq!(invocation.positionals, vec!["0"]);
+        let invocation = parse_args(["reset-volt-rail-limit", "1", "--slot", "3"]).unwrap();
+        assert_eq!(option_one(&invocation, "slot"), Some("3"));
+        assert!(parse_args(["reset-volt-rail-limit", "1", "--slot", "6"]).is_err());
+        assert!(parse_args(["reset-volt-rail-limit"]).is_err());
+        // Old names are gone.
+        assert!(parse_args(["set-power-limit", "140"]).is_err());
+        assert!(parse_args(["set-ocp-limit", "nvvdd", "140"]).is_err());
     }
 
     #[test]

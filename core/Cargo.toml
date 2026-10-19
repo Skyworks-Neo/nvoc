@@ -10,13 +10,32 @@ license = "Apache-2.0"
 
 [dependencies]
 nvapi = { workspace = true }
+serde = { workspace = true }
 nvml-wrapper = { workspace = true }
 quick-error = { workspace = true }
 # nvml.rs dlopens libnvml.so / nvml.dll by path on every platform.
 libloading = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# rm.rs 的 /dev/nvidiactl ioctl 通道。
+libc = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+# capstone 只服务 kmd/layout_probe 的 nvlddmkm.sys 静态反汇编（Windows
+# 驱动镜像、功耗墙 RE）；linux 侧无消费场景，门控掉免得跨平台 mirror
+# 需要 linux 交叉 C 工具链。
+capstone = { workspace = true }
+
+# kmd/pawnio.rs talks to \Device\PawnIO with CreateFileW/DeviceIoControl
+# directly; the Win32 umbrella feature does not pull in the sub-namespaces.
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

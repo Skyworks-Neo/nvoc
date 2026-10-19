@@ -15,8 +15,8 @@ use super::result::{
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
 use ::nvapi::hi::{
-    ClockDomain, CoolerPolicy, Kilohertz, KilohertzDelta, MicrovoltsDelta, PState, Percentage,
-    SensorThrottle, VfPoint,
+    ClockDomain, ClockLockEntry, CoolerPolicy, Gpu, Kilohertz, KilohertzDelta, MicrovoltsDelta,
+    PState, Percentage, SensorThrottle, VfPoint,
 };
 use nvml_wrapper::enum_wrappers::device::{Api, PerformanceState};
 
@@ -131,6 +131,10 @@ impl GpuOperation for QueryGpuInfo {
         {
             info.uuid = low_nvml::query_nvml_uuid(nvml, target.id.0);
         }
+        // Linux libnvidia-api doesn't implement GetGPUType/GetSystemType/
+        // GetFoundry (-3/-104) — derive what we can from our own card
+        // knowledge instead of reporting "Unknown" (see gpu_type.rs).
+        super::gpu_type::fill_identity_gaps(&mut info);
         Ok(info)
     }
 }
@@ -1241,7 +1245,6 @@ impl GpuOperation for ResetLegacyGpcRailOvervoltLimit {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
 pub struct SetPstateClockOffset {
     pub pstate: PState,
     pub domain: ClockDomain,
@@ -1342,6 +1345,30 @@ impl GpuOperation for ResetVfpFrequencyLock {
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
         low_nvapi::reset_vfp_frequency_lock(target.nvapi()?, self.domain)
+    }
+}
+
+/// Write PerfClientLimits lock entries verbatim (caller owns the payload
+/// shape). Entries carry their raw mode, so a `PstateSelect` pair (ids 4/5)
+/// can be written with DIFFERENT pstate numbers — the pstate analog of the
+/// id0/id1 frequency range form.
+#[derive(Clone, Debug)]
+pub struct SetVfpLockEntries {
+    pub entries: Vec<ClockLockEntry>,
+}
+
+impl GpuOperation for SetVfpLockEntries {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetVfpLockEntries
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_vfp_lock_entries(&self.entries)
+            .map_err(Error::from)
     }
 }
 
@@ -1792,14 +1819,59 @@ impl GpuOperation for SetNvapiDynamicBoost {
     }
 }
 
+/// Pre-Ampere poison-write gate for the 0xAFFC2279 power-channel SET paths
+/// ([`SetNvapiTgpWatt`] / [`SetNvapiPowerChannelValue`]): on pre-Ampere
+/// (pre-RTX-30) stacks the SET faults the driver — nvlddmkm event 14/153
+/// bursts, the value applies and the control table then reverts to defaults
+/// (Turing TU106 r610 desktop + Pascal GP100 r582 TCC, probe captures +
+/// event-log correlation 2026-10-07) — so every write there is an honest
+/// applied-then-reverted failure. Ampere+ answers Ok cleanly. Generation
+/// classification reuses the project-canonical [`super::gpu_type::GpuType`]
+/// (`fetch_gpu_type` off the standard [`QueryGpuInfo`] output; see
+/// `GpuType::is_pre_ampere`). Refuse by default; `force` (CLI `--force`) is
+/// the debugging escape hatch. The NVML `nvidia-smi -pl` path never hits
+/// this gate.
+fn poison_write_gate(target: &GpuTarget<'_>, force: bool) -> Result<(), Error> {
+    if force {
+        return Ok(());
+    }
+    let gpu_type = match QueryGpuInfo.run(target) {
+        Ok(info) => fetch_gpu_type(&info),
+        Err(e) => {
+            return Err(Error::Custom(format!(
+                "refused: cannot determine GPU generation ({e}) — the 0xAFFC2279 \
+                 power-channel SET faults pre-Ampere (pre-RTX-30) drivers; \
+                 re-run with --force to attempt anyway (debugging)"
+            )));
+        }
+    }
+    .unwrap_or(super::gpu_type::GpuType::Unknown);
+    if gpu_type.is_pre_ampere() {
+        Err(Error::Custom(format!(
+            "refused: {:?} is pre-Ampere (pre-RTX-30) — the 0xAFFC2279 power-channel \
+             SET faults these drivers (nvlddmkm 14/153 error burst; the value applies, then \
+             the control table reverts to defaults). Re-run with --force to attempt anyway \
+             (debugging); the NVML path (nvidia-smi -pl) is unaffected",
+            gpu_type
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 /// Set the GPU TGP in watts (notebook watts-form TGP slider; the range that
-/// appears under the PPAB/Dynamic-Boost enable). NDA-private nvapi triplet:
-/// GET 0x8B3E7343 → patch → SET 0xBFF09E59. `policy_index` selects the entry
-/// (use [`QueryNvapiTgpWattRange`]); if None, defaults to index 2 like the ref tool.
+/// appears under the PPAB/Dynamic-Boost enable). Writes the shared power-channel
+/// control table through the compact core (NDA GET 0x8B3E7343 / SET 0xAFFC2279,
+/// stamp 0x0001_0A4C): mask-scoped RMW (mask = 1<<index, so OCP rows are never
+/// touched), clamp to the driver window, readback, rollback. `policy_index`
+/// selects the entry (use [`QueryNvapiTgpWattRange`]); if None, defaults to
+/// index 2 like the ref tool. Pre-Ampere GPUs are refused unless `force` is
+/// set (see [`poison_write_gate`]).
 #[derive(Clone, Debug)]
 pub struct SetNvapiTgpWatt {
     pub watts: u32,
     pub policy_index: Option<usize>,
+    pub force: bool,
 }
 
 impl GpuOperation for SetNvapiTgpWatt {
@@ -1810,6 +1882,7 @@ impl GpuOperation for SetNvapiTgpWatt {
     }
 
     fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        poison_write_gate(target, self.force)?;
         let idx = self.policy_index.unwrap_or(2);
         target
             .nvapi()?
@@ -2020,6 +2093,25 @@ impl GpuOperation for QueryNvapiBarInfo {
     }
 }
 
+/// Compute/topology capability counters (GPU-Z 2.71 audit gap-fill,
+/// `docs/reverse-engineering/gpu-z/gpuz-sensor-audit.md` §9): BTree of
+/// counter name → raw u32 (`None` where the board refuses the counter).
+/// Consumed as a best-effort `compute_caps` section of get-info.
+pub struct QueryNvapiComputeCaps;
+
+impl GpuOperation for QueryNvapiComputeCaps {
+    type Output = std::collections::BTreeMap<String, Option<u32>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiComputeCaps
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let caps = target.nvapi()?.compute_caps().map_err(Error::from)?;
+        Ok(caps.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+}
+
 /// Set one rail's µV offset via the private VoltRails control object (the
 /// melonVolt write path: GET snapshot → locate entry → type guard →
 /// patch → SET → readback verify, see `reverse/melonvolt/ANALYSIS.md`).
@@ -2033,6 +2125,217 @@ impl GpuOperation for QueryNvapiBarInfo {
 /// ceiling is not wasted in a dangerous sense — it just cannot raise the
 /// wall further. The post-SET readback reports the effective wall so the
 /// user sees the clamp.
+/// Outcome of a melonVolt payload-slot write: the slot, the value before,
+/// the value the driver retained, and the post-write status walls
+/// (values[3] = VRM max wall, values[5] = min-hold) for effect evidence.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct NvapiVoltRailSlotApplied {
+    pub rail_bit: u32,
+    pub slot: usize,
+    pub previous: i32,
+    pub applied: i32,
+    /// status values[3] after the write (VRM max wall, µV)
+    pub vrm_max_wall_uV: i32,
+    /// status values[5] after the write (min hold, µV)
+    pub min_hold_uV: i32,
+}
+
+/// Write one melonVolt payload slot (0..6) of a volt-rail control entry.
+///
+/// Slot semantics pinned on Tesla P100 / 582.41 (slot-probe, live diff):
+/// slot 0 = µV operating offset ([`SetNvapiVoltRailOffset`]); slot 2 =
+/// VRM max wall offset (status values[3] follows 1:1); slot 3 = VMIN /
+/// min-hold offset (status values[5] follows 1:1); slots 1/4/5 are
+/// retained-but-quiet firmware-opaque dwords. Same snapshot → patch →
+/// SET → readback protocol as the offset path.
+///
+/// Slots 4/5 are honored as-is per user choice (2026-10-06): no known use,
+/// and a -300 write crashed the driver on 4060 Laptop / 610 (-100..-200
+/// observed safe) — the crash matrix lives in the CLI help, the gate does
+/// not second-guess the caller.
+#[derive(Clone, Copy, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct SetNvapiVoltRailSlot {
+    pub rail_bit: u32,
+    pub slot: usize,
+    pub value_uV: i32,
+    pub expected_type: Option<u32>,
+}
+
+impl GpuOperation for SetNvapiVoltRailSlot {
+    type Output = Option<NvapiVoltRailSlotApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVoltRailSlot
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        if self.slot > 5 {
+            return Err(Error::Custom(format!(
+                "volt-rail slot {} out of range (melonVolt payload is 0..6)",
+                self.slot
+            )));
+        }
+        let gpu = target.nvapi()?;
+        let rails = gpu.volt_rails().map_err(Error::from)?;
+        let Some(rails) = rails else {
+            return Ok(None);
+        };
+        let entry = rails
+            .control
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "rail bit {} not present (mask 0x{:08X})",
+                    self.rail_bit, rails.rail_mask
+                ))
+            })?;
+        if let Some(expected) = self.expected_type
+            && entry.entry_type != expected
+        {
+            return Err(Error::Custom(format!(
+                "rail {} entry type {} != expected {expected} — refusing to write",
+                self.rail_bit, entry.entry_type
+            )));
+        }
+        let previous = entry.values[self.slot];
+        let applied = gpu
+            .set_volt_rail_slot(self.rail_bit, self.slot, self.value_uV)
+            .map_err(Error::from)?
+            .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+        // Post-write status walls: values[3] (VRM max) and values[5]
+        // (min hold) are the two words empirically tied to slots 2/3.
+        let status = gpu.volt_rails().map_err(Error::from)?.and_then(|r| {
+            r.status
+                .iter()
+                .find(|e| e.rail_bit == self.rail_bit)
+                .map(|e| (e.values[3], e.values[5]))
+        });
+        #[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+        let (vrm_max_wall_uV, min_hold_uV) = status.unwrap_or((0, 0));
+        Ok(Some(NvapiVoltRailSlotApplied {
+            rail_bit: self.rail_bit,
+            slot: self.slot,
+            previous,
+            applied,
+            vrm_max_wall_uV,
+            min_hold_uV,
+        }))
+    }
+}
+
+/// Reset volt-rail payload slots back to 0 (stock: payload offsets are
+/// deltas from the driver baseline, so 0 = factory). Default resets the
+/// mapped writable slots 0..3 (µV offset, VBIOS wall offset, VRM max wall
+/// offset, VMIN/min-hold offset); `slot` narrows it to one slot — 4/5 are
+/// honored as-is per user choice (no known use; -300 crashed 4060L/610,
+/// -100..-200 observed safe).
+#[derive(Clone, Copy, Debug)]
+pub struct ResetNvapiVoltRailLimit {
+    pub rail_bit: u32,
+    /// `None` = reset the mapped slots 0..3; `Some(n)` = only slot n (0..5).
+    pub slot: Option<usize>,
+    pub expected_type: Option<u32>,
+}
+
+/// Per-slot reset result.
+#[derive(Clone, Copy, Debug)]
+pub struct VoltRailSlotReset {
+    pub slot: usize,
+    pub previous: i32,
+}
+
+impl GpuOperation for ResetNvapiVoltRailLimit {
+    type Output = Option<NvapiVoltRailResetApplied>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiVoltRailLimit
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let rails = gpu.volt_rails().map_err(Error::from)?;
+        let Some(rails) = rails else {
+            return Ok(None);
+        };
+        let entry = rails
+            .control
+            .iter()
+            .find(|e| e.rail_bit == self.rail_bit)
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "rail bit {} not present (mask 0x{:08X})",
+                    self.rail_bit, rails.rail_mask
+                ))
+            })?;
+        if let Some(expected) = self.expected_type
+            && entry.entry_type != expected
+        {
+            return Err(Error::Custom(format!(
+                "rail {} entry type {} != expected {expected} — refusing to write",
+                self.rail_bit, entry.entry_type
+            )));
+        }
+        let slots: Vec<usize> = match self.slot {
+            Some(slot) => {
+                if slot > 5 {
+                    return Err(Error::Custom(format!(
+                        "volt-rail slot {} out of range (melonVolt payload is 0..6)",
+                        slot
+                    )));
+                }
+                vec![slot]
+            }
+            None => vec![0, 1, 2, 3],
+        };
+        let mut resets = Vec::new();
+        for slot in slots {
+            let previous = entry.values[slot];
+            if previous == 0 {
+                resets.push(VoltRailSlotReset { slot, previous });
+                continue;
+            }
+            let applied = gpu
+                .set_volt_rail_slot(self.rail_bit, slot, 0)
+                .map_err(Error::from)?
+                .ok_or_else(|| Error::Custom("volt-rails family vanished between reads".into()))?;
+            resets.push(VoltRailSlotReset {
+                slot,
+                previous: applied,
+            });
+        }
+        // Post-reset walls for the record (0 = driver hasn't refreshed).
+        let status = gpu.volt_rails().map_err(Error::from)?.and_then(|r| {
+            r.status
+                .iter()
+                .find(|e| e.rail_bit == self.rail_bit)
+                .map(|e| (e.values[3], e.values[5]))
+        });
+        #[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+        let (vrm_max_wall_uV, min_hold_uV) = status.unwrap_or((0, 0));
+        Ok(Some(NvapiVoltRailResetApplied {
+            rail_bit: self.rail_bit,
+            resets,
+            vrm_max_wall_uV,
+            min_hold_uV,
+        }))
+    }
+}
+
+/// See [`ResetNvapiVoltRailLimit`].
+#[derive(Clone, Debug)]
+#[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
+pub struct NvapiVoltRailResetApplied {
+    pub rail_bit: u32,
+    /// (slot, previous value) per reset slot — 0 writes are recorded too.
+    pub resets: Vec<VoltRailSlotReset>,
+    /// status values[3] after the reset (µV)
+    pub vrm_max_wall_uV: i32,
+    /// status values[5] after the reset (µV)
+    pub min_hold_uV: i32,
+}
 #[derive(Clone, Copy, Debug)]
 #[allow(non_snake_case)] // uV suffix matches the nvapi-rs field naming
 pub struct SetNvapiVoltRailOffset {
@@ -2133,6 +2436,557 @@ pub struct NvapiVoltRailOffsetApplied {
     /// it may be below the requested offset's implied wall. 0 = no status
     /// entry / driver hasn't refreshed yet (re-run get-volt-rails).
     pub effective_wall_uV: i32,
+}
+
+/// PowerChannels snapshot (0x67F31384 v4 + 0x8B3E7343 control read):
+/// policy table (board-power mW + per-rail OCP mA, generation-skewed
+/// identities), the resolved NVVDD/MSVDD OCP channels, and the live
+/// control-block values with geometry detection. Read-only; `None` when
+/// the surface refuses (the control GET answers on every generation once
+/// the xOCD stamp/seed recipe is driven — see
+/// `NV_GPU_CLIENT_TGP_WATT_STATUS_10A4C_V1::STAMP`; the pre-fix v16 typo
+/// made it -9 everywhere and was mistaken for a pre-50 gate).
+#[derive(Debug, Clone)]
+pub struct NvapiPowerChannelSnapshot {
+    pub policies: Vec<::nvapi::PowerChannelPolicy>,
+    pub nvvdd_ocp: Option<::nvapi::PowerChannelPolicy>,
+    pub msvdd_ocp: Option<::nvapi::PowerChannelPolicy>,
+    /// Live control values (one per populated policy) + compact-geometry
+    /// detection (`Some(true)` = xOCD 40B stride, `Some(false)` = R465
+    /// 136B stride, `None` = ambiguous). `None` overall = control refused.
+    pub control: Option<(Vec<u32>, Option<bool>)>,
+}
+
+/// Read the PowerChannels policy table + OCP channel identities + live
+/// control values (see [`NvapiPowerChannelSnapshot`]). Live-verified on
+/// Pascal/Turing/Ampere/Ada (xocd audit §16.1).
+pub struct QueryNvapiPowerChannels;
+
+impl GpuOperation for QueryNvapiPowerChannels {
+    type Output = Option<NvapiPowerChannelSnapshot>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPowerChannels
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let Some(policies) = gpu.power_channel_policies().ok().flatten() else {
+            return Ok(None);
+        };
+        let (nvvdd_ocp, msvdd_ocp) = gpu.ocp_channels().unwrap_or((None, None));
+        let control = gpu.power_channel_control(&policies).ok().flatten();
+        Ok(Some(NvapiPowerChannelSnapshot {
+            policies,
+            nvvdd_ocp,
+            msvdd_ocp,
+            control,
+        }))
+    }
+}
+
+/// PerfClientLimits 7-domain lock snapshot (0xE440B867) — clock-range
+/// locks (id 0/1, mode 2, kHz bounds) and the V/F voltage lock (id 6,
+/// mode 3, µV). Live-verified both ways on RTX 2070. `None` when the
+/// surface refuses.
+pub struct QueryNvapiBoostLocks;
+
+impl GpuOperation for QueryNvapiBoostLocks {
+    type Output = Option<Vec<::nvapi::BoostLockEntry>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiBoostLocks
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target.nvapi()?.boost_lock_snapshot().ok().flatten())
+    }
+}
+
+/// ThermChannel capability map + live temperatures (0x0BC8163D v2 info fed
+/// into the 0x65FE3AAD v2 status). `status` is `None` when the STATUS half
+/// refuses while INFO answered.
+#[derive(Debug, Clone)]
+pub struct NvapiThermalChannelSnapshot {
+    pub info: ::nvapi::ThermalChannelInfo,
+    pub status: Option<::nvapi::ThermalChannelStatus>,
+}
+
+pub struct QueryNvapiThermalChannels;
+
+impl GpuOperation for QueryNvapiThermalChannels {
+    type Output = Option<NvapiThermalChannelSnapshot>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiThermalChannels
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let Some(info) = gpu.thermal_channel_info().ok() else {
+            return Ok(None);
+        };
+        let status = gpu.thermal_channel_status(info.channel_mask).ok();
+        Ok(Some(NvapiThermalChannelSnapshot { info, status }))
+    }
+}
+
+/// LACT-parity raw-register thermal views (NvAPI_GPU_RegisterOp
+/// 0x2EB3C140, READ|32BIT|GLOBAL): per-chip GDDR6x/GDDR7 sensor
+/// temperatures (0x9024C0/0x9024D0 family, poison-filtered, clamshell
+/// Front/Back split) and the Blackwell+ aggregated hotspot register
+/// (0xAD0AA0) — the fallback LACT prefers over the ThermChannel map on
+/// Blackwell, where `priChIdx` often carries no usable hotspot channel.
+#[derive(Debug, Clone)]
+pub struct RegisterThermalViews {
+    /// Driver-reported RAM type name; gates the per-chip probe.
+    pub ram_type: String,
+    /// Per-chip VRAM temps (label `A0`..`I1`, + `(Front)`/`(Back)` on
+    /// clamshell, °C). Empty when the RAM type is not GDDR6x/GDDR7 or no
+    /// partition answered.
+    pub vram_chips: Vec<(String, u64)>,
+    /// Error text when the per-chip walk aborted mid-partition (a failed
+    /// data-register read ends the walk, mirroring LACT).
+    pub vram_chip_error: Option<String>,
+    /// Blackwell+ register hotspot fallback (°C); `None` off-Blackwell or
+    /// when the register reports the absent-sensor sentinels (0/255).
+    pub blackwell_hotspot_c: Option<u32>,
+}
+
+pub struct QueryNvapiRegisterThermals;
+
+impl GpuOperation for QueryNvapiRegisterThermals {
+    type Output = RegisterThermalViews;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiRegisterThermals
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+
+        let (ram_type, vram_chips, vram_chip_error) = match gpu.ram_type() {
+            Ok(ram_type) => {
+                let name = ram_type.to_string();
+                match gpu.vram_chip_temps(ram_type) {
+                    Ok(chips) => (name, chips, None),
+                    Err(e) => (name, Vec::new(), Some(e.to_string())),
+                }
+            }
+            Err(e) => ("unknown".to_owned(), Vec::new(), Some(e.to_string())),
+        };
+
+        // LACT gates the register hotspot on Blackwell+ (arch >= Blackwell);
+        // generation classification reuses the project-canonical GpuType.
+        let blackwell_hotspot_c = match QueryGpuInfo.run(target) {
+            Ok(info) => match fetch_gpu_type(&info) {
+                Ok(gpu_type) if gpu_type.is_blackwell() => gpu.blackwell_hotspot_register_c().ok(),
+                _ => None,
+            },
+            Err(_) => None,
+        };
+
+        Ok(RegisterThermalViews {
+            ram_type,
+            vram_chips,
+            vram_chip_error,
+            blackwell_hotspot_c,
+        })
+    }
+}
+
+/// PowerChannels control write (raw driver-unit value: mA on OCP current
+/// channels, mW on the board-power row; the CLI resolves nvvdd/msvdd to
+/// the generation's OCP pair or takes any `get-pwr-cur-info` index).
+/// nvapi-rs clamps to the driver [min,max] window (plus the 1..5001 A
+/// envelope on OCP current channels) and runs the full RMW + readback +
+/// rollback recipe. HIGH RISK: raising an OCP ceiling disables a safety
+/// net. Every generation shares the xOCD compact control geometry
+/// (stamp v1|2636, feature-detected at runtime); the old pre-50 -9
+/// "fail-closed" was a stamp typo, not a generation gate. Pre-Ampere GPUs
+/// are refused unless `force` is set (see [`poison_write_gate`]).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPowerChannelValue {
+    pub policy_id: u32,
+    pub subtype: u32,
+    pub value_raw: u32,
+    pub force: bool,
+}
+
+impl GpuOperation for SetNvapiPowerChannelValue {
+    type Output = u32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPowerChannelValue
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        poison_write_gate(target, self.force)?;
+        target
+            .nvapi()?
+            .set_power_channel_value(self.policy_id, self.subtype, self.value_raw)
+            .map_err(Error::from)
+    }
+}
+
+/// ExtendedLimits PowerCommand channel read (NDA 0x33AB0353, packet stamp
+/// v1|1320; xOCD 2.0 `ReadPowerCommand`). One cell of the kernel
+/// power-command lease keyed by (channel, command): `command` 0xF8 =
+/// observed, 0xFE = the kernel power-cap request. Structural refusals error
+/// (the packet contract is validated in nvapi-rs), so there is no `Ok(None)`
+/// — an unsupported generation errors instead.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiPowerCommand {
+    pub channel: u8,
+    pub command: u32,
+}
+
+impl GpuOperation for QueryNvapiPowerCommand {
+    type Output = u32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiPowerCommand
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .power_command(self.channel, self.command)
+            .map_err(Error::from)
+    }
+}
+
+/// Outcome of a power-command lease write: the applied cell plus the facts
+/// recovery rendering needs (the pre-write cell, the envelope anchor) and
+/// whether the safety envelope was bypassed.
+#[derive(Clone, Copy, Debug)]
+pub struct PowerCommandWriteOutcome {
+    /// The cell before the write; `None` when the GET refused or the write
+    /// ran with the envelope bypassed before any GET.
+    pub baseline_mw: Option<u32>,
+    /// The value the driver accepted and read back.
+    pub applied_mw: u32,
+    /// The policyId-0 board default (mW) the envelope anchored on; `None`
+    /// on the bypassed path (the anchor is still read for display when it
+    /// answers).
+    pub board_default_mw: Option<u32>,
+    pub envelope_bypassed: bool,
+}
+
+/// ExtendedLimits PowerCommand channel write (NDA 0x17695269, packet stamp
+/// v1|1320; xOCD 2.0 `SetPowerCommand`).
+///
+/// **Echo-layer semantics** (2026-10-06 P100 load test): the lease cell is
+/// what GET/NVML/`nvidia-smi` display as the cap, but load-time enforcement
+/// still clamps at the legal slider window — the write does NOT move the
+/// enforced wall (docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md
+/// §18.8.2).
+///
+/// Default path goes through nvapi-rs' checked write (board-power envelope:
+/// policyId-0 default × 2, floor 1 W; no anchor = refuse — the nvpwrctl
+/// §7.6 capability gate). `force` bypasses the envelope with the raw write
+/// (baseline capture is best-effort there). No implicit restore on either
+/// path — the driver has no unset write, the caller owns the baseline.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiPowerCommand {
+    pub channel: u8,
+    pub command: u32,
+    pub value: u32,
+    pub force: bool,
+}
+
+impl GpuOperation for SetNvapiPowerCommand {
+    type Output = PowerCommandWriteOutcome;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiPowerCommand
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        if self.force {
+            let baseline = gpu.power_command(self.channel, self.command).ok();
+            let board_default_mw = gpu.board_power_default_mw().ok().flatten();
+            gpu.set_power_command(self.channel, self.command, self.value)
+                .map_err(Error::from)?;
+            Ok(PowerCommandWriteOutcome {
+                baseline_mw: baseline,
+                applied_mw: self.value,
+                board_default_mw,
+                envelope_bypassed: true,
+            })
+        } else {
+            let write = gpu
+                .set_power_command_checked(self.channel, self.command, self.value)
+                .map_err(Error::from)?;
+            Ok(PowerCommandWriteOutcome {
+                baseline_mw: write.baseline,
+                applied_mw: write.applied,
+                board_default_mw: write.board_default_mw,
+                envelope_bypassed: false,
+            })
+        }
+    }
+}
+
+/// TopRels relation ratio: (resolved absolute offset, raw U16.16). The
+/// control GET answers on 50-series only (Pascal/Turing -103, Ampere/Ada
+/// -1 live) — `None` there. Edge semantics (GPC→XBAR vs MSVDD:memory)
+/// remain under adjudication (xocd audit contradiction ③).
+pub struct QueryNvapiTopRelsRatio;
+
+impl GpuOperation for QueryNvapiTopRelsRatio {
+    type Output = Option<(usize, u32)>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTopRelsRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        Ok(target.nvapi()?.top_rels_ratio().ok().flatten())
+    }
+}
+
+/// TopRels relation-ratio write (0.7–1.2 envelope; 0.9 keeps the exact
+/// hardware literal 0xE660). DANGEROUS driver-wide clock-tree write with
+/// the full snapshot/rollback recipe inside nvapi-rs; returns the
+/// readback ratio. 50-series only.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiTopRelsRatio {
+    pub ratio: f64,
+}
+
+impl GpuOperation for SetNvapiTopRelsRatio {
+    type Output = f64;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiTopRelsRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_top_rels_ratio(self.ratio)
+            .map_err(Error::from)
+    }
+}
+
+/// Resolve a (src, dst) domain pair to the TopRels relation index whose
+/// GetInfo edge matches. First match wins (the five GPC:XBAR ratio slots
+/// share the same (0,1) pair — the engine-tracked active one is idx 0).
+pub fn resolve_toprels_relation(gpu: &Gpu, src: u32, dst: u32) -> Result<Option<usize>, Error> {
+    for (idx, rsrc, rdst, _dir, _payload) in gpu.top_rels_relations().map_err(Error::from)? {
+        if rsrc == src && rdst == dst {
+            return Ok(Some(idx));
+        }
+    }
+    Ok(None)
+}
+
+/// Restore the TopRels GPC:XBAR ratio from the DRIVER-REPORTED default
+/// (GetInfo relation payload — the initial ratio the SKU/driver carries,
+/// not a hard-coded constant). Output `None` when the driver exposes no
+/// default for the edge (caller should surface "no default exposed").
+pub struct ResetTopRelsRatioToDefault;
+
+impl GpuOperation for ResetTopRelsRatioToDefault {
+    type Output = Option<f64>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetTopRelsRatioToDefault
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let Some(default) = target
+            .nvapi()?
+            .top_rels_default_ratio()
+            .map_err(Error::from)?
+        else {
+            return Ok(None);
+        };
+        let landed = target
+            .nvapi()?
+            .set_top_rels_ratio(default)
+            .map_err(Error::from)?;
+        Ok(Some(landed))
+    }
+}
+
+/// Set one TopRels control slot's GPC:XBAR ratio (XBAR = ratio × GPC).
+/// Slots: 0 = engine-tracked active ratio; 10-13 = regime-variant stores.
+/// ALL five land verbatim at the record level, but the HAZARD matrix is
+/// live-proven on 580.173.02: writing 0 to slot 0 HANGS the GPU, and
+/// writing to a non-carrier edge (GetInfo payload == 1) HANGS the GPU.
+/// Gate ladder (see run): hard rejects for those, soft reject below the
+/// lowest experimentally-landed ratio unless --force.
+#[derive(Clone, Copy, Debug)]
+pub struct SetSubdomainFreqRatio {
+    pub ratio: f64,
+    /// Relation addressing: --src/--dst resolve to the relation index via
+    /// GetInfo (default GPC=0 -> XBAR=1); --index addresses it directly.
+    pub src: u32,
+    pub dst: u32,
+    pub index: Option<usize>,
+    /// Overrides the soft below-tested-envelope rejection. Never overrides
+    /// the zero-ratio or non-carrier hard rejects.
+    pub force: bool,
+}
+
+/// The lowest ratio experimentally landed on this card (0x1199 = 0.0687,
+/// envelope probe; clock clamped to the 884 MHz XBAR floor — no hang).
+pub const TOPRELS_MIN_TESTED_RAW: u32 = 0x1199;
+
+impl SetSubdomainFreqRatio {
+    /// Effective relation index: explicit --index wins; else resolve
+    /// (src, dst) via the GetInfo relation table (first match).
+    pub fn slot(&self, gpu: &Gpu) -> Result<usize, Error> {
+        if let Some(idx) = self.index {
+            return Ok(idx);
+        }
+        resolve_toprels_relation(gpu, self.src, self.dst)?.ok_or_else(|| {
+            Error::Custom(format!(
+                "no TopRels relation matches src={} dst={} — see get-subdomain-freq-ratio --table",
+                self.src, self.dst
+            ))
+        })
+    }
+}
+
+impl GpuOperation for SetSubdomainFreqRatio {
+    type Output = Option<u32>; // landed raw; None = not retained
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetSubdomainFreqRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        // HARD gate 1 — zero ratio hangs the GPU (clock-tree div-by-zero
+        // class failure; live-confirmed by the operator).
+        let gpu = target.nvapi()?;
+        let ratio = if (self.ratio - 0.9).abs() < f64::EPSILON {
+            0xE660
+        } else {
+            (self.ratio * 65536.0).round() as u32
+        };
+        if ratio == 0 {
+            return Err(Error::Custom(
+                "zero ratio hangs the GPU — refusing unconditionally".into(),
+            ));
+        }
+
+        // HARD gate 2 — non-carrier edge (GetInfo payload 0 or 1 = edge
+        // marker without a ratio carrier): writes there hang the GPU
+        // (operator-confirmed on the sibling slots).
+        let slot = self.slot(gpu)?;
+        let carrier = gpu.top_rels_default_ratio_at(slot).map_err(Error::from)?;
+        if carrier.unwrap_or(0) <= 1 {
+            return Err(Error::Custom(format!(
+                "TopRels relation {slot} carries no ratio (GetInfo payload {}) — write face not applicable",
+                carrier.unwrap_or(0)
+            )));
+        }
+
+        // SOFT gate 1 — un-enabled ratio arm: the relation carries a default
+        // but its live control record reads 0. Writing a dormant arm is
+        // untested enable territory — --force required.
+        let live = gpu.top_rels_ratio_at(slot).map_err(Error::from)?;
+        if live.unwrap_or(0) == 0 && !self.force {
+            return Err(Error::Custom(format!(
+                "TopRels relation {slot} ratio arm is not enabled (live record = 0) — pass --force to write it"
+            )));
+        }
+
+        // SOFT gate 2 — below the lowest experimentally-landed ratio: --force
+        // overrides (values 0x1..0x1198 are untested territory).
+        if ratio < TOPRELS_MIN_TESTED_RAW && !self.force {
+            return Err(Error::Custom(format!(
+                "ratio {ratio:#x} is below the lowest tested landing (0x1199) — pass --force to override"
+            )));
+        }
+
+        gpu.set_top_rels_ratio_at(slot, ratio).map_err(Error::from)
+    }
+}
+
+/// Full TopRels relation table (GetInfo): index, src, dst, dir, default
+/// payload, and the LIVE GetControl ratio per populated relation (the
+/// regime-variant slots 10-13 carry non-zero live records even though only
+/// slot 0 is engine-tracked).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryTopRelsRelations;
+
+impl GpuOperation for QueryTopRelsRelations {
+    type Output = Vec<(usize, u32, u32, u32, u32, Option<u32>)>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QuerySubdomainFreqRatioSlot
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let relations = gpu.top_rels_relations().map_err(Error::from)?;
+        Ok(relations
+            .into_iter()
+            .map(|(idx, src, dst, dir, payload)| {
+                let live = gpu.top_rels_ratio_at(idx).unwrap_or(None);
+                (idx, src, dst, dir, payload, live)
+            })
+            .collect())
+    }
+}
+
+/// Reset one TopRels control slot to the DRIVER-REPORTED default (GetInfo
+/// relation payload for that slot — not a hard-coded constant). An
+/// un-enabled ratio arm (live control record = 0) is refused unless
+/// `force` — restoring a default onto a dormant arm is still an
+/// untested enable write.
+#[derive(Clone, Copy, Debug)]
+pub struct ResetSubdomainFreqRatio {
+    pub src: u32,
+    pub dst: u32,
+    pub index: Option<usize>,
+    pub force: bool,
+}
+
+impl ResetSubdomainFreqRatio {
+    fn slot(&self, gpu: &Gpu) -> Result<usize, Error> {
+        if let Some(idx) = self.index {
+            return Ok(idx);
+        }
+        resolve_toprels_relation(gpu, self.src, self.dst)?
+            .ok_or_else(|| Error::Custom("no matching TopRels relation".into()))
+    }
+}
+
+impl GpuOperation for ResetSubdomainFreqRatio {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetSubdomainFreqRatio
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let slot = self.slot(gpu)?;
+        let Some(default) = gpu.top_rels_default_ratio_at(slot).map_err(Error::from)? else {
+            return Ok(None);
+        };
+        if default <= 1 {
+            // payload 0 = no carrier, 1 = bare edge marker (40-series/Ada
+            // shape): there is no ratio default to restore on this edge
+            return Ok(None);
+        }
+        // Un-enabled arm: the live control record reads 0. Writing the
+        // default onto a dormant arm is an enable write — --force only.
+        let live = gpu.top_rels_ratio_at(slot).map_err(Error::from)?;
+        if live.unwrap_or(0) == 0 && !self.force {
+            return Err(Error::Custom(format!(
+                "TopRels relation {slot} ratio arm is not enabled (live record = 0) — pass --force to write it"
+            )));
+        }
+        gpu.set_top_rels_ratio_at(slot, default)
+            .map_err(Error::from)
+    }
 }
 
 /// Set a volt-rail to an ABSOLUTE target voltage by deriving the required µV
@@ -4577,6 +5431,160 @@ pub fn set_private_vf_oc_offset(
         }
     }
     Ok(report)
+}
+
+/// Global driver frame-rate limiter read (DRS setting 0x10834FEE — the exact
+/// path AB 19412's Framerate Limit uses). Driver-wide registry read: no GPU
+/// state is touched, the target is only the conventional pipeline anchor.
+/// `None` = unset (or GetSetting refused — AB-faithful).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiFramerateLimit;
+
+impl GpuOperation for QueryNvapiFramerateLimit {
+    type Output = Option<u32>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiFramerateLimit
+    }
+
+    fn run(&self, _target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        nvapi::framerate_limit().map_err(Error::from)
+    }
+}
+
+/// Global driver frame-rate limiter write (DRS registry, persists via
+/// SaveSettings; effective on new 3D contexts). `fps: None` deletes the
+/// setting. This is a driver-profile write, not a hardware state write, but
+/// it IS global and persistent — `force` is required as the intent gate.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiFramerateLimit {
+    pub fps: Option<u32>,
+    pub force: bool,
+}
+
+impl GpuOperation for SetNvapiFramerateLimit {
+    type Output = AppliedValue<Option<u32>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiFramerateLimit
+    }
+
+    fn run(&self, _target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        if !self.force {
+            return Err(Error::Custom(
+                "refused: set-framerate-limit persists into the driver profile registry (global, survives reboot). Re-run with --force".to_owned(),
+            ));
+        }
+        nvapi::set_framerate_limit(self.fps).map_err(|e| match e {
+            nvapi::Error::Nvapi(err) if err.status == nvapi::Status::SettingNotFound => Error::Custom(
+                "driver has no DRS setting 0x10834FEE (the legacy Frame Rate Limiter surface AB 19412 drives; NVAPI_SETTING_NOT_FOUND): this driver branch does not carry it — NVIDIA App's Max Frame Rate (FRL2) is the modern equivalent".to_owned(),
+            ),
+            other => Error::from(other),
+        })?;
+        Ok(AppliedValue {
+            requested: self.fps,
+            applied: self.fps,
+        })
+    }
+}
+
+/// Parameters of one I2C transaction over NVAPI (the AB/VRM tooling
+/// transport). Reads are the diagnostics path; writes are card-level
+/// hardware writes gated behind `--force`.
+#[derive(Clone, Debug)]
+pub struct NvapiI2cTransaction {
+    pub display_mask: u32,
+    pub port: Option<u8>,
+    pub port_is_ddc: bool,
+    pub address: u8,
+    pub register: Vec<u8>,
+    pub length: usize,
+    pub speed_khz: u32,
+}
+
+impl NvapiI2cTransaction {
+    fn speed(&self) -> nvapi::sys::i2c::I2cSpeed {
+        match self.speed_khz {
+            3 => nvapi::sys::i2c::I2cSpeed::_3Khz,
+            10 => nvapi::sys::i2c::I2cSpeed::_10Khz,
+            33 => nvapi::sys::i2c::I2cSpeed::_33Khz,
+            100 => nvapi::sys::i2c::I2cSpeed::_100Khz,
+            200 => nvapi::sys::i2c::I2cSpeed::_200Khz,
+            400 => nvapi::sys::i2c::I2cSpeed::_400Khz,
+            _ => nvapi::sys::i2c::I2cSpeed::Default,
+        }
+    }
+}
+
+/// I2C read (up to `length` bytes from `address`[:`register`]).
+#[derive(Clone, Debug)]
+pub struct QueryNvapiI2cRead(pub NvapiI2cTransaction);
+
+impl GpuOperation for QueryNvapiI2cRead {
+    type Output = Vec<u8>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiI2cRead
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let tx = &self.0;
+        let mut buffer = vec![0u8; tx.length];
+        let read = gpu
+            .inner()
+            .i2c_read(
+                tx.display_mask,
+                tx.port,
+                tx.port_is_ddc,
+                tx.address,
+                &tx.register,
+                &mut buffer,
+                tx.speed(),
+            )
+            .map_err(Error::from)?;
+        buffer.truncate(read);
+        Ok(buffer)
+    }
+}
+
+/// I2C write — raw bytes onto the bus. Highest-risk surface in this crate
+/// (VRM controllers, EEPROMs live on these buses); `force` required.
+#[derive(Clone, Debug)]
+pub struct SetNvapiI2cWrite {
+    pub transaction: NvapiI2cTransaction,
+    pub bytes: Vec<u8>,
+    pub force: bool,
+}
+
+impl GpuOperation for SetNvapiI2cWrite {
+    type Output = Vec<u8>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiI2cWrite
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        if !self.force {
+            return Err(Error::Custom(
+                "refused: I2C write drives card-level hardware (VRM/EEPROM buses). Re-run with --force".to_owned(),
+            ));
+        }
+        let gpu = target.nvapi()?;
+        let tx = &self.transaction;
+        gpu.inner()
+            .i2c_write(
+                tx.display_mask,
+                tx.port,
+                tx.port_is_ddc,
+                tx.address,
+                &tx.register,
+                &self.bytes,
+                tx.speed(),
+            )
+            .map_err(Error::from)?;
+        Ok(self.bytes.clone())
+    }
 }
 
 #[cfg(test)]

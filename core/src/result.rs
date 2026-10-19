@@ -37,6 +37,7 @@ pub enum OperationKind {
     QueryVfpPointVoltage,
     SetVfpFrequencyLock,
     ResetVfpFrequencyLock,
+    SetVfpLockEntries,
     SetGpcVoltLock,
     ResetPublicVftableOffset,
     ResetPublicVftableGpcLock,
@@ -67,17 +68,95 @@ pub enum OperationKind {
     SetNvapiDNotifier,
     QueryNvapiPowerCeiling,
     QueryNvapiVoltRails,
+    QueryNvapiFramerateLimit,
+    SetNvapiFramerateLimit,
+    QueryNvapiI2cRead,
+    SetNvapiI2cWrite,
     /// Enumerate the melonVolt voltage domains (0xA38ACF9D): per-domain
     /// min/step/max/default µV window (see `nvapi::VoltDevice`).
     QueryNvapiVoltDevices,
     /// PCI BAR topology (0xE4B701E3): per-BAR {tag, size-MiB, base} records
     /// (see `nvapi::BarRecord`).
     QueryNvapiBarInfo,
+    /// Compute/topology capability counters (GPU-Z 2.71 audit gap-fill):
+    /// VPE / raster-backend / TPC / SM / SP / core / shader-pipe /
+    /// shader-sub-pipe / partition counts + active-outputs mask, each
+    /// `None` where the board refuses the counter.
+    QueryNvapiComputeCaps,
+    /// PowerChannels policy table (0x67F31384, xOCD v4 2672B layout):
+    /// per-channel (policyId, subtype, min/default/max) — board power in
+    /// raw mW (policyId 0, defaults match the card TGP spec on all four
+    /// live generations) and per-rail OCP current in raw mA (50-series
+    /// (19,13)/(19,12), Ampere+Ada (13,19), Turing (6,19), Pascal none);
+    /// plus the live control-block values with geometry detection. See
+    /// docs/reverse-engineering/nvapi/xocd-oc-tool-audit.md §16.
+    QueryNvapiPowerChannels,
+    /// ExtendedLimits PowerCommand channel read (NDA 0x33AB0353 GET, packet
+    /// stamp v1|1320): one (channel, command) cell of the kernel power-command
+    /// lease — `command` 0xF8 = observed, 0xFE = the kernel power-cap request.
+    /// Live: only channel 0 answers on Pascal/Ada, where 0xFE reads the board
+    /// power in mW (matches NVML/the PowerChannels table); unpkg 0xF8 is the
+    /// 0xFFFFFFFF unset sentinel. See xocd audit §18.6/§18.8.
+    QueryNvapiPowerCommand,
+    /// PerfClientLimits 7-domain lock snapshot (0xE440B867 v2 780B):
+    /// clock-range locks (id 0/1, mode 2, kHz bounds — the `-lgc` family)
+    /// and the V/F voltage lock (id 6, mode 3, µV). Live-verified both
+    /// ways on RTX 2070 (xocd audit §16.2).
+    QueryNvapiBoostLocks,
+    /// ThermChannel capability map (0x0BC8163D v2) — populated channel
+    /// metadata + the primary channel index per thermal type (GPU_AVG /
+    /// hotspot / board / VRAM / PWR_SUPPLY), joined with the live
+    /// temperatures (0x65FE3AAD v2, 8.8 fixed point ÷256 °C; index
+    /// semantics 0=GPU/1=hotspot/VRAM=2(RTX50)/7(RTX40)/9(older)).
+    QueryNvapiThermalChannels,
+    /// Raw-register thermal views (NvAPI_GPU_RegisterOp 0x2EB3C140, read
+    /// flag): per-chip GDDR6x/GDDR7 sensor temperatures (0x9024C0 family,
+    /// LACT-parity) plus the Blackwell+ aggregated hotspot register
+    /// (0xAD0AA0) fallback.
+    QueryNvapiRegisterThermals,
+    /// PowerChannels control write (0xAFFC2279): raw driver-unit value on
+    /// any populated channel identity (mA on OCP current channels, mW on
+    /// the board-power row), generation-resolved by nvapi-rs
+    /// (`set_power_channel_value`, RMW + readback + rollback inside);
+    /// the CLI's nvvdd/msvdd aliases resolve to the generation's OCP pair,
+    /// or any `get-pwr-cur-info` index can be targeted. HIGH RISK:
+    /// raising an OCP ceiling disables a safety net.
+    SetNvapiPowerChannelValue,
+    /// ExtendedLimits PowerCommand write (NDA 0x17695269 SET, packet stamp
+    /// v1|1320): raw value on one (channel, command) cell, verified by
+    /// re-read inside nvapi-rs. `command` 0xFE drives the kernel-side
+    /// power-cap request — the caller owns the baseline. HIGH RISK on 0xFE.
+    SetNvapiPowerCommand,
+    /// TopRels relation-ratio read (0xCBFF71D0, U16.16 at the resolved
+    /// offset). Control GET only answers on 50-series (Pascal/Turing
+    /// -103, Ampere/Ada -1 live).
+    QueryNvapiTopRelsRatio,
+    /// TopRels relation-ratio write (0xEF3D20EA, 0.7–1.2 envelope; 0.9 =
+    /// the exact hardware literal 0xE660). DANGEROUS driver-wide
+    /// clock-tree write, 50-series only, full snapshot/rollback recipe.
+    SetNvapiTopRelsRatio,
+    /// Restore the TopRels GPC:XBAR ratio from the DRIVER-REPORTED default
+    /// (GetInfo relation payload — not a hard-coded value). No-op output
+    /// None when the driver exposes no default for the edge.
+    ResetTopRelsRatioToDefault,
+    SetSubdomainFreqRatio,
+    ResetSubdomainFreqRatio,
+    QuerySubdomainFreqRatioSlot,
+    QueryTopRelsRelations,
     SetNvapiVoltRailOffset,
     /// Set a volt-rail to an absolute target voltage (mV) by deriving the
     /// required µV offset from the live control/status snapshot. Shares the
     /// melonVolt write path with [`OperationKind::SetNvapiVoltRailOffset`].
     SetNvapiVoltRailTarget,
+    /// Write one melonVolt payload slot (0..6) of a volt-rail control entry.
+    /// Slot 0 = the µV offset [`OperationKind::SetNvapiVoltRailOffset`]
+    /// covers; slot 2 = VRM max wall offset, slot 3 = VMIN/min-hold offset
+    /// (both P100/582.41-pinned); slots 1/4/5 are retained-but-quiet
+    /// firmware-opaque dwords.
+    SetNvapiVoltRailSlot,
+    /// Zero melonVolt payload slots back to stock (default: mapped slots
+    /// 0..3; `slot` narrows to one, 0..5 honored as-is per user choice).
+    ResetNvapiVoltRailLimit,
     /// Query the controllable clock-domain block (private ClockClient
     /// GetControl, RM 0x2080901b) — mask + per-domain type/range/offset.
     /// The Blackwell XBar family (reverse/melonvolt/xbar.txt).
@@ -301,6 +380,7 @@ impl OperationKind {
                 | SetFanPercent
                 | SetVfpFrequencyLock
                 | ResetVfpFrequencyLock
+                | SetVfpLockEntries
                 | SetGpcVoltLock
                 | ResetPublicVftableOffset
                 | ResetPublicVftableGpcLock
@@ -345,6 +425,13 @@ impl OperationKind {
                 | SetNvapiPerfFreqCap
                 | SetNvapiOverclockedPstates
                 | SetNvapiPstates20PrivateDelta
+                | SetNvapiPowerChannelValue
+                | SetNvapiPowerCommand
+                | SetNvapiTopRelsRatio
+                | SetNvapiVoltRailSlot
+                | ResetNvapiVoltRailLimit
+                | SetNvapiFramerateLimit
+                | SetNvapiI2cWrite
         )
     }
 }
