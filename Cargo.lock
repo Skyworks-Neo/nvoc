@@ -1104,6 +1104,8 @@ name = "nvoc-cli-common"
 version = "0.3.0-alpha.1"
 dependencies = [
  "colored 3.1.1",
+ "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
