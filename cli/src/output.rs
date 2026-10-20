@@ -811,18 +811,24 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
             false,
         ));
     }
-    // VP footers: per-ID memory clocks (CPR footer walk, file order)
+    // VP footers: per-ID memory clocks (CPR footer walk, file order). The
+    // footer id is the pstate slot encoding; label it like the profiles row.
     if let Some(footers) = output.get("footers").and_then(Value::as_array) {
         let items: Vec<String> = footers
             .iter()
             .map(|f| {
                 let id = f.get("id").and_then(Value::as_str).unwrap_or("?");
+                let pstate = f
+                    .get("pstate")
+                    .and_then(Value::as_str)
+                    .map(|p| format!("({p})"))
+                    .unwrap_or_default();
                 let mem = f.get("mem_clock_mhz").and_then(Value::as_i64).unwrap_or(0);
                 let ddr = f
                     .get("mem_clock_ddr_mhz")
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
-                format!("{id} {mem}/{ddr}")
+                format!("{id}{pstate} {mem}/{ddr}")
             })
             .collect();
         if !items.is_empty() {
@@ -1422,6 +1428,99 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 false,
             ));
         }
+        // strap variants 聚合渲染：按 (type/vendor/density/org) 分组，列出
+        // 各组的 strap 槽（同组热/功率参数一致才省略）。
+        if let Some(variants) = mem
+            .get("info")
+            .and_then(|i| i.get("variants"))
+            .and_then(Value::as_array)
+            && !variants.is_empty()
+        {
+            let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+            let mut extras = std::collections::BTreeSet::new();
+            for v in variants {
+                let mut key_bits: Vec<String> = Vec::new();
+                for key in ["type", "vendor", "density"] {
+                    match v.get(key).and_then(Value::as_str) {
+                        Some(val) if val != "?" => key_bits.push(val.to_string()),
+                        _ => key_bits.push("?".into()),
+                    }
+                }
+                let org = v.get("org").and_then(Value::as_u64);
+                let org_part = org
+                    .map(|o| format!("org x{o:02x}"))
+                    .unwrap_or_else(|| "org ?".into());
+                key_bits.push(org_part);
+                let key = key_bits.join(" ");
+                let strap = v
+                    .get("strap")
+                    .and_then(Value::as_u64)
+                    .map(|st| format!("x{st:02x}"))
+                    .unwrap_or_else(|| "?".into());
+                // 同键下其它字段不一致就记进 extras（不省略差异）。
+                let tj = v.get("tj_max_fan_limit").and_then(Value::as_u64);
+                if let Some(tj) = tj
+                    && tj != 0
+                {
+                    extras.insert(format!("tjmax {tj}C"));
+                }
+                match groups.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, straps)) => straps.push(strap),
+                    None => groups.push((key, vec![strap])),
+                }
+            }
+            // type/vendor 双缺的组是未填的 strap 占位槽，不渲染。
+            groups.retain(|(k, _)| !k.starts_with("? ? "));
+            if !groups.is_empty() {
+                let items: Vec<String> = groups
+                    .iter()
+                    .map(|(key, straps)| {
+                        let shown = straps.iter().take(8).cloned().collect::<Vec<_>>().join(",");
+                        let more = if straps.len() > 8 {
+                            format!(",…(+{})", straps.len() - 8)
+                        } else {
+                            String::new()
+                        };
+                        format!("{key} [{shown}{more}]")
+                    })
+                    .collect();
+                let extra_note = if extras.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " | {}",
+                        extras.iter().cloned().collect::<Vec<_>>().join(", ")
+                    )
+                };
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    memory variants: {}{}", items.join(" | "), extra_note),
+                    false,
+                ));
+            }
+        }
+        // 时序表形状（时序字节未 RE，只给结构）。
+        if let Some(tw) = mem.get("tweak_table").and_then(Value::as_object)
+            && tw.get("timing_sets").is_some()
+        {
+            let base = tw
+                .get("base_entry_size")
+                .and_then(Value::as_u64)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into());
+            let ext = tw
+                .get("extended_entry_size")
+                .and_then(Value::as_u64)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into());
+            let ver = tw.get("version").and_then(Value::as_str).unwrap_or("?");
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    memory timings: v{ver}, {} sets (base {base}B, ext {ext}B; bytes not decoded)",
+                    tw.get("timing_sets").and_then(Value::as_i64).unwrap_or(0)
+                ),
+                false,
+            ));
+        }
     }
     // Thermal limits (GPU-Z aligned: rated / maximum from ThermalPolicy)
     if let Some(tp) = output.get("thermal_policy")
@@ -1469,8 +1568,19 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
         ));
     }
     // Fan cooler envelope (per-cooler max duty / max RPM; count = cooler
-    // controllers the ROM provisions — NVAPI cooler Count same semantics)
-    if let Some(fc) = output.get("fan_cooler")
+    // controllers the ROM provisions — NVAPI cooler Count same semantics).
+    // Skipped when the structural layer already rendered the same cooler
+    // table with its full channel rows (3x families): the old line is a
+    // strict subset (duty/max-rpm) of the structural fan channels row.
+    let structural_fans_rendered = output
+        .get("structural")
+        .and_then(|st| st.get("tables_v3"))
+        .and_then(|t| t.get("fans"))
+        .and_then(|f| f.get("present"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !structural_fans_rendered
+        && let Some(fc) = output.get("fan_cooler")
         && fc.get("present").and_then(Value::as_bool) == Some(true)
         && let Some(coolers) = fc.get("coolers").and_then(Value::as_array)
     {
@@ -4235,7 +4345,7 @@ mod tests {
         assert!(text.contains("0x0f(P0) 1911/1811"), "{text}");
         assert!(text.contains("mem clock (DDR): 4004 MHz"), "{text}");
         assert!(
-            text.contains("footers (DRAM/DDR MHz): 0x0f 2002/4004"),
+            text.contains("footers (DRAM/DDR MHz): 0x0f(P0) 2002/4004"),
             "{text}"
         );
         assert!(
