@@ -71,4 +71,6 @@ libloading = "0.9"
 # core/src/rm.rs 的 /dev/nvidiactl ioctl 通道（Linux-only）。
 libc = "0.2"
 # kmd 内嵌 pmxdrv.sys 载荷指纹钉死测试(core/tests/kmd_pmxdrv_embedded.rs)。
-sha2 = "0.10"
+# 钉 0.9 与 pwhash→sha2 传递链同版:0.10 会在锁内制造 sha2/digest/
+# block-buffer 重复版本,ci.yml 的 duplicate-crate 检查直接拒。
+sha2 = "0.9"
