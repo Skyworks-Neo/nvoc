@@ -838,6 +838,34 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
             ));
         }
     }
+    if let Some(dual) = output.get("dual_bank") {
+        let banks = dual.get("banks").and_then(Value::as_u64).unwrap_or(0);
+        match dual.get("identical").and_then(Value::as_bool) {
+            Some(true) => {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dual bank: {banks} banks, contents identical (bank0 rendered)"),
+                    false,
+                ));
+            }
+            Some(false) => {
+                let fields: Vec<String> = dual
+                    .get("differences")
+                    .and_then(Value::as_array)
+                    .map(|ds| {
+                        ds.iter()
+                            .filter_map(|d| d.get("field").and_then(Value::as_str))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    dual bank: {banks} banks DIFFER in {} (bank0 rendered; see dual_bank.differences)",
+                    fields.join(", ")
+                )));
+            }
+            _ => {}
+        }
+    }
     push_detail_shared_sections(output, &mut lines);
     lines
 }
@@ -961,9 +989,21 @@ fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
                         format!("{:.0} W", v as f64 / scale)
                     }
                 };
+                let empty = rows
+                    .iter()
+                    .filter(|r| {
+                        r.get("kind").and_then(Value::as_u64) == Some(0)
+                            && r.get("maximum_raw").and_then(Value::as_u64) == Some(0)
+                    })
+                    .count();
+                let empty_note = if empty > 0 {
+                    format!(", {empty} empty")
+                } else {
+                    String::new()
+                };
                 lines.push(nvoc_cli_common::color::stylize(
                     &format!(
-                        "    power policy (v3x {ver} {family}{nb}): TGP row{tgp} {}/{}/{}, {} rows",
+                        "    power policy (v3x {ver} {family}{nb}): TGP row{tgp} {}/{}/{}, {} rows{empty_note}",
                         fmt(tgp_row
                             .get("minimum_raw")
                             .and_then(Value::as_u64)

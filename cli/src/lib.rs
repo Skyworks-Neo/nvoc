@@ -8032,6 +8032,56 @@ fn structural_sections_json(image: &[u8]) -> Value {
     out
 }
 
+/// VP bank 可比摘要：points 频率序列 + profiles (id, limit1/3) + footers
+/// (id, DDR MHz) + mem clock。双 bank 对照的单位（Value 相等即一致）。
+fn vp_bank_summary(t: &nvoc_core::vbios::legacy::VpTable) -> Value {
+    json!({
+        "points": t.entries.iter().map(|e| json!({
+            "freq_mhz": e.freq_mhz(),
+        })).collect::<Vec<_>>(),
+        "profiles": t.profiles.iter().filter(|p| !p.is_empty()).map(|p| json!({
+            "id": format!("{:#04x}", p.id),
+            "limits": p.limit_mhz(),
+        })).collect::<Vec<_>>(),
+        "footers": t.footers.iter().filter(|f| !f.is_empty()).map(|f| json!({
+            "id": format!("{:#04x}", f.id),
+            "mem_clock_ddr_mhz": f.mem_clock_ddr_mhz(),
+        })).collect::<Vec<_>>(),
+        "mem_clock_mhz": t.mem_clock_mhz(),
+    })
+}
+
+/// 双 bank 对照：逐字段找差异；一致时 `identical: true`，否则列出每个
+/// 不同字段的两边值（对照模式——一致不展开，不一致才展开）。
+fn dual_bank_report(tables: &[nvoc_core::vbios::legacy::VpTable]) -> Option<Value> {
+    if tables.len() < 2 {
+        return None;
+    }
+    let a = vp_bank_summary(&tables[0]);
+    let b = vp_bank_summary(&tables[1]);
+    if a == b {
+        return Some(json!({
+            "banks": tables.len(),
+            "identical": true,
+        }));
+    }
+    let mut differences = Vec::new();
+    for key in ["points", "profiles", "footers", "mem_clock_mhz"] {
+        if a.get(key) != b.get(key) {
+            differences.push(json!({
+                "field": key,
+                "bank0": a.get(key),
+                "bank1": b.get(key),
+            }));
+        }
+    }
+    Some(json!({
+        "banks": tables.len(),
+        "identical": false,
+        "differences": differences,
+    }))
+}
+
 fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
     if nvoc_core::vbios::legacy::is_blackwell_container(image) {
         return decode_blackwell_detail(image);
@@ -8534,11 +8584,16 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "boost_states": boost_states,
             "voltage_freq_ladder": ladder,
             "points": points,
+            "dual_bank": dual_bank_report(&tables),
             "structural": structural_sections_json(image),
-            "warnings": if tables.len() > 1 {
-                vec!["dual-image VP tables found; only the first image is decoded".to_string()]
-            } else {
-                vec![]
+            "warnings": match dual_bank_report(&tables) {
+                Some(r) if r.get("identical").and_then(Value::as_bool) == Some(false) => {
+                    vec![format!(
+                        "dual VP banks differ: {} field(s) diverge (see dual_bank.differences; bank0 rendered)",
+                        r.get("differences").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0)
+                    )]
+                }
+                _ => vec![],
             },
         })),
         None => {
@@ -10097,6 +10152,38 @@ fn summarize_errors(execution: &Execution) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// 双 bank 对照：一致 → identical:true（不展开）；footers 差异 →
+    /// identical:false 且 differences 指名 bank0/bank1 两侧（对照模式）。
+    #[test]
+    fn dual_bank_report_compare_mode() {
+        use nvoc_core::vbios::legacy::{VpFooter, VpGeneration, VpTable};
+        let bank = |half: u16| VpTable {
+            generation: VpGeneration::TuringPlus,
+            header_offset: 0,
+            ladder_offset: 0,
+            profiles: vec![],
+            entries: vec![],
+            footers: vec![VpFooter {
+                id: 0x0f,
+                offset: 0,
+                mem_x2_raw: 0x4000 | half,
+                mem_half_raw: half,
+            }],
+            mem_clock_raw: 0x4000 | half,
+        };
+        let identical = dual_bank_report(&[bank(2002), bank(2002)]).unwrap();
+        assert_eq!(identical.get("identical"), Some(&json!(true)));
+        assert!(identical.get("differences").is_none());
+        let diff = dual_bank_report(&[bank(2002), bank(2500)]).unwrap();
+        assert_eq!(diff.get("identical"), Some(&json!(false)));
+        let diffs = diff.get("differences").and_then(Value::as_array).unwrap();
+        assert_eq!(diffs.len(), 2, "footers + mem_clock_mhz diverge: {diffs:?}");
+        assert_eq!(
+            diffs[0].get("field").and_then(Value::as_str),
+            Some("footers")
+        );
+    }
+
     use super::*;
 
     /// set-pwr-cur-limit value grammar: the plain number is the channel's big
