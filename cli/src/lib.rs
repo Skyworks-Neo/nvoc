@@ -706,9 +706,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             (
                 Command::GetVbios,
                 CommandSpec {
-                    options: Box::leak(Box::new(["out", "dump", "enable-detail-parser", "maxwell-vftable-decode", "input"])),
+                    options: Box::leak(Box::new(["out", "dump", "verbose", "input"])),
                     formatter: Some(output::format_maxwell_vftable_output),
-                    ..CommandSpec::new("get-vbios", Group::Info, "Read and decode a VBIOS image. -i/--input <file> parses a local ROM dump OFFLINE (no GPU/NvAPI needed — works on Linux); without it the live image is read via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F, Windows-only). Live: --out <file> writes the raw image; --dump prints the full BIT token table + Fermi-model raw blocks. Both modes: --enable-detail-parser runs the full detail decoder — Pascal+ Virtual P-State ladder + profiles + footers, Maxwell/Kepler GPU Boost 2.0 ladder (BIT 'P'+0x34), power/thermal/fan tables, DCB display map, memory tables, falcon ucode inventory, board identity. --maxwell-vftable-decode is a deprecated alias of it (superset: the Boost 2.0 ladder is now a section of the detail output)")
+                    ..CommandSpec::new("get-vbios", Group::Info, "Read and decode a VBIOS image. -i/--input <file> parses a local ROM dump OFFLINE (no GPU/NvAPI needed — works on Linux); without it the live image is read via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F, Windows-only). Live: --out <file> writes the raw image; --dump prints the full BIT token table + Fermi-model raw blocks. Both modes: --verbose runs the full detail decoder — Pascal+ Virtual P-State ladder + profiles + footers, Maxwell/Kepler GPU Boost 2.0 ladder (BIT 'P'+0x34), power/thermal/fan tables, DCB display map, memory tables, falcon ucode inventory, board identity, plus the structural layer (PCI/NPDS image chain, per-family power policy/channels, rail/VFE voltage limits, clock ranges, fan tables; GB20x SHA384 object-directory integrity and override profiles). --verbose merges the retired --enable-detail-parser / --maxwell-vftable-decode")
                 },
             ),
             (
@@ -1916,7 +1916,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
         "verbose" => Arg::new("verbose")
             .long("verbose")
             .action(ArgAction::SetTrue)
-            .help("Show verbose status (VFP table, raw power-monitor descriptors, D-Notifier D1-D5 cap table)"),
+            .help("Verbose mode. get-vbios: runs the full detail decoder (merges the retired --enable-detail-parser / --maxwell-vftable-decode) — Pascal+ VP ladder, Maxwell/Kepler Boost 2.0 V/F ladder, power/thermal/fan/DCB/memory/falcon/identity, plus the structural layer (PCI/NPDS image chain, per-family power policy/channels, rail/VFE REL ceiling + evaluated VMIN, GV HAL clock ranges, five-table fan channels; GB20x SHA384 object-directory integrity + override profiles). get-status/get-public-vftable: VFP table, raw power-monitor descriptors, D-Notifier D1-D5 cap table"),
         "bank" => Arg::new("bank")
             .long("bank")
             .value_name("BANK")
@@ -2098,20 +2098,12 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("dump")
             .action(ArgAction::SetTrue)
             .help("Print the full BIT token table + Fermi-model raw blocks instead of the brief summary"),
-        "maxwell-vftable-decode" => Arg::new("maxwell-vftable-decode")
-            .long("maxwell-vftable-decode")
-            .action(ArgAction::SetTrue)
-            .help("Deprecated alias of --enable-detail-parser (the Maxwell GPU Boost 2.0 ladder it used to decode is now a section of the detail output)"),
         "input" => Arg::new("input")
             .short('i')
             .long("input")
             .value_name("FILE")
             .action(ArgAction::Set)
             .help("Parse a local VBIOS ROM dump instead of reading the live GPU image (offline mode: no NvAPI, works on Linux)"),
-        "enable-detail-parser" => Arg::new("enable-detail-parser")
-            .long("enable-detail-parser")
-            .action(ArgAction::SetTrue)
-            .help("Run the full detail decoder: Pascal+ Virtual P-State clock ladder (pattern-scanned '20 XX 01' table, generation-coded header: 0x10/12 Pascal, 0x13 Turing, 0x15 Ampere, 0x17 Ada; u32/32768 MHz entries, no per-point voltage) + boost profiles + VP memory footers; Maxwell/Kepler GPU Boost 2.0 V/F ladder (BIT 'P'+0x34 v0x10, voltage resolved through the vmap table); the power table (target/limit/slider); the BIT 'P' thermal/fan tables (nouveau semantics + PERF_PTRS slots); the DCB display map; memory clock/tweak/info tables; falcon ucode inventory; board identity"),
         "flags" => Arg::new("flags")
             .long("flags")
             .value_name("BITS")
@@ -2245,8 +2237,6 @@ fn collect_named_options(
             | "rpm"
             | "offset"
             | "dump"
-            | "maxwell-vftable-decode"
-            | "enable-detail-parser"
             | "target"
             | "freq"
             | "volt"
@@ -4319,10 +4309,9 @@ fn execute_target(
             // token table + Fermi-model raw blocks);
             // --out <file> writes the raw image.
             let image = run(target, QueryVbiosImage)?.output;
-            // --maxwell-vftable-decode is a deprecated alias: the Boost 2.0
-            // ladder it used to decode is now a section of the detail output.
-            let detail = invocation.options.contains_key("enable-detail-parser")
-                || invocation.options.contains_key("maxwell-vftable-decode");
+            // --verbose 合并了退役的 --enable-detail-parser /
+            // --maxwell-vftable-decode（Boost 2.0 阶梯现为 detail 输出的一节）。
+            let detail = invocation.options.contains_key("verbose");
             match invocation.options.get("out").and_then(|v| v.first()) {
                 Some(path) => {
                     std::fs::write(path, &image).map_err(|e| {
@@ -6173,9 +6162,8 @@ fn execute_get_vbios_file(
         )));
     }
 
-    // --maxwell-vftable-decode is a deprecated alias of --enable-detail-parser.
-    let detail = invocation.options.contains_key("enable-detail-parser")
-        || invocation.options.contains_key("maxwell-vftable-decode");
+    // --verbose 合并了退役的 --enable-detail-parser / --maxwell-vftable-decode。
+    let detail = invocation.options.contains_key("verbose");
     let dump = invocation.options.contains_key("dump");
     let value = if detail {
         decode_vbios_detail(&image)?
@@ -6281,9 +6269,8 @@ fn boost_ladder_json(image: &[u8]) -> CliResult<Option<Value>> {
     })))
 }
 
-/// Full detail decoder for `get-vbios --enable-detail-parser` (née
-/// --pascal-vp-decode, now also covering the deprecated
-/// --maxwell-vftable-decode). Unlike the Maxwell ladder (BIT 'P'+0x34), the
+/// Full detail decoder for `get-vbios --verbose` (née --pascal-vp-decode).
+/// Unlike the Maxwell ladder (BIT 'P'+0x34), the
 /// Pascal+ VP table sits outside the BIT pointer chain and is pattern-scanned:
 /// a `20 XX 01` header whose length byte encodes the generation (0x10/12
 /// Pascal, 0x13 Turing, 0x15 Ampere, 0x17 Ada), boost profiles walking
@@ -6393,8 +6380,186 @@ fn decode_blackwell_detail(image: &[u8]) -> CliResult<Value> {
             "xve_sub_vendor": format!("{:#06x}", n.xve_sub_vendor),
             "xve_subsystem_id": format!("{:#06x}", n.xve_subsystem_id),
         })),
+        "structural": structural_sections_json(image),
         "warnings": Vec::<String>::new(),
     }))
+}
+
+/// 结构层（vix-editor 对照补差）detail JSON：镜像链 + 架构门 + 按族表解码。
+/// 任何一层解不出都降级为段落内 `unsupported`——fail-closed 的形状（如
+/// compare REL、未审时钟布局）就地标注，而不是让整个 detail 失败。
+fn structural_sections_json(image: &[u8]) -> Value {
+    use nvoc_core::vbios_families::Family;
+    let (pci, extended, issues) = nvoc_core::vbios_image_chain::scan_images(image);
+    let image_entry = |p: &nvoc_core::vbios_image_chain::RomImage| {
+        json!({
+            "kind": if p.kind == nvoc_core::vbios_image_chain::ImageKind::Pcir { "PCIR" } else { "NPDS" },
+            "start": p.start,
+            "end": p.end,
+            "size": p.size,
+            "vendor": format!("{:04x}", p.vendor),
+            "device": format!("{:04x}", p.device),
+            "type": format!("{:#04x}", p.image_type),
+            "last": p.last,
+        })
+    };
+    let mut chain = json!({
+        "pci_images": pci.iter().map(image_entry).collect::<Vec<_>>(),
+        "npds_images": extended.iter().map(image_entry).collect::<Vec<_>>(),
+        "issues": issues.iter().map(|i| json!({"code": i.code_name(), "offset": i.offset})).collect::<Vec<_>>(),
+    });
+    let Some(legacy) = pci.iter().find(|p| p.is_legacy()) else {
+        chain["status"] = json!("no-legacy-image");
+        return json!({"image_chain": chain});
+    };
+    let versions = nvoc_core::vbios_families::scan_bios_versions(image);
+    let refs: Vec<&str> = versions.iter().map(|s| s.as_str()).collect();
+    let arch = nvoc_core::vbios_families::architecture(legacy.device, &refs);
+    let mut out = json!({
+        "image_chain": chain,
+        "architecture": {
+            "pci_device": format!("10de:{:04x}", legacy.device),
+            "family": arch.family.map(|f| f.name()),
+            "product": arch.product,
+            "in_scope": arch.in_scope,
+            "bios_family_consistent": arch.bios_family_consistent,
+            "bios_versions": versions,
+        },
+    });
+    let Some((family, inferred)) = nvoc_core::vbios_tables_v3::detect_family(image) else {
+        out["status"] = json!("pre-vliw-legacy");
+        return out;
+    };
+    if inferred {
+        out["architecture"]["family_inferred"] = json!(true);
+    }
+    if family == Family::BlackwellGb20x {
+        let layout = match nvoc_core::vbios_gb20x::parse_layout(image) {
+            Ok(l) => l,
+            Err(e) => {
+                out["gb20x"] = json!({"status": "unsupported", "reason": e.to_string()});
+                return out;
+            }
+        };
+        let integrity = nvoc_core::vbios_gb20x::integrity(image, &layout);
+        out["gb20x"] = json!({
+            "integrity": {
+                "valid": integrity.valid,
+                "object_count": integrity.object_count,
+                "directory_sha384_valid": integrity.directory_sha384_valid,
+                "bad_object_ids": integrity.bad_object_ids,
+                "image_checksums": integrity.image_checksums,
+                "legacy_directory_present": layout.legacy_dir.is_some(),
+            },
+            "power_policy": nvoc_core::vbios_gb20x::power_policy(image, &layout).ok().map(|p| json!({
+                "version": format!("{:#04x}", p.version),
+                "notebook": p.notebook,
+                "tgp_row": if p.notebook { 2 } else { 8 },
+                "rows": p.rows.iter().map(|r| json!({
+                    "row": r.row, "kind": r.kind,
+                    "minimum_raw": r.minimum_raw, "default_raw": r.default_raw, "maximum_raw": r.maximum_raw,
+                })).collect::<Vec<_>>(),
+            })),
+            "rails": nvoc_core::vbios_gb20x::rails(image, &layout).ok().map(|t| json!(t.rows.iter().map(|r| json!({
+                "name": r.name, "boot_voltage_uv": r.boot_voltage_uv,
+                "selectors": r.selectors.iter().map(|(role, off, raw)| json!({
+                    "role": role.name(), "offset": off, "raw": raw, "absent": *raw == 0xFFFF,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>())),
+            "rel_limits": nvoc_core::vbios_gb20x::rail_limits(image, &layout).ok().map(|l| json!(l.iter().map(|r| json!({
+                "rail": r.rail_name, "rel_equation": r.rel_equation_index,
+                "max_mv": r.output_maximum_uv as f64 / 1000.0,
+                "maximum_offset": r.maximum_offset,
+            })).collect::<Vec<_>>())),
+            "vmin": nvoc_core::vbios_gb20x::rail_vmin(image, &layout).ok().map(|v| json!(v.iter().map(|r| json!({
+                "rail": r.rail_name, "pinned": r.pinned,
+                "value_mv": r.value_uv.map(|u| u as f64 / 1000.0),
+                "diagnostic": r.diagnostic,
+            })).collect::<Vec<_>>())),
+            "clocks": nvoc_core::vbios_gb20x::clock_ranges(image, &layout).ok().map(|c| json!(c.iter().map(|r| json!({
+                "domain": r.domain, "min_mhz": r.minimum_mhz, "max_mhz": r.maximum_mhz,
+                "range_stored": r.range_stored,
+            })).collect::<Vec<_>>())),
+            "profiles": nvoc_core::vbios_gb20x::power_profiles(image, &layout).ok().map(|p| json!(p.iter().map(|prof| json!({
+                "index": prof.index,
+                "entries": prof.entries.iter().map(|e| json!({
+                    "policy": e.policy, "field": if e.default_field { "default" } else { "maximum" },
+                    "value_raw": e.value_raw,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>())),
+        });
+        return out;
+    }
+    // 3x 世代（Turing/Ampere/Ada）
+    let ctx = match nvoc_core::vbios_tables_v3::TableContext::new(image, family) {
+        Ok(c) => c,
+        Err(e) => {
+            out["tables_v3"] = json!({"status": "unsupported", "reason": e.to_string()});
+            return out;
+        }
+    };
+    out["tables_v3"] = json!({
+        "family": family.name(),
+        "chain_images": ctx.chain.len(),
+        "duplicate_banks": ctx.chain_count,
+        "integrity": ctx.integrity(image).into_iter().map(|(name, ok)| json!({"image": name, "checksum_zero": ok})).collect::<Vec<_>>(),
+        "power_policy": nvoc_core::vbios_tables_v3::power_policy(image, &ctx).ok().map(|p| json!({
+            "version": format!("{:#04x}", p.version),
+            "notebook": p.notebook,
+            "tgp_index": p.tgp_index,
+            "rows": p.rows.iter().map(|r| json!({
+                "row": r.row, "kind": r.kind, "channel": r.channel_index,
+                "minimum_raw": r.minimum_raw, "default_raw": r.default_raw, "maximum_raw": r.maximum_raw,
+                "unit": if r.unit_ma { "mA" } else { "mW" },
+                "maximum_offset": r.maximum_offset,
+            })).collect::<Vec<_>>(),
+        })),
+        "power_channels": nvoc_core::vbios_tables_v3::power_channels(image, &ctx).ok().map(|c| json!({
+            "count": c.count, "entry_size": c.entry_size,
+            "total_board_channels": c.entries.iter().enumerate().filter(|(_, e)| e.is_total_board()).map(|(i, _)| i).collect::<Vec<_>>(),
+            "twelve_v_inputs": c.entries.iter().enumerate().filter(|(_, e)| e.is_12v_input()).map(|(i, _)| i).collect::<Vec<_>>(),
+        })),
+        "rails": nvoc_core::vbios_tables_v3::rails(image, &ctx).ok().map(|t| json!(t.rows.iter().map(|r| json!({
+            "name": r.name, "boot_voltage_uv": r.boot_voltage_uv,
+            "selectors": r.selectors.iter().map(|(role, off, raw)| json!({
+                "role": role.name(), "offset": off, "raw": raw, "absent": *raw == 0xFF,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>())),
+        "rel_limits": nvoc_core::vbios_tables_v3::rail_limits(image, &ctx).ok().map(|l| json!(l.iter().map(|r| json!({
+            "rail": r.rail_name, "kind": format!("{:?}", r.equation_kind),
+            "max_mv": r.output_maximum_uv as f64 / 1000.0,
+            "temperature_derated": r.equation_kind == nvoc_core::vbios_vfe::OutputKind::TemperatureDerated,
+        })).collect::<Vec<_>>())),
+        "vmin": nvoc_core::vbios_tables_v3::rail_vmin(image, &ctx).ok().map(|v| json!(v.iter().map(|r| json!({
+            "rail": r.rail_name, "pinned": r.pinned,
+            "value_mv": r.value_uv.map(|u| u as f64 / 1000.0),
+            "diagnostic": r.diagnostic,
+        })).collect::<Vec<_>>())),
+        "clocks": nvoc_core::vbios_tables_v3::clock_ranges(image, &ctx).ok().map(|c| json!(c.iter().map(|r| json!({
+            "domain": r.domain, "min_mhz": r.minimum_mhz, "max_mhz": r.maximum_mhz,
+            "range_stored": r.range_stored,
+        })).collect::<Vec<_>>())),
+        "fans": match nvoc_core::vbios_tables_v3::fan_tables(image, &ctx) {
+            Ok(None) => json!({"present": false}),
+            Ok(Some(f)) => json!({
+                "present": true,
+                "channels": f.channels,
+                "rows": f.rows.iter().map(|r| json!({
+                    "index": r.index, "active": r.active,
+                    "level_min": r.level_minimum, "level_max": r.level_maximum,
+                    "rpm_min": r.rpm_minimum, "rpm_max": r.rpm_maximum,
+                    "pwm_frequency_hz": r.pwm_frequency_hz,
+                    "curve_levels": r.curve.levels,
+                    "curve_points": r.curve.points.iter().map(|(t, rpm)| json!({
+                        "temp_c": f64::from(*t) / 32.0, "rpm": rpm,
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "warnings": f.warnings,
+            }),
+            Err(e) => json!({"present": "unknown", "reason": e.to_string()}),
+        },
+    });
+    out
 }
 
 fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
@@ -6899,6 +7064,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "boost_states": boost_states,
             "voltage_freq_ladder": ladder,
             "points": points,
+            "structural": structural_sections_json(image),
             "warnings": if tables.len() > 1 {
                 vec!["dual-image VP tables found; only the first image is decoded".to_string()]
             } else {
@@ -6929,6 +7095,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             base["flash_directory"] = flash_directory;
             base["clock_states"] = clock_states;
             base["boost_states"] = boost_states;
+            base["structural"] = structural_sections_json(image);
             Ok(base)
         }
     }
@@ -8418,7 +8585,7 @@ mod tests {
             .insert("input".to_string(), vec![path.to_string()]);
         invocation
             .options
-            .insert("enable-detail-parser".to_string(), vec!["true".to_string()]);
+            .insert("verbose".to_string(), vec!["true".to_string()]);
 
         let execution = execute(&invocation).expect("file mode executes");
         assert_eq!(execution.backend, "file");
@@ -8461,11 +8628,9 @@ mod tests {
         invocation
             .options
             .insert("input".to_string(), vec![path.to_string()]);
-        // deprecated alias must behave identically to --enable-detail-parser
-        invocation.options.insert(
-            "maxwell-vftable-decode".to_string(),
-            vec!["true".to_string()],
-        );
+        invocation
+            .options
+            .insert("verbose".to_string(), vec!["true".to_string()]);
 
         let execution = execute(&invocation).expect("file mode executes");
         assert!(!execution.has_errors());
