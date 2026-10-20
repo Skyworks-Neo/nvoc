@@ -1200,6 +1200,65 @@ fn percent_restore(gpu: &nvapi::hi::Gpu, live: &board::BoardLiveValues, steps: &
     steps.push("  current restore not exact (readback ≠ pre-probe value) — correct manually with nvidia-smi -pl".into());
 }
 
+// ---------------------------------------------------------------- 嵌入式驱动载荷
+
+/// 内嵌 pmxdrv.sys 载荷(仓库内 Intel 2019 签名构建,指纹见
+/// [`PMXDRV_SYS_SHA256`])。仅 x64 windows:内核态驱动必须与内核同架构,
+/// ARM64 Windows 无 x64 内核模拟,嵌入也无法装载,故不给 arm64 目标带上。
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub const PMXDRV_SYS: &[u8] = include_bytes!("pmxdrv.sys");
+
+/// 载荷指纹,钉死防 .sys 被静默调包(与 core/tests/kmd_pmxdrv_probe_live.rs
+/// 头注、core/tests/kmd_pmxdrv_embedded.rs 三方一致)。
+pub const PMXDRV_SYS_SHA256: &str =
+    "b1a8ee1222eea5f199028d90b9b77c2acf46d6d84a9e125403b2888c6f681c72";
+
+/// 释放内嵌 pmxdrv.sys 到 %TEMP%\nvoc-pmxdrv.sys(SCM 装载内核驱动必须有
+/// 磁盘镜像)。确定性命名覆盖写,崩溃残留不累积;落盘后 re-read 逐字节
+/// 比对,防部分写。
+///
+/// # Errors
+/// 写盘或读回校验失败即 [`KmdPowerError::Service`]。
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub fn extract_pmxdrv_sys() -> Result<PathBuf, KmdPowerError> {
+    let path = std::env::temp_dir().join("nvoc-pmxdrv.sys");
+    std::fs::write(&path, PMXDRV_SYS).map_err(|e| {
+        KmdPowerError::Service(format!(
+            "embedded pmxdrv.sys write failed ({}): {e}",
+            path.display()
+        ))
+    })?;
+    let written = std::fs::read(&path)
+        .map_err(|e| KmdPowerError::Service(format!("embedded pmxdrv.sys readback failed: {e}")))?;
+    if written != PMXDRV_SYS {
+        return Err(KmdPowerError::Service(format!(
+            "embedded pmxdrv.sys readback mismatch (partial write?) at {}",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+/// [`set_power_wall_kmd`] 的零参数形态:驱动用内嵌载荷,流程结束(含
+/// 失败路径)清理落盘副本。卸载被拒时内核仍映射着镜像,删除可能失败 ——
+/// 此时残留只是占盘,下次运行覆盖。
+///
+/// # Errors
+/// 透传 [`set_power_wall_kmd`] 的错误;释放失败在写盘一步即报。
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub fn set_power_wall_kmd_embedded(wall_mw: u32) -> Result<KmdSetWallOutcome, KmdPowerError> {
+    let path = extract_pmxdrv_sys()?;
+    let mut result = set_power_wall_kmd(wall_mw, &path);
+    let _ = std::fs::remove_file(&path);
+    if let Ok(outcome) = result.as_mut() {
+        outcome.steps.insert(
+            0,
+            "pmxdrv.sys extracted from embedded payload to temp dir (sha256 pinned)".into(),
+        );
+    }
+    result
+}
+
 // ---------------------------------------------------------------- 公开入口
 
 /// 全周期入口:`set-power-command --kmd` 的执行核心。

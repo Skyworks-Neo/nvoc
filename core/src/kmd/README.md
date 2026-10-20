@@ -172,8 +172,19 @@ UPPER),外加 RM 命令 0x2080A61A/0x2080E61B 的分派表项与 handler RVA。
 停留一个命令周期,按 PowerRoot 武装态自动分双臂:
 
 ```text
+nvoc-cli set-power-command 160 --kmd --force
 nvoc-cli set-power-command 160 --kmd --pmxdrvpath <pmxdrv.sys> --force
 ```
+
+驱动来源:`pmxdrv.sys`(Intel 2019 签名构建,SHA256 `B1A8EE12…`)已嵌入
+nvoc-cli(windows x64 构建,`include_bytes!`;指纹钉死见
+`core/tests/kmd_pmxdrv_embedded.rs`)。运行时释放到 `%TEMP%\nvoc-pmxdrv.sys`
+供 SCM 装载(内核驱动必须有磁盘镜像),命令周期结束即清理,崩溃残留
+确定性命名下次覆盖;`--pmxdrvpath` 仍可覆盖为手动副本。**ARM64 Windows
+不可用**:内核态驱动必须与内核同架构,WoA 无 x64 内核模拟(x64 .sys 装载
+报 ERROR_BAD_EXE_FORMAT 193),kmd 车道在该目标上直接拒绝、不存在转译
+路径。注意:Defender 可能对 %TEMP% 中的驱动文件告警;HVCI/微软漏洞驱动
+屏蔽列表环境同样装不上(既有环境限制,与打包方式无关)。
 
 ```text
 服务注册(PMXDRV_KMD,残留自清;设备已在位则复用,崩溃残留认领)
