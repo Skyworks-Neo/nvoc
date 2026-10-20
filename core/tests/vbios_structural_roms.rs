@@ -208,6 +208,44 @@ fn gb20x_5090_laptop_tgp_matches_filename() {
 }
 
 #[test]
+fn vix_gui_field_map_on_4090_48g() {
+    // vix-editor GUI（4090_48G 截图）逐值对照：slot 66W、NVVDD threshold
+    // 600/900W、12V 45A×2、OCP 378A；角色名来自通道模板识别。
+    let data = load("4090_48G_AD102_MAX_450W_1075mV_95023C0002.rom").expect("4090_48g rom");
+    let ctx = tables_v3::TableContext::new(&data, Family::Ada).expect("ctx");
+    let channels = tables_v3::power_channels(&data, &ctx).unwrap();
+    let role = |i: usize| channels.entries[i].role_name();
+    assert_eq!(role(4), "pcie-slot");
+    assert_eq!(role(9), "12v-input");
+    let policy = tables_v3::power_policy(&data, &ctx).unwrap();
+    let r = |i: usize| &policy.rows[i];
+    assert_eq!(
+        (r(5).channel_index, r(5).default_raw, r(5).maximum_raw),
+        (4, 66_000, 66_000)
+    );
+    assert_eq!(
+        (r(16).channel_index, r(16).default_raw, r(16).maximum_raw),
+        (18, 600_000, 900_000)
+    );
+    assert_eq!(
+        (r(9).channel_index, r(9).default_raw, r(9).maximum_raw),
+        (9, 45_000, 45_000)
+    );
+    assert_eq!((r(13).channel_index, r(13).default_raw), (19, 378_000));
+    // 风扇 extra curves（GUI "Extra fan curve 1/2"：98..108°C / 92..102°C）。
+    let fans = tables_v3::fan_tables(&data, &ctx)
+        .unwrap()
+        .expect("fans");
+    assert_eq!(fans.extra_curves.len(), 2);
+    let e1 = &fans.extra_curves[0].1;
+    assert_eq!(e1.points[0], (98 * 32, 2000));
+    assert_eq!(e1.points[2], (108 * 32, 6000));
+    let e2 = &fans.extra_curves[1].1;
+    assert_eq!(e2.points[0].0, 92 * 32);
+    assert_eq!(e2.points[2].0, 102 * 32);
+}
+
+#[test]
 fn memtweak_v20_bitfields_decode_monotonic() {
     // NVRM 617.42 内嵌 RM sub_1C67060 逆向布局，3090 实测值固化：
     // 高频段 set0 最紧（CL3 p44=25 p45=26），低频段 set6 松（CL2 p44=10

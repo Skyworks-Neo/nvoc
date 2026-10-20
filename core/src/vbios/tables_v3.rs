@@ -204,6 +204,43 @@ impl PowerChannelEntry {
         self.class() == 5 && connector_rail(self.rail())
     }
 
+    /// 监视点角色（vix tables.py 的通道字节模板匹配；空串 = 未识别）。
+    /// 模板：12V 感测族共享 `?? ?? 00 1B B7 00 00 10` 中段；NVVDD 输出
+    /// 监视 `01 01 …` 且 byte14 = 05(power)/06(current)；全板 = `02 F5`。
+    pub fn role_name(&self) -> &'static str {
+        let b = &self.bytes;
+        if b.len() < 8 {
+            return "";
+        }
+        let twelve_v_sense = b[2] == 0x00
+            && b[3] == 0x1B
+            && b[4] == 0xB7
+            && b[5] == 0x00
+            && b[6] == 0x00
+            && b[7] == 0x10;
+        if self.class() == 2 && self.rail() == 0xF5 {
+            return "total-board";
+        }
+        if twelve_v_sense {
+            match (self.class(), self.rail()) {
+                (5, 0xFF) => return "pcie-slot",
+                (5, 0xE0) => return "12v-input",
+                (1, 0x01) => {
+                    return match b.get(14) {
+                        Some(0x05) => "nvvdd-power",
+                        Some(0x06) => "nvvdd-current",
+                        _ => "nvvdd-out",
+                    };
+                }
+                _ => {}
+            }
+        }
+        if self.class() == 5 && connector_rail(self.rail()) {
+            return "connector";
+        }
+        ""
+    }
+
     /// 12V 输入通道（class 5 + bytes 2..7 == CHANNEL_12V 且无其它参数）。
     pub fn is_12v_input(&self) -> bool {
         self.class() == 5

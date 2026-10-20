@@ -7973,21 +7973,44 @@ fn structural_sections_json(image: &[u8]) -> Value {
         "chain_images": ctx.chain.len(),
         "duplicate_banks": ctx.chain_count,
         "integrity": ctx.integrity(image).into_iter().map(|(name, ok)| json!({"image": name, "checksum_zero": ok})).collect::<Vec<_>>(),
-        "power_policy": nvoc_core::vbios::tables_v3::power_policy(image, &ctx).ok().map(|p| json!({
-            "version": format!("{:#04x}", p.version),
-            "notebook": p.notebook,
-            "tgp_index": p.tgp_index,
-            "rows": p.rows.iter().map(|r| json!({
-                "row": r.row, "kind": r.kind, "channel": r.channel_index,
-                "minimum_raw": r.minimum_raw, "default_raw": r.default_raw, "maximum_raw": r.maximum_raw,
-                "unit": if r.unit_ma { "mA" } else { "mW" },
-                "maximum_offset": r.maximum_offset,
-            })).collect::<Vec<_>>(),
-        })),
+        "power_policy": nvoc_core::vbios::tables_v3::power_policy(image, &ctx).ok().map(|p| {
+            let roles = nvoc_core::vbios::tables_v3::power_channels(image, &ctx).ok().map(|c| {
+                let mut v = vec![""; usize::from(c.count)];
+                for (i, e) in c.entries.iter().enumerate() {
+                    v[i] = e.role_name();
+                }
+                v
+            });
+            let rows: Vec<Value> = p.rows
+                .iter()
+                .map(|r| {
+                    let role = roles
+                        .as_ref()
+                        .and_then(|v| v.get(usize::from(r.channel_index)))
+                        .copied()
+                        .unwrap_or("");
+                    json!({
+                        "row": r.row, "kind": r.kind, "channel": r.channel_index,
+                        "role": role,
+                        "minimum_raw": r.minimum_raw, "default_raw": r.default_raw, "maximum_raw": r.maximum_raw,
+                        "unit": if r.unit_ma { "mA" } else { "mW" },
+                        "maximum_offset": r.maximum_offset,
+                    })
+                })
+                .collect();
+            json!({
+                "version": format!("{:#04x}", p.version),
+                "notebook": p.notebook,
+                "tgp_index": p.tgp_index,
+                "rows": rows,
+            })
+        }),
         "power_channels": nvoc_core::vbios::tables_v3::power_channels(image, &ctx).ok().map(|c| json!({
             "count": c.count, "entry_size": c.entry_size,
             "total_board_channels": c.entries.iter().enumerate().filter(|(_, e)| e.is_total_board()).map(|(i, _)| i).collect::<Vec<_>>(),
             "twelve_v_inputs": c.entries.iter().enumerate().filter(|(_, e)| e.is_12v_input()).map(|(i, _)| i).collect::<Vec<_>>(),
+            // 每通道监视点角色（vix 通道模板；空 = 未识别）。
+            "roles": c.entries.iter().map(|e| e.role_name()).collect::<Vec<_>>(),
         })),
         "rails": nvoc_core::vbios::tables_v3::rails(image, &ctx).ok().map(|t| json!(t.rows.iter().map(|r| json!({
             "name": r.name, "boot_voltage_uv": r.boot_voltage_uv,
@@ -8021,6 +8044,15 @@ fn structural_sections_json(image: &[u8]) -> Value {
                     "pwm_frequency_hz": r.pwm_frequency_hz,
                     "curve_levels": r.curve.levels,
                     "curve_points": r.curve.points.iter().map(|(t, rpm)| json!({
+                        "temp_c": f64::from(*t) / 32.0, "rpm": rpm,
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                // 活跃通道数之外的策略条目曲线（vix extra_curves；4090 的
+                // "Extra fan curve 1/2" 为热保护曲线 98..108°C / 92..102°C）。
+                "extra_curves": f.extra_curves.iter().map(|(off, c)| json!({
+                    "policy_offset": off,
+                    "levels": c.levels,
+                    "points": c.points.iter().map(|(t, rpm)| json!({
                         "temp_c": f64::from(*t) / 32.0, "rpm": rpm,
                     })).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),

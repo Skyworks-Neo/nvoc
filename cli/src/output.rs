@@ -1043,6 +1043,12 @@ fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
                         })
                         .map(|r| {
                             let row = r.get("row").and_then(Value::as_u64).unwrap_or(0);
+                            // 角色名（vix 通道模板识别）优先于 kind 字节名。
+                            if let Some(role) = r.get("role").and_then(Value::as_str)
+                                && !role.is_empty()
+                            {
+                                return format_power_row(row, role, r);
+                            }
                             let kind = r.get("kind").and_then(Value::as_u64).unwrap_or(0);
                             let ch = r.get("channel").and_then(Value::as_u64).unwrap_or(0);
                             // 存储单位旗标原样标注（mW/mA）；实际物理单位由 RM 策略
@@ -1073,6 +1079,7 @@ fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
             render_rel_limits(t.get("rel_limits"), lines);
             render_vmin(t.get("vmin"), lines);
             render_clocks(t.get("clocks"), true, lines);
+            render_memory_nvml_scale(t.get("clocks"), lines);
             render_fans_v3(t, lines);
         }
     }
@@ -1131,6 +1138,7 @@ fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
         render_rel_limits(g.get("rel_limits"), lines);
         render_vmin(g.get("vmin"), lines);
         render_clocks(g.get("clocks"), false, lines);
+        render_memory_nvml_scale(g.get("clocks"), lines);
         if let Some(profiles) = g.get("profiles").and_then(Value::as_array)
             && !profiles.is_empty()
         {
@@ -1184,6 +1192,55 @@ fn power_row_kind_name(kind: u8) -> String {
         13 => "link".into(),
         other => format!("type{other:#x}"),
     }
+}
+
+/// power rows 图例的行格式（vix 通道模板 role 命中时使用；命名对应
+/// vix-editor GUI：pcie-slot=PCIe slot power、12v-input=12V input current、
+/// nvvdd-power/current=NVVDD output power/current、total-board=board power）。
+fn format_power_row(row: u64, role: &str, r: &Value) -> String {
+    let unit = r.get("unit").and_then(Value::as_str).unwrap_or("mW");
+    format!(
+        "#{row} {role} {}..{}..{} {}",
+        r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0),
+        r.get("default_raw").and_then(Value::as_u64).unwrap_or(0),
+        r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0),
+        unit
+    )
+}
+
+/// DRAM 行的 NVML 换算注记：offset 工具（NVML/Linux、MSI Afterburner 的
+/// memory 轴）按表值 ×2 呈现（vix extended-fields："NVML = 2 × table MHz"；
+/// vix GUI 显示 "6000 MHz · Windows (MSI Afterburner): 3000 MHz"）。
+fn render_memory_nvml_scale(clocks: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(clocks) = clocks.and_then(Value::as_array) else {
+        return;
+    };
+    let Some(dram) = clocks
+        .iter()
+        .find(|c| c.get("domain").and_then(Value::as_str) == Some("DRAM"))
+    else {
+        return;
+    };
+    if dram.get("range_stored").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let (lo, hi) = (
+        dram.get("min_mhz").and_then(Value::as_i64).unwrap_or(0),
+        dram.get("max_mhz").and_then(Value::as_i64).unwrap_or(0),
+    );
+    if (lo, hi) == (0, 0) {
+        return;
+    }
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!(
+            "    memory offset (NVML x2 scale): {}..{} MHz (table {}..{})",
+            lo * 2,
+            hi * 2,
+            lo,
+            hi
+        ),
+        false,
+    ));
 }
 
 fn render_rails(t: &Value, lines: &mut Vec<String>) {
@@ -1330,6 +1387,41 @@ fn render_fans_v3(t: &Value, lines: &mut Vec<String>) {
                 &format!("    fan channels {:?}: {}", channels, rows.join(" | ")),
                 false,
             ));
+            let extras: Vec<String> = f
+                .get("extra_curves")
+                .and_then(Value::as_array)
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|c| {
+                    c.get("points")
+                        .and_then(Value::as_array)
+                        .is_some_and(|p| !p.is_empty())
+                })
+                .map(|c| {
+                    let pts: Vec<String> = c
+                        .get("points")
+                        .and_then(Value::as_array)
+                        .unwrap_or(&Vec::new())
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{}C/{}rpm",
+                                p.get("temp_c").and_then(Value::as_f64).unwrap_or(0.0),
+                                p.get("rpm").and_then(Value::as_u64).unwrap_or(0)
+                            )
+                        })
+                        .collect();
+                    pts.join(" ")
+                })
+                .enumerate()
+                .map(|(i, pts)| format!("extra{}: {}", i + 1, pts))
+                .collect();
+            if !extras.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    fan extra curves: {}", extras.join(" | ")),
+                    false,
+                ));
+            }
         }
         Some(f) if f.get("present").and_then(Value::as_bool) == Some(false) => {
             lines.push(nvoc_cli_common::color::stylize(
