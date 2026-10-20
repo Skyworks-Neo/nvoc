@@ -1020,6 +1020,54 @@ fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
                     ),
                     false,
                 ));
+
+                // 全行解码（对照 NVAPI GetPwrCurInfo：Index = 行号、Subtype = 通道
+                // 字节、min/def/max 逐值一致；空行是驱动运行时隐藏的超集）。kind
+                // 名为 vix 语料观测语义，未列出的按 raw 显示。
+                if let Some(rows) = t
+                    .get("power_policy")
+                    .and_then(Value::as_object)
+                    .and_then(|p| p.get("rows"))
+                    .and_then(Value::as_array)
+                {
+                    let tgp = t
+                        .get("power_policy")
+                        .and_then(Value::as_object)
+                        .and_then(|p| p.get("tgp_index"))
+                        .and_then(Value::as_u64);
+                    let items: Vec<String> = rows
+                        .iter()
+                        .filter(|r| {
+                            !(r.get("kind").and_then(Value::as_u64) == Some(0)
+                                && r.get("maximum_raw").and_then(Value::as_u64) == Some(0))
+                        })
+                        .map(|r| {
+                            let row = r.get("row").and_then(Value::as_u64).unwrap_or(0);
+                            let kind = r.get("kind").and_then(Value::as_u64).unwrap_or(0);
+                            let ch = r.get("channel").and_then(Value::as_u64).unwrap_or(0);
+                            // 存储单位旗标原样标注（mW/mA）；实际物理单位由 RM 策略
+                            // 侧决定（NVAPI 实测与旗标在哨兵行上不一致），不做断言性
+                            // 换算。
+                            let unit = r.get("unit").and_then(Value::as_str).unwrap_or("mW");
+                            let star = if Some(row) == tgp { "*" } else { "" };
+                            format!(
+                                "#{row}{star} {}/{} {}..{}..{} {}",
+                                power_row_kind_name(kind as u8),
+                                ch,
+                                r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0),
+                                r.get("default_raw").and_then(Value::as_u64).unwrap_or(0),
+                                r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0),
+                                unit
+                            )
+                        })
+                        .collect();
+                    if !items.is_empty() {
+                        lines.push(nvoc_cli_common::color::stylize(
+                            &format!("    power rows (* = TGP): {}", items.join(" | ")),
+                            false,
+                        ));
+                    }
+                }
             }
             render_rails(t, lines);
             render_rel_limits(t.get("rel_limits"), lines);
@@ -1117,6 +1165,24 @@ fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
                 false,
             ));
         }
+    }
+}
+
+/// vix 语料观测的 3x power 行 type 字节语义（extended-fields.md / GB20x
+/// 行类型交叉）；未收录的按 `type0x{n}` 显示。
+fn power_row_kind_name(kind: u8) -> String {
+    match kind {
+        0 => "out".into(),
+        1 => "board".into(),
+        2 => "slot".into(),
+        4 => "conn".into(),
+        5 => "in-cur".into(),
+        7 => "ocp".into(),
+        10 => "ocp".into(),
+        11 => "in".into(),
+        12 => "board".into(),
+        13 => "link".into(),
+        other => format!("type{other:#x}"),
     }
 }
 
