@@ -7657,7 +7657,7 @@ fn execute_get_vbios_file(
             "boot_magic": format!("{:02x} {:02x}", image[0], image[1]),
             "bit_offset": find_bit_signature(&image),
             "bit_tokens": bit.as_ref().map(|s| s.tokens.len()),
-            "nvgi": nvoc_core::legacy_vbios_parser::parse_nvgi(&image).map(|n| json!({
+            "nvgi": nvoc_core::vbios::legacy::parse_nvgi(&image).map(|n| json!({
                 "version": n.version,
                 "total_data_size": n.total_data_size,
                 "xve_sub_vendor": format!("{:#06x}", n.xve_sub_vendor),
@@ -7688,7 +7688,7 @@ fn execute_get_vbios_file(
 /// vmap[entry.vmap_index]. Present on Maxwell/Kepler; Pascal+ replaced it with
 /// the Virtual P-State tables.
 fn boost_ladder_json(image: &[u8]) -> CliResult<Option<Value>> {
-    let vb = nvoc_core::legacy_vbios_parser::parse(image)?;
+    let vb = nvoc_core::vbios::legacy::parse(image)?;
     let Some(ladder) = &vb.boost_ladder else {
         return Ok(None);
     };
@@ -7715,7 +7715,7 @@ fn boost_ladder_json(image: &[u8]) -> CliResult<Option<Value>> {
         .iter()
         .map(|m| {
             json!({
-                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(m.pstate_raw),
+                "pstate": nvoc_core::vbios::legacy::pstate_display_name(m.pstate_raw),
                 "code_raw": format!("{:#06x}", m.code_raw),
                 "index": m.ladder_index,
             })
@@ -7757,10 +7757,10 @@ fn boost_ladder_json(image: &[u8]) -> CliResult<Option<Value>> {
 /// BIT token 相对 55AA 镜像基址、'P' 槽需 per-build delta 重定位、功率
 /// 走 TLV 记录锚），VP/boost-ladder 均不存在——独立 JSON 分支。
 fn decode_blackwell_detail(image: &[u8]) -> CliResult<Value> {
-    let info = nvoc_core::legacy_vbios_parser::find_blackwell(image)
+    let info = nvoc_core::vbios::legacy::find_blackwell(image)
         .ok_or_else(|| CliError::new("not a Blackwell container (4C C0/4C FF)"))?;
     let bit_entries =
-        nvoc_core::legacy_vbios_parser::bit_entries(image, info.bit_offset, info.image_base)
+        nvoc_core::vbios::legacy::bit_entries(image, info.bit_offset, info.image_base)
             .unwrap_or_default();
     // 'B' 版本（BCD BE 段）。
     let bios_version = bit_entries.iter().find(|e| e.id == b'B').and_then(|e| {
@@ -7782,24 +7782,24 @@ fn decode_blackwell_detail(image: &[u8]) -> CliResult<Value> {
         ))
     });
     // 'i' InternalUse（同一布局，基址 = info.image_base）。
-    let internal_use =
-        match nvoc_core::legacy_vbios_parser::find_internal_use_at(image, info.image_base) {
-            Ok(Some(iu)) => json!({
-                "present": true,
-                "version": iu.version,
-                "build_date": iu.build_date,
-                "project": iu.project,
-                "project_sku": iu.project_sku,
-                "chip_sku": iu.chip_sku,
-                "board_id": iu.board_id,
-                "cert_flag": iu.cert_flag,
-                "build_guid": iu.build_guid
-                    .map(|g| g.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-                "tail_len": iu.tail_raw.len(),
-            }),
-            Ok(None) => json!({"present": false}),
-            Err(e) => json!({"present": false, "note": format!("{e}")}),
-        };
+    let internal_use = match nvoc_core::vbios::legacy::find_internal_use_at(image, info.image_base)
+    {
+        Ok(Some(iu)) => json!({
+            "present": true,
+            "version": iu.version,
+            "build_date": iu.build_date,
+            "project": iu.project,
+            "project_sku": iu.project_sku,
+            "chip_sku": iu.chip_sku,
+            "board_id": iu.board_id,
+            "cert_flag": iu.cert_flag,
+            "build_guid": iu.build_guid
+                .map(|g| g.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            "tail_len": iu.tail_raw.len(),
+        }),
+        Ok(None) => json!({"present": false}),
+        Err(e) => json!({"present": false, "note": format!("{e}")}),
+    };
     let perf = json!({
         "table_offset": info.perf.as_ref().map(|p| p.table_offset),
         "slot_count": info.perf.as_ref().map(|p| p.slots.len()),
@@ -7843,7 +7843,7 @@ fn decode_blackwell_detail(image: &[u8]) -> CliResult<Value> {
                 "max_rpm": max,
             })).collect::<Vec<_>>(),
         },
-        "nvgi": nvoc_core::legacy_vbios_parser::parse_nvgi(image).map(|n| json!({
+        "nvgi": nvoc_core::vbios::legacy::parse_nvgi(image).map(|n| json!({
             "version": n.version,
             "header_len": n.header_len,
             "total_data_size": n.total_data_size,
@@ -7859,11 +7859,11 @@ fn decode_blackwell_detail(image: &[u8]) -> CliResult<Value> {
 /// 任何一层解不出都降级为段落内 `unsupported`——fail-closed 的形状（如
 /// compare REL、未审时钟布局）就地标注，而不是让整个 detail 失败。
 fn structural_sections_json(image: &[u8]) -> Value {
-    use nvoc_core::vbios_families::Family;
-    let (pci, extended, issues) = nvoc_core::vbios_image_chain::scan_images(image);
-    let image_entry = |p: &nvoc_core::vbios_image_chain::RomImage| {
+    use nvoc_core::vbios::families::Family;
+    let (pci, extended, issues) = nvoc_core::vbios::image_chain::scan_images(image);
+    let image_entry = |p: &nvoc_core::vbios::image_chain::RomImage| {
         json!({
-            "kind": if p.kind == nvoc_core::vbios_image_chain::ImageKind::Pcir { "PCIR" } else { "NPDS" },
+            "kind": if p.kind == nvoc_core::vbios::image_chain::ImageKind::Pcir { "PCIR" } else { "NPDS" },
             "start": p.start,
             "end": p.end,
             "size": p.size,
@@ -7882,9 +7882,9 @@ fn structural_sections_json(image: &[u8]) -> Value {
         chain["status"] = json!("no-legacy-image");
         return json!({"image_chain": chain});
     };
-    let versions = nvoc_core::vbios_families::scan_bios_versions(image);
+    let versions = nvoc_core::vbios::families::scan_bios_versions(image);
     let refs: Vec<&str> = versions.iter().map(|s| s.as_str()).collect();
-    let arch = nvoc_core::vbios_families::architecture(legacy.device, &refs);
+    let arch = nvoc_core::vbios::families::architecture(legacy.device, &refs);
     let mut out = json!({
         "image_chain": chain,
         "architecture": {
@@ -7896,7 +7896,7 @@ fn structural_sections_json(image: &[u8]) -> Value {
             "bios_versions": versions,
         },
     });
-    let Some((family, inferred)) = nvoc_core::vbios_tables_v3::detect_family(image) else {
+    let Some((family, inferred)) = nvoc_core::vbios::tables_v3::detect_family(image) else {
         out["status"] = json!("pre-vliw-legacy");
         return out;
     };
@@ -7904,14 +7904,14 @@ fn structural_sections_json(image: &[u8]) -> Value {
         out["architecture"]["family_inferred"] = json!(true);
     }
     if family == Family::BlackwellGb20x {
-        let layout = match nvoc_core::vbios_gb20x::parse_layout(image) {
+        let layout = match nvoc_core::vbios::gb20x::parse_layout(image) {
             Ok(l) => l,
             Err(e) => {
                 out["gb20x"] = json!({"status": "unsupported", "reason": e.to_string()});
                 return out;
             }
         };
-        let integrity = nvoc_core::vbios_gb20x::integrity(image, &layout);
+        let integrity = nvoc_core::vbios::gb20x::integrity(image, &layout);
         out["gb20x"] = json!({
             "integrity": {
                 "valid": integrity.valid,
@@ -7921,7 +7921,7 @@ fn structural_sections_json(image: &[u8]) -> Value {
                 "image_checksums": integrity.image_checksums,
                 "legacy_directory_present": layout.legacy_dir.is_some(),
             },
-            "power_policy": nvoc_core::vbios_gb20x::power_policy(image, &layout).ok().map(|p| json!({
+            "power_policy": nvoc_core::vbios::gb20x::power_policy(image, &layout).ok().map(|p| json!({
                 "version": format!("{:#04x}", p.version),
                 "notebook": p.notebook,
                 "tgp_row": if p.notebook { 2 } else { 8 },
@@ -7930,27 +7930,27 @@ fn structural_sections_json(image: &[u8]) -> Value {
                     "minimum_raw": r.minimum_raw, "default_raw": r.default_raw, "maximum_raw": r.maximum_raw,
                 })).collect::<Vec<_>>(),
             })),
-            "rails": nvoc_core::vbios_gb20x::rails(image, &layout).ok().map(|t| json!(t.rows.iter().map(|r| json!({
+            "rails": nvoc_core::vbios::gb20x::rails(image, &layout).ok().map(|t| json!(t.rows.iter().map(|r| json!({
                 "name": r.name, "boot_voltage_uv": r.boot_voltage_uv,
                 "selectors": r.selectors.iter().map(|(role, off, raw)| json!({
                     "role": role.name(), "offset": off, "raw": raw, "absent": *raw == 0xFFFF,
                 })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>())),
-            "rel_limits": nvoc_core::vbios_gb20x::rail_limits(image, &layout).ok().map(|l| json!(l.iter().map(|r| json!({
+            "rel_limits": nvoc_core::vbios::gb20x::rail_limits(image, &layout).ok().map(|l| json!(l.iter().map(|r| json!({
                 "rail": r.rail_name, "rel_equation": r.rel_equation_index,
                 "max_mv": r.output_maximum_uv as f64 / 1000.0,
                 "maximum_offset": r.maximum_offset,
             })).collect::<Vec<_>>())),
-            "vmin": nvoc_core::vbios_gb20x::rail_vmin(image, &layout).ok().map(|v| json!(v.iter().map(|r| json!({
+            "vmin": nvoc_core::vbios::gb20x::rail_vmin(image, &layout).ok().map(|v| json!(v.iter().map(|r| json!({
                 "rail": r.rail_name, "pinned": r.pinned,
                 "value_mv": r.value_uv.map(|u| u as f64 / 1000.0),
                 "diagnostic": r.diagnostic,
             })).collect::<Vec<_>>())),
-            "clocks": nvoc_core::vbios_gb20x::clock_ranges(image, &layout).ok().map(|c| json!(c.iter().map(|r| json!({
+            "clocks": nvoc_core::vbios::gb20x::clock_ranges(image, &layout).ok().map(|c| json!(c.iter().map(|r| json!({
                 "domain": r.domain, "min_mhz": r.minimum_mhz, "max_mhz": r.maximum_mhz,
                 "range_stored": r.range_stored,
             })).collect::<Vec<_>>())),
-            "profiles": nvoc_core::vbios_gb20x::power_profiles(image, &layout).ok().map(|p| json!(p.iter().map(|prof| json!({
+            "profiles": nvoc_core::vbios::gb20x::power_profiles(image, &layout).ok().map(|p| json!(p.iter().map(|prof| json!({
                 "index": prof.index,
                 "entries": prof.entries.iter().map(|e| json!({
                     "policy": e.policy, "field": if e.default_field { "default" } else { "maximum" },
@@ -7961,7 +7961,7 @@ fn structural_sections_json(image: &[u8]) -> Value {
         return out;
     }
     // 3x 世代（Turing/Ampere/Ada）
-    let ctx = match nvoc_core::vbios_tables_v3::TableContext::new(image, family) {
+    let ctx = match nvoc_core::vbios::tables_v3::TableContext::new(image, family) {
         Ok(c) => c,
         Err(e) => {
             out["tables_v3"] = json!({"status": "unsupported", "reason": e.to_string()});
@@ -7973,7 +7973,7 @@ fn structural_sections_json(image: &[u8]) -> Value {
         "chain_images": ctx.chain.len(),
         "duplicate_banks": ctx.chain_count,
         "integrity": ctx.integrity(image).into_iter().map(|(name, ok)| json!({"image": name, "checksum_zero": ok})).collect::<Vec<_>>(),
-        "power_policy": nvoc_core::vbios_tables_v3::power_policy(image, &ctx).ok().map(|p| json!({
+        "power_policy": nvoc_core::vbios::tables_v3::power_policy(image, &ctx).ok().map(|p| json!({
             "version": format!("{:#04x}", p.version),
             "notebook": p.notebook,
             "tgp_index": p.tgp_index,
@@ -7984,32 +7984,32 @@ fn structural_sections_json(image: &[u8]) -> Value {
                 "maximum_offset": r.maximum_offset,
             })).collect::<Vec<_>>(),
         })),
-        "power_channels": nvoc_core::vbios_tables_v3::power_channels(image, &ctx).ok().map(|c| json!({
+        "power_channels": nvoc_core::vbios::tables_v3::power_channels(image, &ctx).ok().map(|c| json!({
             "count": c.count, "entry_size": c.entry_size,
             "total_board_channels": c.entries.iter().enumerate().filter(|(_, e)| e.is_total_board()).map(|(i, _)| i).collect::<Vec<_>>(),
             "twelve_v_inputs": c.entries.iter().enumerate().filter(|(_, e)| e.is_12v_input()).map(|(i, _)| i).collect::<Vec<_>>(),
         })),
-        "rails": nvoc_core::vbios_tables_v3::rails(image, &ctx).ok().map(|t| json!(t.rows.iter().map(|r| json!({
+        "rails": nvoc_core::vbios::tables_v3::rails(image, &ctx).ok().map(|t| json!(t.rows.iter().map(|r| json!({
             "name": r.name, "boot_voltage_uv": r.boot_voltage_uv,
             "selectors": r.selectors.iter().map(|(role, off, raw)| json!({
                 "role": role.name(), "offset": off, "raw": raw, "absent": *raw == 0xFF,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>())),
-        "rel_limits": nvoc_core::vbios_tables_v3::rail_limits(image, &ctx).ok().map(|l| json!(l.iter().map(|r| json!({
+        "rel_limits": nvoc_core::vbios::tables_v3::rail_limits(image, &ctx).ok().map(|l| json!(l.iter().map(|r| json!({
             "rail": r.rail_name, "kind": format!("{:?}", r.equation_kind),
             "max_mv": r.output_maximum_uv as f64 / 1000.0,
-            "temperature_derated": r.equation_kind == nvoc_core::vbios_vfe::OutputKind::TemperatureDerated,
+            "temperature_derated": r.equation_kind == nvoc_core::vbios::vfe::OutputKind::TemperatureDerated,
         })).collect::<Vec<_>>())),
-        "vmin": nvoc_core::vbios_tables_v3::rail_vmin(image, &ctx).ok().map(|v| json!(v.iter().map(|r| json!({
+        "vmin": nvoc_core::vbios::tables_v3::rail_vmin(image, &ctx).ok().map(|v| json!(v.iter().map(|r| json!({
             "rail": r.rail_name, "pinned": r.pinned,
             "value_mv": r.value_uv.map(|u| u as f64 / 1000.0),
             "diagnostic": r.diagnostic,
         })).collect::<Vec<_>>())),
-        "clocks": nvoc_core::vbios_tables_v3::clock_ranges(image, &ctx).ok().map(|c| json!(c.iter().map(|r| json!({
+        "clocks": nvoc_core::vbios::tables_v3::clock_ranges(image, &ctx).ok().map(|c| json!(c.iter().map(|r| json!({
             "domain": r.domain, "min_mhz": r.minimum_mhz, "max_mhz": r.maximum_mhz,
             "range_stored": r.range_stored,
         })).collect::<Vec<_>>())),
-        "fans": match nvoc_core::vbios_tables_v3::fan_tables(image, &ctx) {
+        "fans": match nvoc_core::vbios::tables_v3::fan_tables(image, &ctx) {
             Ok(None) => json!({"present": false}),
             Ok(Some(f)) => json!({
                 "present": true,
@@ -8033,11 +8033,11 @@ fn structural_sections_json(image: &[u8]) -> Value {
 }
 
 fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
-    if nvoc_core::legacy_vbios_parser::is_blackwell_container(image) {
+    if nvoc_core::vbios::legacy::is_blackwell_container(image) {
         return decode_blackwell_detail(image);
     }
     let ladder = boost_ladder_json(image)?;
-    let tables = nvoc_core::legacy_vbios_parser::find_vp_tables(image);
+    let tables = nvoc_core::vbios::legacy::find_vp_tables(image);
     if tables.is_empty() && ladder.is_none() {
         return Err(CliError::new(
             "no VP table (pattern '20 XX 01' with a 0x0F denominator and a \
@@ -8075,7 +8075,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
                     let limits: Vec<f64> = p.limit_mhz().to_vec();
                     json!({
                         "id": format!("{:#04x}", p.id),
-                        "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(p.id),
+                        "pstate": nvoc_core::vbios::legacy::pstate_display_name(p.id),
                         "limit1_mhz": limits[0],
                         "limit2_mhz": limits[1],
                         "limit3_mhz": limits[2],
@@ -8096,7 +8096,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
                 .map(|f| {
                     json!({
                         "id": format!("{:#04x}", f.id),
-                        "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(f.id),
+                        "pstate": nvoc_core::vbios::legacy::pstate_display_name(f.id),
                         "mem_clock_mhz": f.mem_clock_mhz(),
                         "mem_clock_ddr_mhz": f.mem_clock_ddr_mhz(),
                         "mem_x2_raw": format!("{:#06x}", f.mem_x2_raw),
@@ -8107,7 +8107,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         })
         .unwrap_or_default();
     let footer_slots = vp.map(|t| t.footers.len()).unwrap_or(0);
-    let mut power: Vec<Value> = nvoc_core::legacy_vbios_parser::find_power_tables(image)
+    let mut power: Vec<Value> = nvoc_core::vbios::legacy::find_power_tables(image)
         .iter()
         .map(|p| {
             let lo = p
@@ -8135,7 +8135,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         .collect();
     // Maxwell/Pascal 前缀三元组补充扫描（GM204/TITAN X 无 CPR 锚；与锚点
     // 扫描按 (target, limit) 去重）。
-    for t in nvoc_core::legacy_vbios_parser::find_power_triples(image) {
+    for t in nvoc_core::vbios::legacy::find_power_triples(image) {
         let dup = power.iter().any(|p| {
             p.get("target_mw").and_then(Value::as_u64) == Some(u64::from(t.target_mw))
                 && p.get("limit_mw").and_then(Value::as_u64) == Some(u64::from(t.limit_mw))
@@ -8158,9 +8158,9 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "slider": Value::Null,
         }));
     }
-    let thermal = match nvoc_core::legacy_vbios_parser::find_thermal(image) {
+    let thermal = match nvoc_core::vbios::legacy::find_thermal(image) {
         Ok(Some(th)) => {
-            fn pack(t: Option<nvoc_core::legacy_vbios_parser::TempThreshold>) -> serde_json::Value {
+            fn pack(t: Option<nvoc_core::vbios::legacy::TempThreshold>) -> serde_json::Value {
                 match t {
                     Some(x) => json!({"temp_c": x.temp_c, "hysteresis": x.hysteresis}),
                     None => serde_json::Value::Null,
@@ -8209,7 +8209,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         }),
         Err(e) => json!({"present": false, "note": format!("thermal table lookup failed: {e}")}),
     };
-    let dcb = nvoc_core::vbios_dcb::DcbBlock::primary(image).map(|block| {
+    let dcb = nvoc_core::vbios::dcb::DcbBlock::primary(image).map(|block| {
         let map = block.display_map();
         let pads: Vec<Value> = map
             .iter()
@@ -8235,7 +8235,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "pads": pads,
         })
     });
-    let identity = match nvoc_core::legacy_vbios_parser::find_bios_identity(image) {
+    let identity = match nvoc_core::vbios::legacy::find_bios_identity(image) {
         Ok(id) => json!({
             "version": id.version,
             "oem_version": id.oem_version,
@@ -8250,7 +8250,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         Err(e) => json!({"error": format!("{e}")}),
     };
     // BIT 'i' InternalUse 全解（board id/编译日期/SKU/Project/P4/GUID）。
-    let internal_use = match nvoc_core::legacy_vbios_parser::find_internal_use(image) {
+    let internal_use = match nvoc_core::vbios::legacy::find_internal_use(image) {
         Ok(Some(iu)) => json!({
             "present": true,
             "offset": iu.table_offset,
@@ -8277,7 +8277,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         Err(e) => json!({"present": false, "note": format!("{e}")}),
     };
     // RFFS/RFRD flash 目录（NVGI full dump 专有；Turing+ 实测定案布局）。
-    let flash_directory = match nvoc_core::legacy_vbios_parser::find_flash_directory(image) {
+    let flash_directory = match nvoc_core::vbios::legacy::find_flash_directory(image) {
         Some(fd) => json!({
             "present": true,
             "rffs_version": fd.rffs.version,
@@ -8296,12 +8296,12 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         None => json!({"present": false}),
     };
     // Clock States（perf 表 v0x40 per-Pstate 时钟域；Kepler/Maxwell）。
-    let clock_states = match nvoc_core::legacy_vbios_parser::find_perf_states(image) {
+    let clock_states = match nvoc_core::vbios::legacy::find_perf_states(image) {
         Ok(Some(states)) => json!({
             "present": true,
-            "domain_names": nvoc_core::legacy_vbios_parser::PERF_DOMAIN_NAMES,
+            "domain_names": nvoc_core::vbios::legacy::PERF_DOMAIN_NAMES,
             "states": states.iter().map(|s| json!({
-                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(s.pstate_code),
+                "pstate": nvoc_core::vbios::legacy::pstate_display_name(s.pstate_code),
                 "pstate_code": format!("{:#04x}", s.pstate_code),
                 "vmap_index": s.vmap_index,
                 "offset": s.offset,
@@ -8312,11 +8312,11 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         Err(e) => json!({"present": false, "note": format!("{e}")}),
     };
     // Boost States（P+0x30 表，per-Pstate 域 min/max）。
-    let boost_states = match nvoc_core::legacy_vbios_parser::find_boost_states(image) {
+    let boost_states = match nvoc_core::vbios::legacy::find_boost_states(image) {
         Ok(Some(groups)) => json!({
             "present": true,
             "states": groups.iter().map(|g| json!({
-                "pstate": nvoc_core::legacy_vbios_parser::pstate_display_name(g.pstate_code),
+                "pstate": nvoc_core::vbios::legacy::pstate_display_name(g.pstate_code),
                 "pstate_code": format!("{:#04x}", g.pstate_code),
                 "ranges": g.ranges.iter().map(|r| json!({
                     "domain": r.domain,
@@ -8328,7 +8328,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         Ok(None) => json!({"present": false}),
         Err(e) => json!({"present": false, "note": format!("{e}")}),
     };
-    let thermal_policy = match nvoc_core::legacy_vbios_parser::find_thermal_policy(image) {
+    let thermal_policy = match nvoc_core::vbios::legacy::find_thermal_policy(image) {
         Ok(Some(tp)) => json!({
             "present": true,
             "entries": tp.entries.iter().map(|e| json!({
@@ -8344,8 +8344,8 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
     };
     // FanCooler：签名定位跨代通用（含 min RPM 字段）；槽位路径兜底。
     let fan_cooler = {
-        let sig = nvoc_core::legacy_vbios_parser::find_fan_cooler_by_signature(image);
-        let from_table = |fc: &nvoc_core::legacy_vbios_parser::FanCoolerTable| {
+        let sig = nvoc_core::vbios::legacy::find_fan_cooler_by_signature(image);
+        let from_table = |fc: &nvoc_core::vbios::legacy::FanCoolerTable| {
             json!({
                 "present": true,
                 "offset": fc.table_offset,
@@ -8359,7 +8359,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             })
         };
         if sig.coolers.is_empty() {
-            match nvoc_core::legacy_vbios_parser::find_fan_cooler(image) {
+            match nvoc_core::vbios::legacy::find_fan_cooler(image) {
                 Ok(Some(fc)) => from_table(&fc),
                 Ok(None) => json!({"present": false}),
                 Err(e) => json!({"present": false, "note": format!("{e}")}),
@@ -8371,9 +8371,9 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
     // FanPolicy：签名定位优先（Maxwell PERF+0x5C 槽位在 Pascal 上是压缩
     // 数据）；槽位路径兜底。
     let fan_policy = {
-        let sig = nvoc_core::legacy_vbios_parser::find_fan_policy_by_signature(image);
+        let sig = nvoc_core::vbios::legacy::find_fan_policy_by_signature(image);
         let has_curves = sig.curves.iter().any(|c| !c.is_empty());
-        let from_table = |fp: &nvoc_core::legacy_vbios_parser::FanPolicyTable| {
+        let from_table = |fp: &nvoc_core::vbios::legacy::FanPolicyTable| {
             json!({
                 "present": true,
                 "offset": fp.table_offset,
@@ -8388,14 +8388,14 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         if has_curves {
             from_table(&sig)
         } else {
-            match nvoc_core::legacy_vbios_parser::find_fan_policy(image) {
+            match nvoc_core::vbios::legacy::find_fan_policy(image) {
                 Ok(Some(fp)) => from_table(&fp),
                 Ok(None) => json!({"present": false}),
                 Err(e) => json!({"present": false, "note": format!("{e}")}),
             }
         }
     };
-    let fan_test = match nvoc_core::legacy_vbios_parser::find_fan_test(image) {
+    let fan_test = match nvoc_core::vbios::legacy::find_fan_test(image) {
         Ok(Some(ft)) => json!({
             "present": true,
             "offset": ft.table_offset,
@@ -8405,13 +8405,13 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         Err(e) => json!({"present": false, "note": format!("{e}")}),
     };
     let memory = {
-        let clock = nvoc_core::legacy_vbios_parser::find_memory_clock_table(image)
+        let clock = nvoc_core::vbios::legacy::find_memory_clock_table(image)
             .ok()
             .flatten();
-        let tweak = nvoc_core::legacy_vbios_parser::find_memory_tweak_table(image)
+        let tweak = nvoc_core::vbios::legacy::find_memory_tweak_table(image)
             .ok()
             .flatten();
-        let info = nvoc_core::legacy_vbios_parser::find_memory_info(image)
+        let info = nvoc_core::vbios::legacy::find_memory_info(image)
             .ok()
             .flatten();
         json!({
@@ -8438,9 +8438,9 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
                 "variants": i.entries.iter().map(|e| {
                     let v = e.variant;
                     json!({
-                        "type": nvoc_core::legacy_vbios_parser::memory_type_name(v.mem_type),
-                        "vendor": nvoc_core::legacy_vbios_parser::memory_vendor_name(v.vendor_id),
-                        "density": nvoc_core::legacy_vbios_parser::memory_density_name(v.density),
+                        "type": nvoc_core::vbios::legacy::memory_type_name(v.mem_type),
+                        "vendor": nvoc_core::vbios::legacy::memory_vendor_name(v.vendor_id),
+                        "density": nvoc_core::vbios::legacy::memory_density_name(v.density),
                         "strap": v.strap,
                         "rev": v.rev_id,
                         "org": v.org,
@@ -8453,7 +8453,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             })),
         })
     };
-    let falcon = match nvoc_core::legacy_vbios_parser::find_falcon_table(image) {
+    let falcon = match nvoc_core::vbios::legacy::find_falcon_table(image) {
         Ok(Some(f)) => json!({
             "present": true,
             "table_offset": f.table_offset,
@@ -8475,7 +8475,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
         Ok(None) => json!({"present": false}),
         Err(e) => json!({"present": false, "note": format!("{e}")}),
     };
-    let nvgi = nvoc_core::legacy_vbios_parser::parse_nvgi(image).map(|n| {
+    let nvgi = nvoc_core::vbios::legacy::parse_nvgi(image).map(|n| {
         json!({
             "version": n.version,
             "header_len": n.header_len,
@@ -8487,7 +8487,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "xve_subsystem_id": format!("{:#06x}", n.xve_subsystem_id),
         })
     });
-    let perf_pointers = match nvoc_core::legacy_vbios_parser::find_perf_ptr_map(image) {
+    let perf_pointers = match nvoc_core::vbios::legacy::find_perf_ptr_map(image) {
         Ok(m) => json!({
             "ptab_offset": m.ptab_offset,
             "p_len": m.p_len,

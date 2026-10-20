@@ -8,10 +8,10 @@
 
 use std::fmt::Write as _;
 
-use nvoc_core::vbios_families::{self, Family};
-use nvoc_core::vbios_gb20x;
-use nvoc_core::vbios_image_chain::{ImageKind, scan_images};
-use nvoc_core::vbios_tables_v3;
+use nvoc_core::vbios::families::{self, Family};
+use nvoc_core::vbios::gb20x;
+use nvoc_core::vbios::image_chain::{ImageKind, scan_images};
+use nvoc_core::vbios::tables_v3;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -72,7 +72,7 @@ fn analyze(data: &[u8]) -> (bool, String) {
             if p.last { " last" } else { "" }
         );
     }
-    let versions = vbios_families::scan_bios_versions(data);
+    let versions = families::scan_bios_versions(data);
     let _ = writeln!(out, "  bios versions: {:?}", versions);
     let Some(legacy) = pci.iter().find(|p| p.is_legacy()) else {
         return (
@@ -80,7 +80,7 @@ fn analyze(data: &[u8]) -> (bool, String) {
             out + "  no legacy PCIR image (container-only dump?)\n",
         );
     };
-    let arch = vbios_families::architecture(
+    let arch = families::architecture(
         legacy.device,
         &versions.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
     );
@@ -128,7 +128,7 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
             out.clone() + "  family out of scope for structural tables\n",
         );
     };
-    let ctx = match vbios_tables_v3::TableContext::new(data, family) {
+    let ctx = match tables_v3::TableContext::new(data, family) {
         Ok(c) => c,
         Err(e) => return (false, format!("{out}  chain/BIT: {e}\n")),
     };
@@ -146,7 +146,7 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
     let mut ok = true;
     report(
         "power policy",
-        vbios_tables_v3::power_policy(data, &ctx).map(|p| {
+        tables_v3::power_policy(data, &ctx).map(|p| {
             let tgp = &p.rows[p.tgp_index];
             format!(
                 "v{:#x} rows={} tgp=row{} min/def/max = {}/{}/{} {}{}",
@@ -165,7 +165,7 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
     );
     report(
         "power channels",
-        vbios_tables_v3::power_channels(data, &ctx).map(|c| {
+        tables_v3::power_channels(data, &ctx).map(|c| {
             let total = c.entries.iter().filter(|e| e.is_total_board()).count();
             format!(
                 "{} entries, entry_size {}, total-board channels: {}",
@@ -177,7 +177,7 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
     );
     report(
         "rails",
-        vbios_tables_v3::rails(data, &ctx).map(|r| {
+        tables_v3::rails(data, &ctx).map(|r| {
             r.rows
                 .iter()
                 .map(|row| {
@@ -211,7 +211,7 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
     );
     report(
         "REL limits",
-        vbios_tables_v3::rail_limits(data, &ctx).map(|l| {
+        tables_v3::rail_limits(data, &ctx).map(|l| {
             l.iter()
                 .map(|r| {
                     format!(
@@ -229,7 +229,7 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
     );
     report(
         "VMIN",
-        vbios_tables_v3::rail_vmin(data, &ctx).map(|v| {
+        tables_v3::rail_vmin(data, &ctx).map(|v| {
             v.iter()
                 .map(|r| match (r.value_uv, r.diagnostic) {
                     (Some(uv), _) => format!(
@@ -248,7 +248,7 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
     );
     report(
         "clocks",
-        vbios_tables_v3::clock_ranges(data, &ctx).map(|c| {
+        tables_v3::clock_ranges(data, &ctx).map(|c| {
             c.iter()
                 .filter(|r| r.range_stored)
                 .map(|r| format!("{} {}..{}MHz", r.domain, r.minimum_mhz, r.maximum_mhz))
@@ -258,7 +258,7 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
         out,
         &mut ok,
     );
-    match vbios_tables_v3::fan_tables(data, &ctx) {
+    match tables_v3::fan_tables(data, &ctx) {
         Ok(None) => {
             let _ = writeln!(out, "  fans: no GPU-driven fan");
         }
@@ -298,11 +298,11 @@ fn analyze_3x(data: &[u8], family: Option<Family>, out: &mut String) -> (bool, S
 }
 
 fn analyze_gb20x(data: &[u8], out: &mut String) -> (bool, String) {
-    let layout = match vbios_gb20x::parse_layout(data) {
+    let layout = match gb20x::parse_layout(data) {
         Ok(l) => l,
         Err(e) => return (false, format!("{out}  layout: {e}\n")),
     };
-    let integrity = vbios_gb20x::integrity(data, &layout);
+    let integrity = gb20x::integrity(data, &layout);
     let _ = writeln!(
         out,
         "  directory: {} objects, sha384 valid = {}, image sums = {:?}, legacy dir = {}",
@@ -317,7 +317,7 @@ fn analyze_gb20x(data: &[u8], out: &mut String) -> (bool, String) {
     let mut ok = true;
     report(
         "power policy",
-        vbios_gb20x::power_policy(data, &layout).map(|p| {
+        gb20x::power_policy(data, &layout).map(|p| {
             let tgp = if p.notebook { &p.rows[2] } else { &p.rows[8] };
             format!(
                 "v{:#x} rows={} {} TGP=row{} min/def/max = {}/{}/{} mW{}",
@@ -336,7 +336,7 @@ fn analyze_gb20x(data: &[u8], out: &mut String) -> (bool, String) {
     );
     report(
         "REL limits",
-        vbios_gb20x::rail_limits(data, &layout).map(|l| {
+        gb20x::rail_limits(data, &layout).map(|l| {
             l.iter()
                 .map(|r| {
                     format!(
@@ -353,7 +353,7 @@ fn analyze_gb20x(data: &[u8], out: &mut String) -> (bool, String) {
     );
     report(
         "VMIN",
-        vbios_gb20x::rail_vmin(data, &layout).map(|v| {
+        gb20x::rail_vmin(data, &layout).map(|v| {
             v.iter()
                 .map(|r| match (r.value_uv, r.diagnostic) {
                     (Some(uv), _) => format!(
@@ -372,7 +372,7 @@ fn analyze_gb20x(data: &[u8], out: &mut String) -> (bool, String) {
     );
     report(
         "clocks",
-        vbios_gb20x::clock_ranges(data, &layout).map(|c| {
+        gb20x::clock_ranges(data, &layout).map(|c| {
             c.iter()
                 .map(|r| format!("{} {}..{}MHz", r.domain, r.minimum_mhz, r.maximum_mhz))
                 .collect::<Vec<_>>()
@@ -383,7 +383,7 @@ fn analyze_gb20x(data: &[u8], out: &mut String) -> (bool, String) {
     );
     report(
         "profiles",
-        vbios_gb20x::power_profiles(data, &layout).map(|p| {
+        gb20x::power_profiles(data, &layout).map(|p| {
             if p.is_empty() {
                 "none enabled".to_string()
             } else {

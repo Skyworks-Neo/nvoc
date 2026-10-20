@@ -2075,7 +2075,7 @@ fn query_public_vftable(
 
 /// vBIOS GPU Boost 2.0 阶梯（Maxwell/Kepler 的 "隐藏" V/F 曲线）。
 ///
-/// 读整片 VBIOS 镜像后用 core 的 legacy_vbios_parser 解码 boost-ladder
+/// 读整片 VBIOS 镜像后用 core 的 vbios::legacy 解码 boost-ladder
 /// v0x10 表（BIT 'P'+0x34）：79×5B 点（u16 半 MHz + vmap 电压索引）+ pstate
 /// 边界标记。`curve_start_index`/`curve_end_index` 从标记推导出实际曲线窗口
 /// （最低速 pstate 边界 .. P0 边界，GM200 = 5..74；两端之外的点是低功耗态
@@ -2097,7 +2097,7 @@ fn query_vbios_vf_curve(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 /// 阶梯表 → 绘图就绪 payload（GUI/TUI 共用）。表缺失（非 Maxwell/Kepler
 /// 世代镜像）时返回 `{"available": false}` 而非报错，便于上层静默隐藏。
 fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
-    let vb = nvoc_core::legacy_vbios_parser::parse(image)?;
+    let vb = nvoc_core::vbios::legacy::parse(image)?;
     let Some(ladder) = &vb.boost_ladder else {
         return Ok(Value::Object(
             [("available".to_string(), Value::Bool(false))]
@@ -2156,7 +2156,7 @@ fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
                 [
                     (
                         "pstate".to_string(),
-                        nvoc_core::legacy_vbios_parser::pstate_display_name(m.pstate_raw)
+                        nvoc_core::vbios::legacy::pstate_display_name(m.pstate_raw)
                             .map(Value::String)
                             .unwrap_or(Value::Null),
                     ),

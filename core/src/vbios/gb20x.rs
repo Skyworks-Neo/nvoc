@@ -16,12 +16,12 @@
 use sha2::{Digest, Sha384};
 
 use crate::error::Error;
-use crate::vbios_image_chain::{
+use crate::vbios::image_chain::{
     BitDirectory, RomImage, bit_pointer, f32_at, find_bit_directory, image_chains, scan_images,
     u16_at, u32_at,
 };
-use crate::vbios_tables_v3::{ClockRange, RailRole, VminInfo};
-use crate::vbios_vfe::{self, VfeLayout, VfeTable};
+use crate::vbios::tables_v3::{ClockRange, RailRole, VminInfo};
+use crate::vbios::vfe::{self, VfeLayout, VfeTable};
 
 /// GB20x rail 表头前缀（v0x30，行 0x41；byte 3 = rail 数）。
 const RAIL_HEADER_PREFIX: [u8; 3] = [0x30, 0x05, 0x41];
@@ -290,7 +290,7 @@ pub fn parse_layout(data: &[u8]) -> Result<Gb20xLayout, Error> {
         data,
         &pci,
         &extended,
-        crate::vbios_families::Family::BlackwellGb20x,
+        crate::vbios::families::Family::BlackwellGb20x,
     );
     Ok(Gb20xLayout {
         legacy,
@@ -588,7 +588,7 @@ pub fn vfe(data: &[u8], layout: &Gb20xLayout) -> Result<VfeTable, Error> {
         ));
     }
     layout.object_for(at, 1)?;
-    vbios_vfe::decode(data, at, VfeLayout::ADA_GB20X, true)
+    vfe::decode(data, at, VfeLayout::ADA_GB20X, true)
 }
 
 // ── rail × VFE ──────────────────────────────────────────────────────────
@@ -604,7 +604,7 @@ pub struct Gb20xRailEquation {
     pub absent: bool,
     pub boot_voltage_uv: u32,
     pub equation_offset: Option<usize>,
-    pub equation_kind: Option<vbios_vfe::OutputKind>,
+    pub equation_kind: Option<vfe::OutputKind>,
     pub output_uv: Option<(f32, f32)>,
     pub maximum_offset: Option<usize>,
     /// 复核过的 REL（kind 1|7）/ ALT（kind 1）电压输出（vix layout_recognized）。
@@ -658,11 +658,11 @@ pub fn rail_equations(data: &[u8], layout: &Gb20xLayout) -> Result<Vec<Gb20xRail
                 if finite && allowed && equation.output_unit == 2 {
                     item.layout_recognized = true;
                 }
-                item.equation_kind = Some(vbios_vfe::classify_quadratic(
+                item.equation_kind = Some(vfe::classify_quadratic(
                     equation,
                     vfe_table.references.as_ref(),
                     vfe_table.variable_count,
-                    vbios_vfe::variable_is_temperature(data, &vfe_table, equation.variable),
+                    vfe::variable_is_temperature(data, &vfe_table, equation.variable),
                     1,
                 ));
             }
@@ -745,7 +745,7 @@ pub fn rail_vmin(data: &[u8], layout: &Gb20xLayout) -> Result<Vec<VminInfo>, Err
     for row in &table.rows {
         let selector = u16_at(data, row.offset + 0x13)?;
         let rel = u16_at(data, row.offset + 0x0D)?;
-        let rel_lowest = vbios_vfe::equation_span(
+        let rel_lowest = vfe::equation_span(
             data,
             vfe_table.equations_base,
             vfe_table.layout(),
@@ -771,7 +771,7 @@ pub fn rail_vmin(data: &[u8], layout: &Gb20xLayout) -> Result<Vec<VminInfo>, Err
         }
         let equation = vfe_table.equation(selector).expect("bounded");
         item.added_uv = equation.next.and_then(|n| {
-            vbios_vfe::equation_span(
+            vfe::equation_span(
                 data,
                 vfe_table.equations_base,
                 vfe_table.layout(),
@@ -782,7 +782,7 @@ pub fn rail_vmin(data: &[u8], layout: &Gb20xLayout) -> Result<Vec<VminInfo>, Err
         let Some(value) = equation
             .next
             .is_none()
-            .then(|| vbios_vfe::constant_equation_uv(equation))
+            .then(|| vfe::constant_equation_uv(equation))
             .flatten()
         else {
             item.diagnostic = Some(if equation.kind_raw == 2 {
@@ -898,8 +898,8 @@ pub fn clock_ranges(data: &[u8], layout: &Gb20xLayout) -> Result<Vec<ClockRange>
             } else {
                 UNKNOWN_DOMAINS[i - names.len()]
             },
-            minimum_mhz: crate::vbios_image_chain::i16_at(data, row + 3)?,
-            maximum_mhz: crate::vbios_image_chain::i16_at(data, row + 5)?,
+            minimum_mhz: crate::vbios::image_chain::i16_at(data, row + 3)?,
+            maximum_mhz: crate::vbios::image_chain::i16_at(data, row + 5)?,
             minimum_offset: row + 3,
             maximum_offset: row + 5,
             range_stored: true,
@@ -1047,6 +1047,6 @@ mod tests {
         let _ = u32_at;
         let _: Option<VminInfo> = None;
         let _ = VfeLayout::ADA_GB20X;
-        let _ = vbios_vfe::constant_equation_uv;
+        let _ = vfe::constant_equation_uv;
     }
 }

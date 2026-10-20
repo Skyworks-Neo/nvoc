@@ -7,7 +7,6 @@ mod gpu_type;
 pub mod kmd;
 
 pub use gpu::nvapi_init_attempted;
-pub mod legacy_vbios_parser;
 mod nvapi;
 pub mod nvml;
 pub mod operation;
@@ -15,12 +14,7 @@ pub mod result;
 pub mod rm;
 pub mod target;
 mod types;
-pub mod vbios_dcb;
-pub mod vbios_families;
-pub mod vbios_gb20x;
-pub mod vbios_image_chain;
-pub mod vbios_tables_v3;
-pub mod vbios_vfe;
+pub mod vbios;
 
 pub use self::nvapi::{
     CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,

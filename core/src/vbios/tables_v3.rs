@@ -14,7 +14,7 @@
 //! - **rail 表**（P+0x68）：Ada V20（`20 05 1f 01 00`，行 0x1F）、
 //!   Ampere V20（17B 行，1-2 轨）、Turing 1x（`10 05 0e 01 00`，14B 行）。
 //!   选择器：REL/ALT/OV（u8）+ 评估 VMIN；boot 电压 u32 uV。
-//! - **VFE**（P+0x20）：见 [`crate::vbios_vfe`]。Ada 方程 25B/链接 u16、
+//! - **VFE**（P+0x20）：见 [`crate::vbios::vfe`]。Ada 方程 25B/链接 u16、
 //!   Ampere/Turing 24B/链接 u8。
 //! - **时钟**（C+8）：Ada/Ampere GV HAL v0x40（10 行 + 每 rail 3B 子条
 //!   目）、Turing v0x35（10×11B，master 行存偏移 min/max）。
@@ -25,12 +25,12 @@
 //! warning（本模块只读，不写回）。
 
 use crate::error::Error;
-use crate::vbios_families::Family;
-use crate::vbios_image_chain::{
+use crate::vbios::families::Family;
+use crate::vbios::image_chain::{
     BitDirectory, RomImage, bit_pointer, find_bit_directory, i16_at, image_chains, scan_images,
     u16_at, u32_at,
 };
-use crate::vbios_vfe::{self, VfeLayout, VfeTable};
+use crate::vbios::vfe::{self, VfeLayout, VfeTable};
 
 /// 3x 功率策略变体：(version, header_size, entry_size)。
 const ADA_POWER_VARIANTS: [(u8, u8, u8); 3] =
@@ -618,7 +618,7 @@ pub fn vfe(data: &[u8], ctx: &TableContext) -> Result<VfeTable, Error> {
             + usize::from(data[at + 2]) * usize::from(data[at + 3])
             + layout.equation_size,
     )?;
-    vbios_vfe::decode(data, at, layout, count_wide)
+    vfe::decode(data, at, layout, count_wide)
 }
 
 // ── rail × VFE 组合 ─────────────────────────────────────────────────────
@@ -635,7 +635,7 @@ pub struct RailRoleEquation {
     pub absent: bool,
     pub boot_voltage_uv: u32,
     pub equation_offset: Option<usize>,
-    pub equation_kind: Option<crate::vbios_vfe::OutputKind>,
+    pub equation_kind: Option<crate::vbios::vfe::OutputKind>,
     /// 输出钳位 (min, max) µV（电压输出方程才有）。
     pub output_uv: Option<(f32, f32)>,
     /// clamp max 字段绝对偏移。
@@ -682,11 +682,11 @@ pub fn rail_equations(data: &[u8], ctx: &TableContext) -> Result<Vec<RailRoleEqu
                 }
                 let equation = vfe_table.equation(eq_index).expect("index bounded");
                 let picking = roles.iter().filter(|(_, _, rr)| rr == &raw).count();
-                let kind = vbios_vfe::classify_quadratic(
+                let kind = vfe::classify_quadratic(
                     equation,
                     vfe_table.references.as_ref(),
                     vfe_table.variable_count,
-                    vbios_vfe::variable_is_temperature(data, &vfe_table, equation.variable),
+                    vfe::variable_is_temperature(data, &vfe_table, equation.variable),
                     picking,
                 );
                 item.equation_offset = Some(equation.offset);
@@ -696,7 +696,7 @@ pub fn rail_equations(data: &[u8], ctx: &TableContext) -> Result<Vec<RailRoleEqu
                     item.maximum_offset = Some(equation.offset + 7);
                 }
                 item.editable_ceiling = matches!(role, RailRole::Rel | RailRole::Alt)
-                    && kind == crate::vbios_vfe::OutputKind::TemperatureDerated;
+                    && kind == crate::vbios::vfe::OutputKind::TemperatureDerated;
             }
             out.push(item);
         }
@@ -712,7 +712,7 @@ pub struct RailLimit {
     /// REL 方程索引。
     pub rel_equation_index: u16,
     pub equation_offset: usize,
-    pub equation_kind: crate::vbios_vfe::OutputKind,
+    pub equation_kind: crate::vbios::vfe::OutputKind,
     pub output_minimum_uv: f32,
     pub output_maximum_uv: f32,
     pub maximum_offset: usize,
@@ -754,11 +754,11 @@ pub fn rail_limits(data: &[u8], ctx: &TableContext) -> Result<Vec<RailLimit>, Er
                 "vbios: REL variable index exceeds VFE variable table",
             ));
         }
-        let kind = vbios_vfe::classify_quadratic(
+        let kind = vfe::classify_quadratic(
             equation,
             vfe_table.references.as_ref(),
             vfe_table.variable_count,
-            vbios_vfe::variable_is_temperature(data, &vfe_table, equation.variable),
+            vfe::variable_is_temperature(data, &vfe_table, equation.variable),
             1,
         );
         out.push(RailLimit {
@@ -772,7 +772,7 @@ pub fn rail_limits(data: &[u8], ctx: &TableContext) -> Result<Vec<RailLimit>, Er
             maximum_offset: equation.offset + 7,
             input_variable: Some((
                 equation.variable,
-                vbios_vfe::variable_offset(&vfe_table, equation.variable),
+                vfe::variable_offset(&vfe_table, equation.variable),
             )),
         });
     }
@@ -815,7 +815,7 @@ pub fn rail_vmin(data: &[u8], ctx: &TableContext) -> Result<Vec<VminInfo>, Error
     for row in &table.rows {
         let selector = data[row.offset + vmin_off];
         let rel = u16::from(data[row.offset + 4]);
-        let rel_lowest = vbios_vfe::equation_span(
+        let rel_lowest = vfe::equation_span(
             data,
             vfe_table.equations_base,
             layout,
@@ -840,8 +840,8 @@ pub fn rail_vmin(data: &[u8], ctx: &TableContext) -> Result<Vec<VminInfo>, Error
             continue;
         }
         let equation = vfe_table.equation(u16::from(selector)).expect("bounded");
-        let next = equation.next.unwrap_or(vbios_vfe::none_sentinel(layout));
-        item.added_uv = vbios_vfe::equation_span(
+        let next = equation.next.unwrap_or(vfe::none_sentinel(layout));
+        item.added_uv = vfe::equation_span(
             data,
             vfe_table.equations_base,
             layout,
@@ -1328,9 +1328,9 @@ pub fn bank_layout(data: &[u8], ctx: &TableContext, chain_count: usize) -> Optio
 pub fn detect_family(data: &[u8]) -> Option<(Family, bool)> {
     let (pci, _extended, _issues) = scan_images(data);
     let legacy = pci.iter().find(|p| p.is_legacy())?;
-    let versions = crate::vbios_families::scan_bios_versions(data);
+    let versions = crate::vbios::families::scan_bios_versions(data);
     let refs: Vec<&str> = versions.iter().map(|s| s.as_str()).collect();
-    if let Some(f) = crate::vbios_families::architecture(legacy.device, &refs).family
+    if let Some(f) = crate::vbios::families::architecture(legacy.device, &refs).family
         && f.in_scope()
     {
         return Some((f, false));
@@ -1348,7 +1348,7 @@ pub fn detect_family(data: &[u8]) -> Option<(Family, bool)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::vbios_image_chain::{f32_at, testutil::*};
+    use crate::vbios::image_chain::{f32_at, testutil::*};
 
     use super::*;
 
@@ -1517,13 +1517,13 @@ mod tests {
         assert!((limits[0].output_maximum_uv - 1_200_000.0).abs() < 1.0);
         assert_eq!(
             limits[0].equation_kind,
-            crate::vbios_vfe::OutputKind::TemperatureDerated
+            crate::vbios::vfe::OutputKind::TemperatureDerated
         );
         let eqs = rail_equations(&buf, &ctx).unwrap();
         let ov = eqs.iter().find(|e| e.role == RailRole::Ov).unwrap();
         assert_eq!(
             ov.equation_kind,
-            Some(crate::vbios_vfe::OutputKind::Constant)
+            Some(crate::vbios::vfe::OutputKind::Constant)
         );
         let rel = eqs.iter().find(|e| e.role == RailRole::Rel).unwrap();
         assert!(rel.editable_ceiling); // 温度降额 REL 的 clamp max 可抬（本 parser 只读）

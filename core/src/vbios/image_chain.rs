@@ -3,7 +3,7 @@
 //!
 //! - [`scan_images`]：512B 步进枚举 `55 AA`（PCIR）与 `VN`（NPDS）镜像头，
 //!   边界全部来自头字段（image length ×512），配 overlap/truncation 诊断。
-//!   这补上了 legacy_vbios_parser"多镜像只解码第一份"的缺口。
+//!   这补上了 vbios::legacy"多镜像只解码第一份"的缺口。
 //! - [`npde_offset`]：NPDS 之后的 NPDE 扩展头（16B 对齐），承载 last-image
 //!   位（byte 0x0A bit7）——Turing 链尾判定依赖它。
 //! - [`find_bit_directory`]：严格 BIT 解析（头字节和校验 = 0、token 不重号、
@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 
 use crate::error::Error;
-use crate::vbios_families::Family;
+use crate::vbios::families::Family;
 
 // ── 基础读取助手 ────────────────────────────────────────────────────────
 

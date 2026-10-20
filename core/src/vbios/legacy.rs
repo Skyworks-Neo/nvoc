@@ -62,7 +62,7 @@
 //! RE 过程：MBT 为 .NET+Babel 混淆程序集，ILSpy 反编译见
 //! `~/ida-scratch/mbt-decomp/`（2026-09-07）。
 
-use super::error::Error;
+use crate::error::Error;
 
 /// perf v0x40 子条目域序（与 MBT Clock States 页、nvoc 域命名一致）。
 pub const PERF_DOMAINS: [&str; 9] = [

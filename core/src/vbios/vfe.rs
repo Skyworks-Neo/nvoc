@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use crate::error::Error;
-use crate::vbios_image_chain::f32_at;
+use crate::vbios::image_chain::f32_at;
 
 /// 残差阈值：斜率绝对值低于它视为 0（语料最大 5e-9，真实斜率 ≥35）。
 const VFE_RESIDUE: f64 = 1e-6;
