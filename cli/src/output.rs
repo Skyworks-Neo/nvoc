@@ -650,6 +650,7 @@ fn format_blackwell_table(output: &Value) -> Vec<String> {
             false,
         ));
     }
+    push_structural_sections(output, &mut lines);
     lines
 }
 
@@ -840,7 +841,404 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
 /// lines as Pascal): power, thermal, DCB display map, identity,
 /// internal-use, flash directory, memory, thermal limits, fan curve /
 /// coolers, falcon ucode, NVGI and the PERF_PTR slot map.
+/// Structural layer (vix 对照补差) human rendering: image chain + 架构门 +
+/// 按族表解码，每表一段紧凑行。unsupported 形状以 warning 行呈现（fail
+/// closed 保持可见）。
+fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
+    let Some(st) = output.get("structural") else {
+        return;
+    };
+    // 镜像链 + 架构门。
+    if let Some(arch) = st.get("architecture") {
+        let (pci, npds, issues) = match st.get("image_chain") {
+            Some(chain) => (
+                chain
+                    .get("pci_images")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+                chain
+                    .get("npds_images")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+                chain
+                    .get("issues")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+            ),
+            None => (0, 0, 0),
+        };
+        let family = arch
+            .get("family")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let product = arch.get("product").and_then(Value::as_str).unwrap_or("?");
+        let device = arch
+            .get("pci_device")
+            .and_then(Value::as_str)
+            .unwrap_or("????");
+        let inferred = arch
+            .get("family_inferred")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let versions: Vec<String> = arch
+            .get("bios_versions")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ver_note = versions
+            .first()
+            .map(|v| format!(" bios {v}"))
+            .unwrap_or_default();
+        let scope_note = if arch.get("in_scope").and_then(Value::as_bool) == Some(false) {
+            " OUT-OF-SCOPE"
+        } else {
+            ""
+        };
+        let infer_note = if inferred {
+            " (family inferred from BIOS prefix)"
+        } else {
+            ""
+        };
+        let issue_note = if issues > 0 {
+            format!(", {issues} ISSUES")
+        } else {
+            String::new()
+        };
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    structural: {pci} PCI + {npds} NPDS images{issue_note} | {family}{scope_note}{infer_note} {device} {product}{ver_note}"
+            ),
+            false,
+        ));
+    } else if let Some(status) = st
+        .get("image_chain")
+        .and_then(|c| c.get("status"))
+        .and_then(Value::as_str)
+    {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    structural: {status}"),
+            false,
+        ));
+    }
+    // 3x 世代表（Turing/Ampere/Ada）。
+    if let Some(t) = st.get("tables_v3") {
+        if let Some(reason) = t.get("reason").and_then(Value::as_str) {
+            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                "    structural: {reason}"
+            )));
+        } else {
+            let family = t.get("family").and_then(Value::as_str).unwrap_or("?");
+            if let Some(p) = t.get("power_policy").and_then(Value::as_object)
+                && let (Some(rows), Some(tgp)) = (
+                    p.get("rows").and_then(Value::as_array),
+                    p.get("tgp_index").and_then(Value::as_u64),
+                )
+                && let Some(tgp_row) = rows.get(tgp as usize)
+            {
+                let ver = p.get("version").and_then(Value::as_str).unwrap_or("?");
+                let nb = if p.get("notebook").and_then(Value::as_bool) == Some(true) {
+                    " notebook"
+                } else {
+                    ""
+                };
+                let unit = tgp_row.get("unit").and_then(Value::as_str).unwrap_or("mW");
+                let scale = if unit == "mA" { 1.0 } else { 1000.0 };
+                let fmt = |v: u64| {
+                    if unit == "mA" {
+                        format!("{v} {unit}")
+                    } else {
+                        format!("{:.0} W", v as f64 / scale)
+                    }
+                };
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power policy (v3x {ver} {family}{nb}): TGP row{tgp} {}/{}/{}, {} rows",
+                        fmt(tgp_row
+                            .get("minimum_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        fmt(tgp_row
+                            .get("default_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        fmt(tgp_row
+                            .get("maximum_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        rows.len()
+                    ),
+                    false,
+                ));
+            }
+            render_rails(t, lines);
+            render_rel_limits(t.get("rel_limits"), lines);
+            render_vmin(t.get("vmin"), lines);
+            render_clocks(t.get("clocks"), true, lines);
+            render_fans_v3(t, lines);
+        }
+    }
+    // GB20x（50 系）。
+    if let Some(g) = st.get("gb20x") {
+        if let Some(reason) = g.get("reason").and_then(Value::as_str) {
+            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                "    structural: {reason}"
+            )));
+            return;
+        }
+        if let Some(i) = g.get("integrity") {
+            let ok = i.get("valid").and_then(Value::as_bool).unwrap_or(false);
+            let objects = i.get("object_count").and_then(Value::as_u64).unwrap_or(0);
+            let legacy = i
+                .get("legacy_directory_present")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let legacy_note = if legacy { ", legacy dir ok" } else { "" };
+            let text = if ok {
+                format!("    integrity: {objects} objects sha384 OK, image sums zero{legacy_note}")
+            } else {
+                let bad = i
+                    .get("bad_object_ids")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len());
+                format!("    integrity: FAILED ({bad} bad objects)")
+            };
+            if ok {
+                lines.push(nvoc_cli_common::color::stylize(&text, false));
+            } else {
+                lines.push(nvoc_cli_common::color::stylize_warning(&text));
+            }
+        }
+        if let Some(p) = g.get("power_policy").and_then(Value::as_object)
+            && let Some(rows) = p.get("rows").and_then(Value::as_array)
+        {
+            let notebook = p.get("notebook").and_then(Value::as_bool) == Some(true);
+            let tgp_row_idx = if notebook { 2 } else { 8 };
+            if let Some(r) = rows.get(tgp_row_idx) {
+                let ver = p.get("version").and_then(Value::as_str).unwrap_or("?");
+                let nb = if notebook { " notebook" } else { "" };
+                let fmt = |v: u64| format!("{:.0} W", v as f64 / 1000.0);
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power policy (gb20x {ver}{nb}): TGP row{tgp_row_idx} {}/{}/{}, {} rows",
+                        fmt(r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        fmt(r.get("default_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        fmt(r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        rows.len()
+                    ),
+                    false,
+                ));
+            }
+        }
+        render_rel_limits(g.get("rel_limits"), lines);
+        render_vmin(g.get("vmin"), lines);
+        render_clocks(g.get("clocks"), false, lines);
+        if let Some(profiles) = g.get("profiles").and_then(Value::as_array)
+            && !profiles.is_empty()
+        {
+            let items: Vec<String> = profiles
+                .iter()
+                .map(|p| {
+                    let entries: Vec<String> = p
+                        .get("entries")
+                        .and_then(Value::as_array)
+                        .map(|es| {
+                            es.iter()
+                                .map(|e| {
+                                    format!(
+                                        "p{}/{}/{:#x}",
+                                        e.get("policy").and_then(Value::as_u64).unwrap_or(0),
+                                        e.get("field").and_then(Value::as_str).unwrap_or("?"),
+                                        e.get("value_raw").and_then(Value::as_u64).unwrap_or(0)
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        "#{}: {}",
+                        p.get("index").and_then(Value::as_u64).unwrap_or(0),
+                        entries.join(" ")
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    override profiles: {}", items.join(" | ")),
+                false,
+            ));
+        }
+    }
+}
+
+fn render_rails(t: &Value, lines: &mut Vec<String>) {
+    let Some(rails) = t.get("rails").and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = rails
+        .iter()
+        .map(|r| {
+            let name = r.get("name").and_then(Value::as_str).unwrap_or("?");
+            let boot = r
+                .get("boot_voltage_uv")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let sels: Vec<String> = r
+                .get("selectors")
+                .and_then(Value::as_array)
+                .map(|ss| {
+                    ss.iter()
+                        .filter(|s| s.get("absent").and_then(Value::as_bool) != Some(true))
+                        .map(|s| {
+                            format!(
+                                "{}={}",
+                                s.get("role").and_then(Value::as_str).unwrap_or("?"),
+                                s.get("raw").and_then(Value::as_u64).unwrap_or(0)
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            format!("{name} boot {}mV {}", boot / 1000, sels.join(" "))
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    rails: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_rel_limits(limits: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(limits) = limits.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = limits
+        .iter()
+        .map(|l| {
+            let rail = l.get("rail").and_then(Value::as_str).unwrap_or("?");
+            let mv = l.get("max_mv").and_then(Value::as_f64).unwrap_or(0.0);
+            match l.get("kind").and_then(Value::as_str) {
+                Some(kind) => format!("{rail} REL max {mv:.1} mV ({kind})"),
+                None => format!("{rail} REL max {mv:.1} mV"),
+            }
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    rel limits: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_vmin(vmins: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(vmins) = vmins.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = vmins
+        .iter()
+        .map(|v| {
+            let rail = v.get("rail").and_then(Value::as_str).unwrap_or("?");
+            match (
+                v.get("value_mv").and_then(Value::as_f64),
+                v.get("diagnostic").and_then(Value::as_str),
+            ) {
+                (Some(mv), _) => format!("{rail} {mv:.1} mV pinned"),
+                (None, Some(d)) => format!("{rail} {d}"),
+                (None, None) => format!("{rail} unpinned"),
+            }
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    vmin: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_clocks(clocks: Option<&Value>, filter_stored: bool, lines: &mut Vec<String>) {
+    let Some(clocks) = clocks.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = clocks
+        .iter()
+        .filter(|c| !filter_stored || c.get("range_stored").and_then(Value::as_bool) == Some(true))
+        .map(|c| {
+            format!(
+                "{} {}..{}",
+                c.get("domain").and_then(Value::as_str).unwrap_or("?"),
+                c.get("min_mhz").and_then(Value::as_i64).unwrap_or(0),
+                c.get("max_mhz").and_then(Value::as_i64).unwrap_or(0)
+            )
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    clock ranges (MHz): {}", items.join(", ")),
+            false,
+        ));
+    }
+}
+
+fn render_fans_v3(t: &Value, lines: &mut Vec<String>) {
+    match t.get("fans") {
+        Some(f) if f.get("present").and_then(Value::as_bool) == Some(true) => {
+            let channels = f
+                .get("channels")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_u64).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let rows: Vec<String> = f
+                .get("rows")
+                .and_then(Value::as_array)
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|r| r.get("active").and_then(Value::as_bool) == Some(true))
+                .map(|r| {
+                    format!(
+                        "ch{} {}..{}% {}..{}rpm {}Hz",
+                        r.get("index").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("level_min").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("level_max").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("rpm_min").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("rpm_max").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("pwm_frequency_hz")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    fan channels {:?}: {}", channels, rows.join(" | ")),
+                false,
+            ));
+        }
+        Some(f) if f.get("present").and_then(Value::as_bool) == Some(false) => {
+            lines.push(nvoc_cli_common::color::stylize(
+                "    fan channels: none (no GPU-driven fan)",
+                false,
+            ));
+        }
+        Some(f) => {
+            if let Some(reason) = f.get("reason").and_then(Value::as_str) {
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    fan channels: unsupported ({reason})"
+                )));
+            }
+        }
+        None => {}
+    }
+}
+
 fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
+    // structural layer (vix 对照补差：镜像链/架构门/按族表解码)
+    push_structural_sections(output, lines);
     // power table (target/limit/slider per CPR power scan)
     if let Some(power) = output.get("power").and_then(Value::as_array)
         && let Some(p) = power.first()
