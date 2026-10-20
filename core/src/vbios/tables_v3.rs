@@ -188,6 +188,33 @@ impl PowerChannelEntry {
         self.bytes.first().copied().unwrap_or(0)
     }
 
+    /// 通道标称电压（bytes 2..6，u32 µV）——12V 感测族 = 12,000,000。
+    pub fn voltage_uv(&self) -> Option<u32> {
+        if self.bytes.len() >= 6 {
+            Some(u32::from_le_bytes(
+                self.bytes[2..6].try_into().expect("bounds checked"),
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// 感测倍率（bytes 6..8，u16 Q4.12 定点，0x1000 = 1.0）。**只在 12V
+    /// 感测族（`voltage_uv() == 12,000,000` 且 class 1/5）上作 shunt 校准
+    /// 解读**：原始感测值 × scale = 实际值。实测分布——参考卡恒 1.0；
+    /// 3090 NVVDD 相位输出监视出厂 4.0；shunt mod / 非标 shunt 的 12V
+    /// 连接器通道出现 1.3333（4090 CC07B）与 2.0（4070S 非公）。其它
+    /// class 的同位字节语义未证实（vix 观察 class-2 求和通道在该位置存
+    /// 别的值），勿据此解读。
+    pub fn sense_scale(&self) -> Option<f32> {
+        if self.bytes.len() >= 8 {
+            let raw = u16::from_le_bytes(self.bytes[6..8].try_into().expect("bounds checked"));
+            Some(f32::from(raw) / 4096.0)
+        } else {
+            None
+        }
+    }
+
     /// rail（byte 1）：0xF5=全板、0xFF=PCIe slot、0xE0=12V 输入、1=NVVDD。
     pub fn rail(&self) -> u8 {
         self.bytes.get(1).copied().unwrap_or(0)
@@ -205,19 +232,16 @@ impl PowerChannelEntry {
     }
 
     /// 监视点角色（vix tables.py 的通道字节模板匹配；空串 = 未识别）。
-    /// 模板：12V 感测族共享 `?? ?? 00 1B B7 00 00 10` 中段；NVVDD 输出
-    /// 监视 `01 01 …` 且 byte14 = 05(power)/06(current)；全板 = `02 F5`。
+    /// 模板：12V 感测族共享 `?? ?? 00 1B B7 00 …` 电压前缀（u32 12V µV；
+    /// **不含** bytes 6..8 的感测倍率位——非 1.0 shunt 校准会改写它，
+    /// vix 模板钉死 `00 10` 恰好漏掉全部非标样本）；NVVDD 输出监视
+    /// `01 01 …` 且 byte14 = 05(power)/06(current)；全板 = `02 F5`。
     pub fn role_name(&self) -> &'static str {
         let b = &self.bytes;
         if b.len() < 8 {
             return "";
         }
-        let twelve_v_sense = b[2] == 0x00
-            && b[3] == 0x1B
-            && b[4] == 0xB7
-            && b[5] == 0x00
-            && b[6] == 0x00
-            && b[7] == 0x10;
+        let twelve_v_sense = b[2] == 0x00 && b[3] == 0x1B && b[4] == 0xB7 && b[5] == 0x00;
         if self.class() == 2 && self.rail() == 0xF5 {
             return "total-board";
         }
@@ -225,6 +249,10 @@ impl PowerChannelEntry {
             match (self.class(), self.rail()) {
                 (5, 0xFF) => return "pcie-slot",
                 (5, 0xE0) => return "12v-input",
+                // Ada 外接连接器（12V-2x6）输入感测：rail 0xF7 通道在两块
+                // 非标样本上携带 ≠1.0 感测倍率（4070S x2.0、4090 CC07B
+                // x1.3333），参考卡恒 1.0。命名从上下文推断。
+                (5, 0xF7) => return "12v-connector",
                 (1, 0x01) => {
                     return match b.get(14) {
                         Some(0x05) => "nvvdd-power",
@@ -241,11 +269,13 @@ impl PowerChannelEntry {
         ""
     }
 
-    /// 12V 输入通道（class 5 + bytes 2..7 == CHANNEL_12V 且无其它参数）。
+    /// 12V 输入通道（class 5 + rail 0xE0 + bytes 2..6 == 12V µV 前缀且无
+    /// 其它参数；倍率位 bytes 6..8 不参与——非标 shunt 会改写）。
     pub fn is_12v_input(&self) -> bool {
         self.class() == 5
             && self.bytes.len() > 15
-            && self.bytes[2..8] == CHANNEL_12V
+            && self.bytes[2..6] == CHANNEL_12V[..4]
+            && self.rail() == 0xE0
             && self.bytes[8..15].iter().all(|&b| b == 0)
     }
 }

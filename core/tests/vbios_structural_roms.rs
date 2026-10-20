@@ -244,6 +244,44 @@ fn vix_gui_field_map_on_4090_48g() {
 }
 
 #[test]
+fn shunt_sense_scales_nonunity_samples() {
+    // 通道条目 bytes 6..8（u16 Q4.12，0x1000=1.0）= 感测倍率：3090 NVVDD
+    // 相位输出出厂 4.0；4070S 非公 12V-2x6 连接器 2.0；4090 CC07B shunt
+    // mod 连接器 1.3333；参考卡恒 1.0。
+    let scales = |name: &str, idx: usize| {
+        let data = load(name).expect(name);
+        let ctx = tables_v3::TableContext::new(&data, Family::Ampere)
+            .or_else(|_| tables_v3::TableContext::new(&data, Family::Ada))
+            .expect("ctx");
+        let ch = &tables_v3::power_channels(&data, &ctx).unwrap().entries[idx];
+        (ch.role_name(), ch.sense_scale().expect("scale"))
+    };
+    assert_eq!(
+        scales("3090_GA102_940226C035_371W_10DE_2204_1B4C_1454.rom", 19),
+        ("nvvdd-current", 4.0)
+    );
+    assert_eq!(
+        scales("AD104_4070S_10DE_2783_1458_4138_320W.rom", 3),
+        ("12v-connector", 2.0)
+    );
+    // 0x1555 = 5461 → Q4.12 量化值 1.333252（4/3 的最近定点表示）。
+    assert_eq!(
+        scales("4090_48G_AD102_MAX_450W_1075mV_95023CC07B.rom", 2),
+        ("12v-connector", 5461.0 / 4096.0)
+    );
+    // 参考 4090 全通道 1.0。
+    let data = load("4090_48G_AD102_MAX_450W_1075mV_95023C0002.rom").expect("ref rom");
+    let ctx = tables_v3::TableContext::new(&data, Family::Ada).expect("ctx");
+    let channels = tables_v3::power_channels(&data, &ctx).unwrap();
+    assert!(
+        channels
+            .entries
+            .iter()
+            .all(|c| c.sense_scale().is_none_or(|s| (s - 1.0).abs() < 1e-6))
+    );
+}
+
+#[test]
 fn memtweak_v20_bitfields_decode_monotonic() {
     // NVRM 617.42 内嵌 RM sub_1C67060 逆向布局，3090 实测值固化：
     // 高频段 set0 最紧（CL3 p44=25 p45=26），低频段 set6 松（CL2 p44=10

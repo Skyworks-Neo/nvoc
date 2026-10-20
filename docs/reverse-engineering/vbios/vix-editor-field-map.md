@@ -74,6 +74,29 @@ channel 字节（同构验证见 git 999b5df 提交说明）。角色名 = 通�
 | `PCI 10de:2684` / `ada` | `architecture.pci_device/family`（615.71.09 产品表门） |
 | BIOS 95.02.3C.00.02 | `architecture.bios_versions` |
 
+## Shunt multiplier（vix 显示端换算 ↔ nvoc ROM 内校准解码）
+
+vix GUI 顶部的 "Shunt multiplier (x)" 是**纯显示端换算**（帮助文本
+"Solo informativo: la VBIOS guarda los valores de los campos"——用户手填
+倍率，SHUNT_KEYS 字段显示"真实量 = 显示量 × 倍率"），vix 未从 ROM 解出
+任何 shunt 字段。nvoc 的增量发现：**功率通道条目 bytes 6..8（u16 Q4.12
+定点，0x1000 = 1.0）就是每通道的感测倍率校准**——原始感测值 × scale =
+实际值，shunt mod 改物理电阻后改这里即可恢复读数（无需 UI 换算）。
+注意 vix 的通道模板（SLOT_CHANNEL 等）把该位钉死为 `00 10`，恰好漏掉
+全部非标样本；nvoc 模板只校验 12V 电压前缀（bytes 2..6）。
+
+实测分布（`shunt/sense scales` 行，只列 12V 感测族 ≠1.0 通道）：
+
+| ROM | 通道 | scale |
+| --- | --- | --- |
+| 3090（含原版 371W） | ch19 NVVDD 相位输出（nvvdd-current） | **4.0**（出厂：相位级 shunt 阻值小） |
+| 4070S 非公 320W | ch3 12V-2x6 连接器（12v-connector，rail 0xF7） | **2.0** |
+| 4090 CC07B | ch2 12v-connector | **1.3333**（0x1555；shunt mod 特征） |
+| 参考 4090/4060/2070 等 | 全通道 | 1.0 |
+
+其它 class（如 class-2 求和通道）的同位字节语义未证实（vix 观察到求和
+通道在该位置存别的值），不标 shunt。
+
 ## 未映射（vix 有、nvoc 只读解析刻意不带）
 
 - 编辑/写回语义（vix 是编辑器：bounds/ordering group/opt-in 闸门）——

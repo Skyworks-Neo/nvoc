@@ -8020,6 +8020,11 @@ fn structural_sections_json(image: &[u8]) -> Value {
             "twelve_v_inputs": c.entries.iter().enumerate().filter(|(_, e)| e.is_12v_input()).map(|(i, _)| i).collect::<Vec<_>>(),
             // 每通道监视点角色（vix 通道模板；空 = 未识别）。
             "roles": c.entries.iter().map(|e| e.role_name()).collect::<Vec<_>>(),
+            // 每通道标称电压（µV）与感测倍率（Q4.12；1.0 = 标称 shunt）。
+            "channel_scaling": c.entries.iter().map(|e| json!({
+                "voltage_uv": e.voltage_uv(),
+                "scale": e.sense_scale(),
+            })).collect::<Vec<_>>(),
         })),
         "rails": nvoc_core::vbios::tables_v3::rails(image, &ctx).ok().map(|t| json!(t.rows.iter().map(|r| json!({
             "name": r.name, "boot_voltage_uv": r.boot_voltage_uv,

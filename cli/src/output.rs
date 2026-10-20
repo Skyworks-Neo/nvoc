@@ -1765,6 +1765,51 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 false,
             ));
         }
+        // shunt/感测倍率 ≠ 1.0 的通道（Q4.12；4090 CC07B 连接器 1.3333、
+        // 4070S 2.0、3090 NVVDD 相位 4.0 实测）。1.0 通道不列。
+        if let Some(scales) = output
+            .get("structural")
+            .and_then(|t| t.get("tables_v3"))
+            .and_then(|t| t.get("power_channels"))
+            .and_then(|c| c.get("channel_scaling"))
+            .and_then(Value::as_array)
+            && let Some(roles) = output
+                .get("structural")
+                .and_then(|t| t.get("tables_v3"))
+                .and_then(|t| t.get("power_channels"))
+                .and_then(|c| c.get("roles"))
+                .and_then(Value::as_array)
+        {
+            // 只列 12V 感测族（voltage_uv == 12,000,000 且有模板 role）：
+            // 该族的 bytes 6..8 = 感测倍率（shunt 校准）。其它 class 的同位
+            // 置字节语义未证实（vix 观察 class-2 求和通道在 bytes 6..7 存
+            // 别的值），不标 shunt。
+            let items: Vec<String> = scales
+                .iter()
+                .zip(roles.iter())
+                .enumerate()
+                .filter_map(|(i, (sc, role))| {
+                    if sc.get("voltage_uv").and_then(Value::as_u64) != Some(12_000_000) {
+                        return None;
+                    }
+                    let role = role.as_str().unwrap_or("");
+                    if role.is_empty() {
+                        return None;
+                    }
+                    let scale = sc.get("scale").and_then(Value::as_f64)?;
+                    if (scale - 1.0).abs() < 1e-4 {
+                        return None;
+                    }
+                    Some(format!("ch{i} {role} x{scale:.4}"))
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    shunt/sense scales: {}", items.join(" | ")),
+                    false,
+                ));
+            }
+        }
         // range → tweak set 映射（strap 副本 byte 0 的关联键）。各 strap 同
         // 组时折叠为 #k；0xFF（无）折叠为 none。
         if let Some(ranges) = mem
