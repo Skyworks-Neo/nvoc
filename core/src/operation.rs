@@ -2020,6 +2020,25 @@ impl GpuOperation for QueryNvapiBarInfo {
     }
 }
 
+/// ADC sense-device directory + live rail-voltage readings
+/// (`ClockAdcDevicesGetInfo` 0x68789E2A / `GetStatus` 0x43D9B26A) —
+/// see [`OperationKind::QueryNvapiAdcDevices`]. Read-only telemetry:
+/// a refusal means the part exposes no ADC devices (`Ok(None)`), never a
+/// failure of the surrounding report.
+pub struct QueryNvapiAdcDevices;
+
+impl GpuOperation for QueryNvapiAdcDevices {
+    type Output = Option<::nvapi::hi::AdcDevices>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiAdcDevices
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.adc_devices().map_err(Error::from)
+    }
+}
+
 /// Set one rail's µV offset via the private VoltRails control object (the
 /// melonVolt write path: GET snapshot → locate entry → type guard →
 /// patch → SET → readback verify, see `reverse/melonvolt/ANALYSIS.md`).

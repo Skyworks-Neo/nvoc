@@ -150,6 +150,10 @@ pub enum OutputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     List,
+    /// Meta command (no GPU target): resolve the NVAPI interfaces nvoc
+    /// depends on and report availability — mVolt+-style self-inventory,
+    /// see docs/reverse-engineering/nvapi/mvolt-plus-nvapi-surface.md.
+    Doctor,
     GetGpuList,
     GetDisplayList,
     GetInfo,
@@ -479,6 +483,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 )])),
                     ..CommandSpec::new("clear-edid", Group::Info, "Clear display EDID through NVAPI")
                 },
+            ),
+            (
+                Command::Doctor,
+                CommandSpec::new(
+                    "doctor",
+                    Group::Info,
+                    "Resolve the NVAPI interfaces nvoc depends on and report availability (QueryInterface null-checks only — never calls the handlers; safe with no GPU). Use after driver bumps to triage interface drift, e.g. 576.x → 617.42",
+                ),
             ),
             (
                 Command::GetAutoboostStatus,
@@ -1542,6 +1554,68 @@ fn render_list_invocation(invocation: &Invocation) -> CliResult<RunOutput> {
     })
 }
 
+/// `doctor`: resolve every NVAPI interface nvoc depends on and report
+/// availability. Meta command — no GPU discovery, no handler calls.
+/// Human output groups resolved/missing; JSON output is the full entry
+/// table (mVolt+-compat-report shape) for diffing across driver versions.
+fn render_doctor_invocation(invocation: &Invocation) -> CliResult<RunOutput> {
+    let report = nvoc_core::nvapi_doctor_report();
+    let rendered = match invocation.output {
+        OutputFormat::Json => {
+            let entries: Vec<Value> = report
+                .entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "name": e.name,
+                        "id": format!("0x{:08X}", e.id),
+                        "resolved": e.resolved,
+                    })
+                })
+                .collect();
+            serde_json::to_string_pretty(&json!({
+                "interface_version": report.interface_version,
+                "load_error": report.load_error,
+                "all_resolved": report.all_resolved(),
+                "missing": report.missing(),
+                "entries": entries,
+            }))?
+        }
+        OutputFormat::Human => {
+            let mut text = Vec::new();
+            match (&report.interface_version, &report.load_error) {
+                (Some(v), _) => text.push(format!("NVAPI interface: {v}")),
+                (None, Some(err)) => text.push(format!("NVAPI unavailable: {err}")),
+                (None, None) => text.push("NVAPI unavailable".to_string()),
+            }
+            let (resolved, total) = (
+                report.entries.iter().filter(|e| e.resolved).count(),
+                report.entries.len(),
+            );
+            text.push(format!(
+                "Interfaces resolved: {resolved}/{total}{}",
+                if report.all_resolved() {
+                    String::new()
+                } else {
+                    " — MISSING (see below)".to_string()
+                }
+            ));
+            for entry in &report.entries {
+                let marker = if entry.resolved { "ok " } else { "MISS" };
+                text.push(format!("  [{marker}] {} (0x{:08X})", entry.name, entry.id));
+            }
+            text.join("\n")
+        }
+    };
+    // Non-zero exit when anything nvoc depends on did not resolve — lets
+    // scripts gate a driver-bump smoke test on `nvoc-cli doctor`.
+    let exit_code = i32::from(!report.all_resolved());
+    Ok(RunOutput {
+        rendered,
+        exit_code,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
     pub backend: BackendChoice,
@@ -1690,7 +1764,7 @@ fn validate_invocation(invocation: &Invocation) -> CliResult<()> {
         .ok_or_else(|| CliError::new("missing function name"))?;
 
     // `list` is a meta command: it reads no GPU and uses no backend.
-    if command != Command::List {
+    if !matches!(command, Command::List | Command::Doctor) {
         let supported = command.adapters();
         match invocation.backend {
             BackendChoice::Nvapi if !supported.contains(&BackendAdapter::Nvapi) => {
@@ -2265,6 +2339,10 @@ pub fn run_invocation(invocation: &Invocation) -> CliResult<RunOutput> {
     if invocation.command == Some(Command::List) {
         return render_list_invocation(invocation);
     }
+    // Meta command: interface-resolution probe, no GPU targets either.
+    if invocation.command == Some(Command::Doctor) {
+        return render_doctor_invocation(invocation);
+    }
 
     let execution = execute(invocation)?;
     let rendered = match invocation.output {
@@ -2669,6 +2747,7 @@ fn execute_target(
     match command {
         Command::GetGpuList => unreachable!("get-gpu-list is handled before target execution"),
         Command::List => unreachable!("list is handled in run_invocation"),
+        Command::Doctor => unreachable!("doctor is handled in run_invocation"),
         Command::GetDisplayList => {
             let all = option_bool(invocation, "all", false)?;
             let displays = run(target, QueryDisplays { all })?.output;
@@ -8696,6 +8775,7 @@ mod tests {
     fn require_every_variant_listed(command: Command) {
         match command {
             Command::List
+            | Command::Doctor
             | Command::GetGpuList
             | Command::GetDisplayList
             | Command::GetInfo

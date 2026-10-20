@@ -1,5 +1,6 @@
 mod conv;
 pub mod dll_path;
+pub mod doctor;
 mod error;
 mod gpu;
 mod gpu_type;
@@ -25,6 +26,7 @@ pub use self::nvapi::{
 pub use ::nvapi::sys::gpu::power::undocumented::Wm2AcousticMode;
 pub use ::nvapi::{P0VoltageBounds, VoltRails};
 pub use conv::ConvertEnum;
+pub use doctor::{NvapiDoctorEntry, NvapiDoctorReport, nvapi_doctor_report};
 pub use error::Error;
 pub use gpu::{GpuSelector, nvapi_interface_version};
 pub use gpu_type::{
@@ -37,10 +39,10 @@ pub use operation::{
     PrivateVfPairReport, PrivateVfPairWrite, ProbeVoltageLimits, QueryApiRestriction,
     QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices, QueryDomainVfpPoints,
     QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
-    QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiBarInfo,
-    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect,
-    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains,
-    QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
+    QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiAdcDevices,
+    QueryNvapiBarInfo, QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDetail,
+    QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum,
+    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
     QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPstates20Private,

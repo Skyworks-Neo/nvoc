@@ -267,6 +267,13 @@ pub enum OperationKind {
     /// (percent → 0..65536 level). Fallback pin for drivers where the
     /// ClientFanCoolers control-block SET is rejected (472.12 live).
     SetFanPercent,
+    /// ADC sense-device directory + live rail-voltage readings
+    /// (`ClockAdcDevicesGetInfo` 0x68789E2A / `GetStatus` 0x43D9B26A) —
+    /// the only dynamic per-channel µV rail-voltage stream besides
+    /// VoltRails; useful as an independent cross-check of the voltage
+    /// axis on V/F pages. `Ok(None)` where the part exposes no ADC
+    /// devices.
+    QueryNvapiAdcDevices,
 }
 
 impl OperationKind {
