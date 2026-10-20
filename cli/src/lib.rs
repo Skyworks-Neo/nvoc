@@ -4724,6 +4724,14 @@ fn execute_target(
             let control_values = snap.control.as_ref().map(|(values, _)| values.clone());
             Ok(json!({
                 "policies": snap.policies.iter().enumerate().map(|(i, c)| {
+                    let role = policy_row_role(
+                        c.policy_id,
+                        c.subtype,
+                        c.min_raw,
+                        c.max_raw,
+                        snap.nvvdd_ocp.as_ref().map(|o| (o.policy_id, o.subtype)),
+                        snap.msvdd_ocp.as_ref().map(|o| (o.policy_id, o.subtype)),
+                    );
                     let current = c.is_current_channel();
                     // Display carries the full window in the row's own unit,
                     // 3 decimals: min / default / live current / max.
@@ -4743,6 +4751,7 @@ fn execute_target(
                         "index": c.index,
                         "policy_id": c.policy_id,
                         "subtype": c.subtype,
+                        "role": role,
                         "unit_kind": if current { "current" } else { "power" },
                         "is_board_power": c.is_board_power(),
                         "is_ocp_current": c.is_ocp_current(),
@@ -10212,6 +10221,56 @@ fn vfp_reset_domain_label(domain: VfpResetDomain) -> &'static str {
         VfpResetDomain::Core => "core",
         VfpResetDomain::Memory => "memory",
     }
+}
+
+/// 运行时功率策略行的静态角色命名——汇总已解码 VBIOS 语料的验证语义
+/// （4060 笔记本 / 4090 桌面，与 vix-editor GUI 逐值对照；无 ROM 依赖）：
+/// - `policy_id 0 + subtype 0` = 板功率/TGP 行（ROM TGP 行的运行时投影）；
+/// - `is_ocp_current` / 已知 OCP 身份 = 输出 OCP 电流行（对上 NVVDD/MSVDD
+///   OCP 段时点名）；
+/// - `min=1 且 max≥1001000` = 5001/1001 信封占位行（未 populated）；
+/// - 全零行 = ROM 有策略但运行时未实例化（无对应硬件的 slot/connector
+///   策略，驱动归零）；
+/// - 其余按 raw 窗口 + 单位中性命名，不虚构语义。
+fn policy_row_role(
+    policy_id: u32,
+    subtype: u32,
+    min_raw: u32,
+    max_raw: u32,
+    nvvdd_id: Option<(u32, u32)>,
+    msvdd_id: Option<(u32, u32)>,
+) -> &'static str {
+    // OCP 身份集与 is_current 判定随 nvapi-rs `PowerChannelPolicy` 的语义
+    // （50 系 (19,13)/(19,12)、Ampere/Ada (13,19)、Turing (6,19)、xOCD MSVDD
+    // (14,19)；min==1 → mA 电流行）。
+    const OCP_IDENTITIES: [(u32, u32); 5] = [(19, 13), (19, 12), (13, 19), (6, 19), (14, 19)];
+    let zeroed = min_raw == 0 && max_raw == 0;
+    let sentinel = min_raw == 1 && max_raw >= 1_001_000;
+    if zeroed {
+        return "zeroed (not instantiated)";
+    }
+    if policy_id == 0 && subtype == 0 {
+        return "board-power/TGP";
+    }
+    if OCP_IDENTITIES.contains(&(policy_id, subtype)) {
+        if nvvdd_id == Some((policy_id, subtype)) {
+            return "nvvdd-ocp";
+        }
+        if msvdd_id == Some((policy_id, subtype)) {
+            return "msvdd-ocp";
+        }
+        return "ocp-current";
+    }
+    if sentinel {
+        if subtype == 12 {
+            return "input-sense rail-12 (1001 sentinel)";
+        }
+        return "sentinel (5001/1001 envelope)";
+    }
+    if min_raw == 1 {
+        return "current rail";
+    }
+    "power rail"
 }
 
 fn summarize_errors(execution: &Execution) -> String {

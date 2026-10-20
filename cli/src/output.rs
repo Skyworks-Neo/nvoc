@@ -3166,19 +3166,36 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                 )];
             }
 
-            items
+            // 对象/数组项渲染为多行"块"；块与块之间插一条分隔线，否则相邻
+            // 块的字段行无法目视归属（如 get-pwr-cur-info 的 Policies 列表）。
+            // 标量项保持紧凑列表，不插线。
+            let rendered: Vec<(bool, Vec<String>)> = items
                 .iter()
-                .flat_map(|item| match item {
+                .map(|item| match item {
                     Value::Object(_) | Value::Array(_) => {
-                        format_value_block_with_context(item, indent, context)
+                        let lines = format_value_block_with_context(item, indent, context);
+                        (lines.len() >= 2, lines)
                     }
-                    _ => vec![format!(
-                        "{}- {}",
-                        indent_spaces(indent),
-                        nvoc_cli_common::color::stylize(&format_scalar("", item), false)
-                    )],
+                    _ => (
+                        false,
+                        vec![format!(
+                            "{}- {}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize(&format_scalar("", item), false)
+                        )],
+                    ),
                 })
-                .collect()
+                .collect();
+            let mut out: Vec<String> = Vec::new();
+            let mut prev_block = false;
+            for (is_block, mut lines) in rendered {
+                if is_block && prev_block {
+                    out.push(format!("{}{}", indent_spaces(indent), "-".repeat(30)));
+                }
+                out.append(&mut lines);
+                prev_block = is_block;
+            }
+            out
         }
         _ => vec![format!(
             "{}{}",
