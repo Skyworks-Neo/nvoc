@@ -233,9 +233,7 @@ fn vix_gui_field_map_on_4090_48g() {
     );
     assert_eq!((r(13).channel_index, r(13).default_raw), (19, 378_000));
     // 风扇 extra curves（GUI "Extra fan curve 1/2"：98..108°C / 92..102°C）。
-    let fans = tables_v3::fan_tables(&data, &ctx)
-        .unwrap()
-        .expect("fans");
+    let fans = tables_v3::fan_tables(&data, &ctx).unwrap().expect("fans");
     assert_eq!(fans.extra_curves.len(), 2);
     let e1 = &fans.extra_curves[0].1;
     assert_eq!(e1.points[0], (98 * 32, 2000));
