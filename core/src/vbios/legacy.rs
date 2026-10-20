@@ -1813,8 +1813,35 @@ pub struct MemoryClockEntry {
     pub flags1: u8,
     /// MPLL SS 频率增量（0.01% 单位，最大 2.55%）。
     pub ref_mplls_freq_delta: u8,
-    /// 每 strap 一份的副本（`MEMORY_CLOCK_STRAP_ENTRY_11`；>12B 截断）。
-    pub straps: Vec<[u8; 12]>,
+    /// 每 strap 一份的时序/训练寄存器副本（命名见 [`MemoryClockStrap`]）。
+    pub straps: Vec<MemoryClockStrap>,
+}
+
+/// 一份 strap 副本（hexpat `MEMORY_CLOCK_STRAP_ENTRY_11` 的命名寄存器）。
+/// byte 0 是全表关联键：指向 MemTweak 表的条目（0xFF = 无时序集）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryClockStrap {
+    /// Memory Tweak Index → [`MemoryTweakTable::entries`] 下标（0xFF = None）。
+    pub tweak_timings_index: u8,
+    pub flags0: u8,
+    pub flags1: u8,
+    pub flags2: u8,
+    /// CMOS Clock Delay。
+    pub cmos_clock_delay: u8,
+    /// 非 write-training 时使用的写桶形移位器。
+    pub write_barrel_shift: u8,
+    /// 内部 VREFD 偏移控制（GDDR5 专属）。
+    pub vrefd_offsets: u8,
+    pub flags3: u8,
+    pub flags4: u8,
+    /// QUSE DDLL Trimmer（Bug 876127）。
+    pub quse_ddll: u8,
+    /// Flags5（strap 条目 ≥ 12B 时存在）。
+    pub flags5: Option<u8>,
+    /// Micron GDDR5X 内部核心电压偏移（Bug 200266342；≥ 12B）。
+    pub mrs14_micron_offset: Option<u8>,
+    /// 原始字节（表内 StrapEntrySize 截断到 ≤16B 携带）。
+    pub raw: Vec<u8>,
 }
 
 /// 内存时钟频段表（P+0x04；GPU Boost 前的显存频率档位 + 每 strap 训练/
@@ -1863,10 +1890,23 @@ pub fn find_memory_clock_table(data: &[u8]) -> Result<Option<MemoryClockTable>, 
             if sp + sesz > data.len() {
                 break;
             }
-            let mut row = [0u8; 12];
-            let n = sesz.min(12);
-            row[..n].copy_from_slice(&data[sp..sp + n]);
-            straps.push(row);
+            let raw = data[sp..sp + sesz.min(16)].to_vec();
+            let b = |i: usize| raw.get(i).copied().unwrap_or(0);
+            straps.push(MemoryClockStrap {
+                tweak_timings_index: b(0),
+                flags0: b(1),
+                flags1: b(2),
+                flags2: b(3),
+                cmos_clock_delay: b(4),
+                write_barrel_shift: b(5),
+                vrefd_offsets: b(6),
+                flags3: b(7),
+                flags4: b(8),
+                quse_ddll: b(9),
+                flags5: if sesz >= 12 { Some(b(10)) } else { None },
+                mrs14_micron_offset: if sesz >= 12 { Some(b(11)) } else { None },
+                raw,
+            });
         }
         entries.push(MemoryClockEntry {
             freq_min_raw: r.u16(e)?,
@@ -4245,8 +4285,13 @@ mod tests {
         assert!(
             mc.entries
                 .iter()
-                .any(|e| e.straps.iter().any(|s| s[0] == 0xFF))
+                .any(|e| e.straps.iter().any(|s| s.tweak_timings_index == 0xFF))
         );
+        // 命名 strap 寄存器：首频段 strap 0 的字段拆解与原始字节一致。
+        let s0 = &mc.entries[0].straps[0];
+        assert_eq!(s0.raw[0], s0.tweak_timings_index);
+        assert_eq!(s0.raw[4], s0.cmos_clock_delay);
+        assert_eq!(s0.raw[9], s0.quse_ddll);
 
         let mt = find_memory_tweak_table(&d)
             .expect("bit ok")

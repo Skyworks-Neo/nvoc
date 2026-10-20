@@ -8472,6 +8472,20 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
                     "freq_min_raw": e.freq_min_raw,
                     "freq_max_raw": e.freq_max_raw,
                     "strap_copies": e.straps.len(),
+                    // 每 strap 的 MemTweak 条目号（0xFF = 无）——freq range
+                    // ↔ timing set 的关联键（hexpat tweak_timings_index）。
+                    "tweak_indices": e.straps.iter().map(|s| s.tweak_timings_index).collect::<Vec<_>>(),
+                    "straps": e.straps.iter().map(|s| json!({
+                        "tweak_timings_index": s.tweak_timings_index,
+                        "cmos_clock_delay": s.cmos_clock_delay,
+                        "write_barrel_shift": s.write_barrel_shift,
+                        "vrefd_offsets": s.vrefd_offsets,
+                        "quse_ddll": s.quse_ddll,
+                        "flags": [s.flags0, s.flags1, s.flags2, s.flags3, s.flags4],
+                        "flags5": s.flags5,
+                        "mrs14_micron_offset": s.mrs14_micron_offset,
+                        "raw_hex": s.raw.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                    })).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
             })),
             "tweak_table": tweak.map(|t| json!({
@@ -8481,6 +8495,15 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
                 "extended_entry_size": t.extended_entry_size,
                 "extended_entry_count": t.extended_entry_count,
                 "timing_sets": t.entries.len(),
+                // 每组时序的完整字节（时序位段 hexpat 亦未命名，如实携带；
+                // base 段 + 扩展寄存器段分开）。
+                "entries_hex": t.entries.iter().map(|e| {
+                    let base = usize::from(t.base_entry_size).min(e.len());
+                    json!({
+                        "base_hex": e[..base].iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        "ext_hex": e[base..].iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                    })
+                }).collect::<Vec<_>>(),
             })),
             "info": info.map(|i| json!({
                 "offset": i.table_offset,

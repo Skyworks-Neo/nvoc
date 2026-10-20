@@ -1538,7 +1538,7 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 ));
             }
         }
-        // 时序表形状（时序字节未 RE，只给结构）。
+        // 时序表形状（时序位段 hexpat 亦未命名，只给结构）。
         if let Some(tw) = mem.get("tweak_table").and_then(Value::as_object)
             && tw.get("timing_sets").is_some()
         {
@@ -1552,14 +1552,83 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 .and_then(Value::as_u64)
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "?".into());
+            let eec = tw
+                .get("extended_entry_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             let ver = tw.get("version").and_then(Value::as_str).unwrap_or("?");
             lines.push(nvoc_cli_common::color::stylize(
                 &format!(
-                    "    memory timings: v{ver}, {} sets (base {base}B, ext {ext}B; bytes not decoded)",
+                    "    memory timings: v{ver}, {} sets (base {base}B + {eec}×{ext}B reg; timing bits undecoded, full bytes in JSON)",
                     tw.get("timing_sets").and_then(Value::as_i64).unwrap_or(0)
                 ),
                 false,
             ));
+        }
+        // range → tweak set 映射（strap 副本 byte 0 的关联键）。各 strap 同
+        // 组时折叠为 #k；0xFF（无）折叠为 none。
+        if let Some(ranges) = mem
+            .get("clock_table")
+            .and_then(|c| c.get("freq_ranges"))
+            .and_then(Value::as_array)
+        {
+            let items: Vec<String> = ranges
+                .iter()
+                .filter(|r| {
+                    // 空槽 range（0..0）不渲染。
+                    !matches!(
+                        (
+                            r.get("freq_min_raw").and_then(Value::as_i64),
+                            r.get("freq_max_raw").and_then(Value::as_i64),
+                        ),
+                        (Some(0), Some(0))
+                    )
+                })
+                .map(|r| {
+                    let lo = r.get("freq_min_raw").and_then(Value::as_i64).unwrap_or(0);
+                    let hi = r.get("freq_max_raw").and_then(Value::as_i64).unwrap_or(0);
+                    let idxs: Vec<u8> = r
+                        .get("tweak_indices")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_u64)
+                                .map(|v| v as u8)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let label = if idxs.is_empty() {
+                        "?".into()
+                    } else {
+                        let uniq: std::collections::BTreeSet<u8> = idxs.iter().copied().collect();
+                        if uniq.len() == 1 {
+                            match uniq.iter().next().unwrap() {
+                                0xFF => "none".into(),
+                                k => format!("#{k}"),
+                            }
+                        } else {
+                            format!(
+                                "[{}]",
+                                idxs.iter()
+                                    .map(|k| if *k == 0xFF {
+                                        "-".into()
+                                    } else {
+                                        format!("{k}")
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            )
+                        }
+                    };
+                    format!("{lo}..{hi}→{label}")
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    memory timing map: {}", items.join("  ")),
+                    false,
+                ));
+            }
         }
     }
     // Thermal limits (GPU-Z aligned: rated / maximum from ThermalPolicy)
