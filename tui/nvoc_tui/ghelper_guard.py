@@ -277,45 +277,44 @@ def ghelper_running():
     if sys.platform != "win32":
         return None
     try:
-        import ctypes
-        from ctypes import wintypes
+        import ctypes.wintypes
 
         kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
 
         class _ProcessEntry32W(ctypes.Structure):
             _fields_ = [
-                ("dwSize", wintypes.DWORD),
-                ("cntUsage", wintypes.DWORD),
-                ("th32ProcessID", wintypes.DWORD),
+                ("dwSize", ctypes.wintypes.DWORD),
+                ("cntUsage", ctypes.wintypes.DWORD),
+                ("th32ProcessID", ctypes.wintypes.DWORD),
                 ("th32DefaultHeapID", ctypes.c_size_t),
-                ("th32ModuleID", wintypes.DWORD),
-                ("cntThreads", wintypes.DWORD),
-                ("th32ParentProcessID", wintypes.DWORD),
+                ("th32ModuleID", ctypes.wintypes.DWORD),
+                ("cntThreads", ctypes.wintypes.DWORD),
+                ("th32ParentProcessID", ctypes.wintypes.DWORD),
                 # LONG, not a pointer: the Win32 header keeps this field
                 # 4 bytes even on 64-bit, and a wider type here shifts
                 # szExeFile off its real offset.
-                ("pcPriClassBase", wintypes.LONG),
-                ("dwFlags", wintypes.DWORD),
-                ("szExeFile", wintypes.WCHAR * 260),
+                ("pcPriClassBase", ctypes.wintypes.LONG),
+                ("dwFlags", ctypes.wintypes.DWORD),
+                ("szExeFile", ctypes.wintypes.WCHAR * 260),
             ]
 
-        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.CreateToolhelp32Snapshot.restype = ctypes.wintypes.HANDLE
         kernel32.CreateToolhelp32Snapshot.argtypes = [
-            wintypes.DWORD,
-            wintypes.DWORD,
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.DWORD,
         ]
         for name in ("Process32FirstW", "Process32NextW"):
             func = getattr(kernel32, name)
-            func.restype = wintypes.BOOL
+            func.restype = ctypes.wintypes.BOOL
             func.argtypes = [
-                wintypes.HANDLE,
+                ctypes.wintypes.HANDLE,
                 ctypes.POINTER(_ProcessEntry32W),
             ]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
 
         snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
-        if snapshot == wintypes.HANDLE(-1).value:  # INVALID_HANDLE_VALUE
+        if snapshot == ctypes.wintypes.HANDLE(-1).value:  # INVALID_HANDLE_VALUE
             return None
         entry = _ProcessEntry32W()
         entry.dwSize = ctypes.sizeof(_ProcessEntry32W)
