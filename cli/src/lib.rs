@@ -8495,6 +8495,25 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
                 "extended_entry_size": t.extended_entry_size,
                 "extended_entry_count": t.extended_entry_count,
                 "timing_sets": t.entries.len(),
+                // 每组位段解码（v0x20；NVRM 内嵌 RM 读取路径逆向）。
+                "decoded": t.decoded.iter().map(|d| json!({
+                    "cl_ramtype2": d.cl_ramtype2,
+                    "cl_otherram": d.cl_otherram,
+                    "param35": d.param35, "param36": d.param36,
+                    "param40": d.param40, "param41": d.param41,
+                    "param44": d.param44, "param45": d.param45,
+                    "param46": d.param46, "param47": d.param47,
+                    "param48": d.param48, "param49": d.param49,
+                    "param50": d.param50, "param51": d.param51,
+                    "param52": d.param52, "param53": d.param53,
+                    "param54": d.param54,
+                    "param114": d.param114, "param115": d.param115,
+                    "ccdl": d.ccdl, "ccds": d.ccds,
+                    "configs": d.configs,
+                    "reg_overrides": d.reg_overrides.iter().map(|(a, v)| json!({
+                        "addr": format!("{:#x}", a), "value": format!("{:#x}", v),
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
                 // 每组时序的完整字节（时序位段 hexpat 亦未命名，如实携带；
                 // base 段 + 扩展寄存器段分开）。
                 "entries_hex": t.entries.iter().map(|e| {

@@ -1625,9 +1625,51 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
             let ver = tw.get("version").and_then(Value::as_str).unwrap_or("?");
             lines.push(nvoc_cli_common::color::stylize(
                 &format!(
-                    "    memory timings: v{ver}, {} sets (base {base}B + {eec}×{ext}B reg; timing bits undecoded, full bytes in JSON)",
+                    "    memory timings: v{ver}, {} sets (base {base}B + {eec}×{ext}B reg; bitfields decoded below, full bytes in JSON)",
                     tw.get("timing_sets").and_then(Value::as_i64).unwrap_or(0)
                 ),
+                false,
+            ));
+        }
+        // v0x20 位段参数摘要：按 (CL, p44, p45, CCDL, CCDS) 元组聚合 set。
+        if let Some(decoded) = mem
+            .get("tweak_table")
+            .and_then(|t| t.get("decoded"))
+            .and_then(Value::as_array)
+            && !decoded.is_empty()
+        {
+            let key = |d: &Value| {
+                (
+                    d.get("cl_ramtype2").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("param44").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("param45").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("ccdl").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("ccds").and_then(Value::as_u64).unwrap_or(0),
+                )
+            };
+            /// (CL, p44, p45, CCDL, CCDS) 参数元组 → 覆盖的 set 下标段。
+            type TimingKey = ((u64, u64, u64, u64, u64), Vec<usize>);
+            let mut groups: Vec<TimingKey> = Vec::new();
+            for (i, d) in decoded.iter().enumerate() {
+                let k = key(d);
+                match groups.last_mut() {
+                    Some((gk, idx)) if *gk == k => idx.push(i),
+                    _ => groups.push((k, vec![i])),
+                }
+            }
+            let items: Vec<String> = groups
+                .iter()
+                .map(|((cl, p44, p45, ccdl, ccds), idx)| {
+                    let span = if idx.len() == 1 {
+                        format!("#{}", idx[0])
+                    } else {
+                        format!("#{}..#{}", idx[0], idx[idx.len() - 1])
+                    };
+                    format!("{span}: CL{cl} p44={p44} p45={p45} CCDL{ccdl}/CCDS{ccds}")
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    memory timing params: {}", items.join(" | ")),
                 false,
             ));
         }

@@ -208,6 +208,25 @@ fn gb20x_5090_laptop_tgp_matches_filename() {
 }
 
 #[test]
+fn memtweak_v20_bitfields_decode_monotonic() {
+    // NVRM 617.42 内嵌 RM sub_1C67060 逆向布局，3090 实测值固化：
+    // 高频段 set0 最紧（CL3 p44=25 p45=26），低频段 set6 松（CL2 p44=10
+    // p45=12），CCDL/CCDS = Config3 byte3 低/高 nibble。
+    let data = load("3090_GA102_940226C035_371W_10DE_2204_1B4C_1454.rom").expect("3090 rom");
+    let tweak = nvoc_core::vbios::legacy::find_memory_tweak_table(&data)
+        .expect("parse ok")
+        .expect("table present");
+    assert_eq!(tweak.ver, 0x20);
+    assert_eq!(tweak.decoded.len(), tweak.entries.len());
+    let s0 = &tweak.decoded[0];
+    assert_eq!((s0.cl_ramtype2, s0.param44, s0.param45), (3, 25, 26));
+    assert_eq!((s0.ccdl, s0.ccds), (3, 2));
+    let s6 = &tweak.decoded[6];
+    assert_eq!((s6.cl_ramtype2, s6.param44, s6.param45), (2, 10, 12));
+    assert_eq!((s6.ccdl, s6.ccds), (2, 2));
+}
+
+#[test]
 fn all_in_scope_roms_have_clean_image_chains() {
     let dir = std::path::Path::new(ROM_DIR);
     if !dir.is_dir() {

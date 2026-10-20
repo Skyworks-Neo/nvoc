@@ -1942,6 +1942,133 @@ pub struct MemoryTweakTable {
     pub extended_entry_count: u8,
     /// 每组 = BaseEntrySize 字节 + ExtEntryCount×ExtEntrySize 寄存器。
     pub entries: Vec<Vec<u8>>,
+    /// v0x20 表的每组位段解码（NVRM 617.42 内嵌 RM `sub_1C67060` 读取路径
+    /// 逆向，MODS 4060 语料；v0x10 为空）。
+    pub decoded: Vec<MemoryTweakTiming>,
+}
+
+/// v0x20 base entry 位段解码。命名来源两档：
+/// - 硬件证据：`cl_*`（RAM 类型决定位段位置，RM 按 `ramtype==2` 切换）、
+///   `ccdl`/`ccds`（NVRM 字符串 "CCDL Value read from Config3"，写
+///   `NV_PFB_FBPA_GENERIC_MRS6_tCCD_L`；合法域按 RAM 类型 4..8 或 0）。
+/// - 结构证据：`paramN`（NVRM 输出结构 +N 偏移编号），语义未命名。
+///
+/// 布局：Config0..10 = 11×u32 @0x00..0x2B（BaseEntrySize ≥ 0x44 再加
+/// Config11..14 尾 dword，0x4A/0x4C/0x50 等更新代际走此分支）；word @0x2C；
+/// 6 bytes @0x2E..0x33。0x33 形状（`11d1w5b`）无 byte6（param49/54 缺）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryTweakTiming {
+    /// Config0..10（@0x00..0x2B）。
+    pub configs: [u32; 11],
+    /// @0x2C word 低 6 位。
+    pub param44: u8,
+    /// @0x2C word 位 6..12。
+    pub param45: u8,
+    /// @0x2E 位 0..2。
+    pub param36: u8,
+    /// @0x2E 位 6..7（RAM 类型表值 == 2 时作为 CL；3090/4090/2070 实测
+    /// 均随紧松单调）。
+    pub cl_ramtype2: u8,
+    /// @0x2E 位 4..5（其余 RAM 类型的 CL 候选）。
+    pub cl_otherram: u8,
+    /// @0x2F 位 0..1。
+    pub param35: u8,
+    /// @0x2F 位 2..4（RM 在特定旗标下同时送 param38/39）。
+    pub param114: u8,
+    /// @0x2F 位 5..7。
+    pub param115: u8,
+    /// @0x30 位 0..2。
+    pub param40: u8,
+    /// @0x30 位 3..7。
+    pub param41: u8,
+    /// @0x31 位 0..2。
+    pub param46: u8,
+    /// @0x31 位 3。
+    pub param50: u8,
+    /// @0x31 位 7。
+    pub param51: u8,
+    /// @0x32 位 0..2。
+    pub param47: u8,
+    /// @0x32 位 3。
+    pub param52: u8,
+    /// @0x32 位 4..6。
+    pub param48: u8,
+    /// @0x32 位 7。
+    pub param53: u8,
+    /// @0x33 位 4..6（BaseEntrySize < 0x34 时为 0）。
+    pub param49: u8,
+    /// @0x33 位 0..3（同上）。
+    pub param54: u8,
+    /// Config3 byte3 低 nibble（@0x0F）——CCDL/tCCD_L。
+    pub ccdl: u8,
+    /// Config3 byte3 高 nibble（@0x0F）——CCDS（NVRM `HIBYTE(Config3)&0xF`）。
+    pub ccds: u8,
+    /// 扩展段寄存器覆盖 (addr 低 24 位, value)。
+    pub reg_overrides: Vec<(u32, u32)>,
+}
+
+/// 解码一组 v0x20 base entry（`entry` 为该组完整字节，前缀即 base 段）。
+/// 位段提取与 NVRM 617.42 `sub_1C67060`（MODS 4060 内嵌 RM @0x1c67060）
+/// 逐一对照；Config3 的 CCDL/CCDS 见 `sub_23DCAE0`（MRS6 tCCD_L 写入）。
+pub fn decode_memtweak_timing(entry: &[u8], ext_entry_size: u8) -> Option<MemoryTweakTiming> {
+    if entry.len() < 0x34 {
+        return None;
+    }
+    let u32_at = |o: usize| -> u32 {
+        u32::from_le_bytes(entry[o..o + 4].try_into().expect("bounds checked"))
+    };
+    let mut configs = [0u32; 11];
+    for (i, c) in configs.iter_mut().enumerate() {
+        *c = u32_at(i * 4);
+    }
+    let word = u16::from_le_bytes(entry[0x2C..0x2E].try_into().expect("bounds checked"));
+    let b2e = entry[0x2E];
+    let b2f = entry[0x2F];
+    let b30 = entry[0x30];
+    let b31 = entry[0x31];
+    let b32 = entry[0x32];
+    let b33 = entry.get(0x33).copied().unwrap_or(0);
+    let cfg3 = u32_at(0x0C);
+    let reg_overrides = if ext_entry_size >= 12 {
+        entry[0x34..]
+            .chunks_exact(12)
+            .map(|c| {
+                (
+                    u32::from_le_bytes(c[0..4].try_into().expect("12B chunk")) & 0x00FF_FFFF,
+                    u32::from_le_bytes(c[4..8].try_into().expect("12B chunk")),
+                )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some(MemoryTweakTiming {
+        configs,
+        param44: (word & 0x3F) as u8,
+        param45: ((word >> 6) & 0x7F) as u8,
+        param36: b2e & 7,
+        cl_ramtype2: b2e >> 6,
+        cl_otherram: (b2e >> 4) & 3,
+        param35: b2f & 3,
+        param114: (b2f >> 2) & 7,
+        param115: b2f >> 5,
+        param40: b30 & 7,
+        param41: b30 >> 3,
+        param46: b31 & 7,
+        param50: (b31 >> 3) & 1,
+        param51: b31 >> 7,
+        param47: b32 & 7,
+        param52: (b32 >> 3) & 1,
+        param48: (b32 >> 4) & 7,
+        param53: b32 >> 7,
+        param49: (b33 >> 4) & 7,
+        param54: b33 & 0xF,
+        // RM sub_23DCAE0：CCDL = Config3 byte3 低 nibble、CCDS = 其高 nibble
+        //（`*(BYTE*)(a3+271)&0xF` / `HIBYTE(*(DWORD*)(a3+268))&0xF`）。
+        ccdl: ((cfg3 >> 24) & 0xF) as u8,
+        ccds: ((cfg3 >> 28) & 0xF) as u8,
+        reg_overrides,
+    })
 }
 
 /// 定位并解析内存时序表（BIT 'P' +0x08）。
@@ -1968,6 +2095,14 @@ pub fn find_memory_tweak_table(data: &[u8]) -> Result<Option<MemoryTweakTable>, 
         }
         entries.push(data[e..e + stride].to_vec());
     }
+    let decoded = if ver == 0x20 {
+        entries
+            .iter()
+            .filter_map(|e| decode_memtweak_timing(e, ees as u8))
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(Some(MemoryTweakTable {
         table_offset: t,
         ver,
@@ -1975,6 +2110,7 @@ pub fn find_memory_tweak_table(data: &[u8]) -> Result<Option<MemoryTweakTable>, 
         extended_entry_size: r.u8(t + 3)?,
         extended_entry_count: r.u8(t + 4)?,
         entries,
+        decoded,
     }))
 }
 
