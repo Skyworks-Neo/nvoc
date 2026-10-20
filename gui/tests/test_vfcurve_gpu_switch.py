@@ -125,6 +125,17 @@ def _make_tab(backend=None) -> VFCurveTab:
     tab._is_resize_active = False
     tab._mouse_pressed = False
     tab._blit_bg = None
+    # __init__ 的 P0 bind/电压 per-rail 状态(__new__ 绕过时需手摆)
+    tab._volt_slots_by_rail = {}
+    tab._volt_walls_by_rail = {}
+    tab._pending_ceiling_mv = None
+    tab._pending_floor_mv = None
+    tab._dragging_ceiling = False
+    tab._dragging_floor = False
+    tab._ceiling_handle = None
+    tab._floor_handle = None
+    tab._p0_ceiling_vline = None
+    tab._p0_floor_vline = None
     # Real figure so _redraw actually renders the empty-chart message.
     tab.fig, tab.ax = plt.subplots()
     tab.fig.patch.set_facecolor("#2b2b2b")

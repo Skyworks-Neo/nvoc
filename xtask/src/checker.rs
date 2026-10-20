@@ -238,10 +238,62 @@ fn ruff_exclude_args(root: &std::path::Path) -> Vec<String> {
         return Vec::new();
     };
     let tracked = git_top_paths(root, &["ls-files", "-z"]).unwrap_or_default();
-    exclude_tops(&untracked, &tracked)
+    // Fully-local tops are excluded whole. Tops WITH tracked content are
+    // scanned for CI parity, but their untracked entries are still invisible
+    // to CI — exclude those at second-component prefix granularity so a
+    // partially-tracked top (e.g. RE artifacts beside committed blobs under
+    // reverse/) doesn't drag local-only files into the gate.
+    let tracked_tops: std::collections::HashSet<&str> =
+        tracked.iter().map(String::as_str).collect();
+    let mut raw_untracked =
+        git_paths(root, &["ls-files", "--others", "--exclude-standard", "-z"]).unwrap_or_default();
+    let mut excludes = exclude_tops(&untracked, &tracked);
+    raw_untracked.retain(|path| {
+        let top = first_component(path);
+        tracked_tops.contains(top) && path.len() > top.len() && path.as_bytes()[top.len()] == b'/'
+    });
+    let mut sub_excludes: Vec<String> = raw_untracked
+        .iter()
+        .map(|path| second_component_prefix(path).to_string())
+        .collect();
+    excludes.append(&mut sub_excludes);
+    excludes.sort();
+    excludes.dedup();
+    // Callers append the vec straight onto the ruff argv — keep the flags in
+    // band, matching the original flat_map contract.
+    excludes
         .iter()
         .flat_map(|top| ["--exclude".to_string(), top.clone()])
         .collect()
+}
+
+/// Distinct first path components reported by `git ls-files`.
+fn git_paths(root: &std::path::Path, args: &[&str]) -> Option<Vec<String>> {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(root);
+    let listing = util::capture(&mut command).ok()?;
+    Some(
+        listing
+            .split('\0')
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// Longest directory-style prefix covering the first two path components
+/// (`git ls-files` output is slash-separated): `a/b/c` -> `a/b`, `a/b` ->
+/// `a/b`, a top-level `a` stays `a`.
+fn second_component_prefix(path: &str) -> &str {
+    let first = first_component(path);
+    if first.len() == path.len() {
+        return path;
+    }
+    let rest = &path[first.len() + 1..];
+    match rest.find('/') {
+        Some(index) => &path[..first.len() + 1 + index],
+        None => path,
+    }
 }
 
 /// Distinct first path components reported by `git ls-files`.
@@ -283,6 +335,13 @@ fn first_component(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn second_component_prefix_covers_two_levels() {
+        assert_eq!(super::second_component_prefix("a/b/c.py"), "a/b");
+        assert_eq!(super::second_component_prefix("a/b"), "a/b");
+        assert_eq!(super::second_component_prefix("a"), "a");
+    }
+
     #[test]
     fn only_fully_local_top_level_paths_are_excluded() {
         let excludes = super::exclude_tops(

@@ -10,28 +10,30 @@ use nvoc_core::{
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiAdcDevices, QueryNvapiClkDomainFreq,
     QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling,
-    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVbiosImage, QueryVfpPointVoltage, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock,
-    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
-    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetVfpFrequencyLock, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
-    SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanCurve, SetFanPercent,
-    SetFanRpm, SetFanSpeed, SetFanStop, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
+    QueryNvapiFramerateLimit, QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter,
+    QueryNvapiPowerCeiling, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
+    QueryNvapiTgpWattRange, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryVbiosImage, QueryVfpPointVoltage,
+    QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
+    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
+    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset,
+    ResetPublicVftableGpcLock, ResetPublicVftableOffset, ResetVfpFrequencyLock,
+    SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetClockOffset,
+    SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanCurve, SetFanPercent, SetFanRpm,
+    SetFanSpeed, SetFanStop, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks,
     SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl,
     SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiPStateNative, SetNvapiPerfFreqCap,
     SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
     SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, VfPointType, VfpResetDomain,
-    clk_vf_delta_for_target, detect_gpu_type, discover_targets, fetch_gpu_type, nvapi_status_name,
-    nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
+    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
+    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
+    VfPointType, VfpResetDomain, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
+    fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
+    try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -846,10 +848,34 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     let all_clocks_mhz = if let Some(all) = &status.all_clocks
         && !all.is_empty()
     {
-        let entries = all
+        let mut entries = all
             .iter()
             .map(|(domain, freq)| (domain.to_string(), f64_value(freq.0 as f64 / 1000.0)))
             .collect::<Vec<_>>();
+        // DIRECT-MEASURE FALLBACK for fabric domains GetAllClocks V2 leaves
+        // zero: "driver doesn't populate the slot" ≠ "unmeasurable". Live on
+        // RTX PRO 6000 Blackwell Server (580.173.02): Utils(22) reads a real
+        // fixed 107.9 MHz via 0x527FC458 but its GetAllClocks slot stays 0,
+        // so the TUI FCLK line silently dropped it. Probe the FCLK domain set
+        // that GetAllClocks omitted and fill from the direct measure; refused
+        // domains (-104 / freq 0) are skipped. Cost: only the missing slots,
+        // a handful of small controls per poll.
+        const FABRIC_BITS: [u32; 11] = [0, 1, 2, 21, 3, 5, 25, 6, 7, 20, 22];
+        let populated: std::collections::BTreeSet<i32> =
+            all.keys().map(|domain| domain.repr()).collect();
+        let missing: Vec<u32> = FABRIC_BITS
+            .iter()
+            .copied()
+            .filter(|bit| !populated.contains(&(*bit as i32)))
+            .collect();
+        if !missing.is_empty()
+            && let Ok(Some(freqs)) = run(target, QueryNvapiClkDomainFreqsBatch { domains: missing })
+                .map(|report| report.output)
+        {
+            for f in freqs.into_iter().filter(|f| f.freq_mhz > 0.0) {
+                entries.push((f.domain.to_string(), f64_value(f.freq_mhz)));
+            }
+        }
         Some(value_object(
             entries.iter().map(|(k, v)| (k.as_str(), v.clone())),
         ))
@@ -1047,14 +1073,40 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     // low-frequency info-path read (mirroring the power-limit cache) could
     // restore them if a consumer needs them.
     // (previously: target_nvml_device + pcie_throughput/replay_counter/link_gen)
+    // Entries carry their mode: PstateSelect pins surface as vfp_lock_pstate,
+    // ManualFrequency as vfp_lock_khz, ManualVoltage as vfp_lock_mv (the old
+    // code took the FIRST numeric display, mislabeling a frequency lock as mV).
     map.insert(
         "vfp_locked".into(),
         bool_value(!status.vfp_locks.is_empty()),
     );
     for lock in status.vfp_locks.values() {
-        if let Some(mv) = first_number_in_display(lock) {
-            map.insert("vfp_lock_mv".into(), f64_value(mv));
-            break;
+        match lock.mode {
+            nvoc_core::ClockLockMode::PstateSelect => {
+                if let Some(p) = lock.select_pstate {
+                    let pins = map
+                        .entry("vfp_lock_pins".to_string())
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    if let Value::Array(pin_list) = pins {
+                        pin_list.push(text(format!("P{p}")));
+                    }
+                }
+            }
+            nvoc_core::ClockLockMode::ManualFrequency => {
+                if let Some(v) = lock.lock_value
+                    && let Some(khz) = first_number_in_display(v)
+                {
+                    map.insert("vfp_lock_khz".into(), f64_value(khz));
+                }
+            }
+            nvoc_core::ClockLockMode::ManualVoltage => {
+                if let Some(v) = lock.lock_value
+                    && let Some(mv) = first_number_in_display(v)
+                {
+                    map.insert("vfp_lock_mv".into(), f64_value(mv));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1092,6 +1144,43 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     // PCIe link width (downstream lane count).
     if let Some(lanes) = status.pcie_lanes {
         map.insert("pcie_lanes".into(), u64_value(lanes as u64));
+    }
+
+    // Linux-only poll-time NVML backfill (RTX PRO 6000 Blackwell, 2026-10-11):
+    // the Windows ban above is an nvml.dll D3cold stale-handle failure mode;
+    // Linux server drivers have no such transition path (live-verified by the
+    // audit's NVML sweep, reverse/linux-580.173.02/probe/nvml-sweep2.txt).
+    // Fills the two dashboard rows the Linux shim leaves empty:
+    // - VRAM: NVAPI GetMemoryInfo unimplemented (get-status "Memory: N/A")
+    // - PCIe link gen + replay counter: GpuStatus carries lanes only
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(nvml) = target.nvml() {
+            if status.memory.is_none()
+                && let Some((used_kib, total_kib, free_kib)) =
+                    nvoc_core::nvml::query_nvml_memory_kib(nvml, target.id.0)
+            {
+                map.insert(
+                    "vram".into(),
+                    value_object([
+                        ("total_kib", u64_value(total_kib)),
+                        ("used_kib", u64_value(used_kib)),
+                        ("free_kib", u64_value(free_kib)),
+                    ]),
+                );
+            }
+            let (cur_gen, max_gen) = nvoc_core::nvml::query_nvml_pcie_link_gen(nvml, target.id.0);
+            if let Some(g) = cur_gen {
+                map.insert("pcie_link_gen".into(), u64_value(g as u64));
+            }
+            if let Some(g) = max_gen {
+                map.insert("pcie_max_link_gen".into(), u64_value(g as u64));
+            }
+            if let Some(replay) = nvoc_core::nvml::query_nvml_pcie_replay_counter(nvml, target.id.0)
+            {
+                map.insert("pcie_replay_counter".into(), u64_value(replay as u64));
+            }
+        }
     }
 
     // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle
@@ -1317,7 +1406,12 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
 
     let mut locks = Map::new();
     for (id, lock) in &settings.vfp_locks {
-        if let Some(value) = lock.lock_value {
+        if lock.mode == nvoc_core::ClockLockMode::PstateSelect {
+            locks.insert(
+                id.to_string(),
+                text(format!("pin P{}", lock.select_pstate.unwrap_or(0))),
+            );
+        } else if let Some(value) = lock.lock_value {
             locks.insert(id.to_string(), text(value));
         }
     }
@@ -2342,6 +2436,7 @@ fn set_tgp_watt(
             SetNvapiTgpWatt {
                 watts,
                 policy_index,
+                force: false,
             },
         )
         .map_err(to_py_err)?;
@@ -2519,6 +2614,22 @@ fn query_target_temp_policies(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> 
                 })
                 .collect(),
         ))
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn query_framerate_limit(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        // DRS is driver-global; the target only anchors the standard pipeline.
+        let fps = run(target, QueryNvapiFramerateLimit)
+            .map_err(to_py_err)?
+            .output;
+        Ok(value_object([
+            ("fps", fps.map(Value::from).unwrap_or(Value::Null)),
+            ("drs_setting_id", Value::from("0x10834FEE")),
+            ("unset", Value::from(fps.is_none())),
+        ]))
     })?;
     py_value(py, &value)
 }
@@ -2755,6 +2866,97 @@ fn set_volt_rail_target(
                 ("previous_offset_uV", Value::from(a.previous_offset_uV)),
                 ("applied_uV", Value::from(a.applied_uV)),
                 ("effective_wall_uV", Value::from(a.effective_wall_uV)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Write ONE melonVolt payload slot (0..5) of a volt-rail control entry as a
+/// raw µV offset. Slot semantics (P100/582.41-pinned + user A/B): 0 = uV
+/// operating offset, 1 = VBIOS max wall offset, 2 = VRM max wall offset,
+/// 3 = VMIN/min-hold offset; 4/5 honored as-is (no known use; -300 crashed
+/// 4060L/610, -100..-200 observed safe).
+#[pyfunction]
+fn set_volt_rail_slot_offset(
+    py: Python<'_>,
+    gpu: &str,
+    rail_bit: u32,
+    slot: usize,
+    offset_u_v: i32,
+    expect_type: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            SetNvapiVoltRailSlot {
+                rail_bit,
+                slot,
+                value_uV: offset_u_v,
+                expected_type: expect_type,
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(a) => value_object([
+                ("applied", Value::from(true)),
+                ("rail_bit", Value::from(a.rail_bit)),
+                ("slot", Value::from(a.slot)),
+                ("previous", Value::from(a.previous)),
+                ("applied_value", Value::from(a.applied)),
+                ("vrm_max_wall_uV", Value::from(a.vrm_max_wall_uV)),
+                ("min_hold_uV", Value::from(a.min_hold_uV)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Zero melonVolt payload slots back to stock. Default (slot = None) resets
+/// the mapped slots 0..3; passing a slot resets only that one (0..5 honored
+/// as-is per user choice).
+#[pyfunction]
+fn reset_volt_rail_limit(
+    py: Python<'_>,
+    gpu: &str,
+    rail_bit: u32,
+    slot: Option<usize>,
+    expect_type: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            ResetNvapiVoltRailLimit {
+                rail_bit,
+                slot,
+                expected_type: expect_type,
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(a) => value_object([
+                ("applied", Value::from(true)),
+                ("rail_bit", Value::from(a.rail_bit)),
+                (
+                    "resets",
+                    Value::Array(
+                        a.resets
+                            .iter()
+                            .map(|r| {
+                                value_object([
+                                    ("slot", Value::from(r.slot)),
+                                    ("previous", Value::from(r.previous)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+                ("vrm_max_wall_uV", Value::from(a.vrm_max_wall_uV)),
+                ("min_hold_uV", Value::from(a.min_hold_uV)),
             ]),
             None => value_object([("supported", Value::from(false))]),
         })
@@ -5324,11 +5526,14 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_power_ceiling, m)?)?;
     m.add_function(wrap_pyfunction!(query_target_temp_policies, m)?)?;
     m.add_function(wrap_pyfunction!(set_dnotifier, m)?)?;
+    m.add_function(wrap_pyfunction!(query_framerate_limit, m)?)?;
     m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
     m.add_function(wrap_pyfunction!(query_adc_devices, m)?)?;
     m.add_function(wrap_pyfunction!(nvapi_doctor, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_target, m)?)?;
+    m.add_function(wrap_pyfunction!(set_volt_rail_slot_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_volt_rail_limit, m)?)?;
     m.add_function(wrap_pyfunction!(set_perf_freq_cap, m)?)?;
     m.add_function(wrap_pyfunction!(query_private_freq_domain_info, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_domain_freq, m)?)?;

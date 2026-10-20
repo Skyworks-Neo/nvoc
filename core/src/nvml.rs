@@ -42,6 +42,25 @@ pub fn query_nvml_uuid(nvml: &Nvml, gpu_id: u32) -> Option<String> {
     device.uuid().ok()
 }
 
+/// Query the driver minor number (`/dev/nvidia{N}` device index) via NVML —
+/// the handle-open key for the Linux RM lane (`rm::collect`). NVML only
+/// exposes the query on Linux; elsewhere this is a defined error (the CLI
+/// gate `rm::platform_supported()` intercepts first).
+pub fn query_nvml_minor_number(nvml: &Nvml, gpu_id: u32) -> Result<u32, Error> {
+    #[cfg(target_os = "linux")]
+    {
+        let device = find_nvml_device_err(nvml, gpu_id)?;
+        device
+            .minor_number()
+            .map_err(|e| Error::Custom(format!("NVML minor number query failed: {e}")))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (nvml, gpu_id);
+        Err(Error::Custom("NVML minor number requires Linux".to_owned()))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Power queries
 // ---------------------------------------------------------------------------
@@ -140,6 +159,19 @@ pub fn query_nvml_pcie_throughput_mibps(nvml: &Nvml, gpu_id: u32) -> (Option<f32
 /// [`query_nvml_pcie_telemetry`].
 pub fn query_nvml_pcie_replay_counter(nvml: &Nvml, gpu_id: u32) -> Option<u32> {
     query_nvml_pcie_telemetry(nvml, gpu_id).replay_counter
+}
+
+/// Query VRAM usage in KiB via NVML `nvmlDeviceGetMemoryInfo`
+/// (returns `(used_kib, total_kib, free_kib)`).
+///
+/// Fills the dashboard VRAM row on GPUs where NVAPI `GetMemoryInfo` yields
+/// nothing — live on RTX PRO 6000 Blackwell Server / libnvidia-api 580.173.02
+/// (`get-status` "Memory: N/A") — see
+/// docs/reverse-engineering/nvapi/blackwell-pro6000-580-173-02-audit.md T2.
+pub fn query_nvml_memory_kib(nvml: &Nvml, gpu_id: u32) -> Option<(u64, u64, u64)> {
+    let device = find_nvml_device(nvml, gpu_id)?;
+    let mem = device.memory_info().ok()?;
+    Some((mem.used / 1024, mem.total / 1024, mem.free / 1024))
 }
 
 /// Query the current and maximum PCIe link generation, as a thin wrapper

@@ -149,7 +149,7 @@ pub(super) fn format_pstates20_private(output: &Value) -> Vec<String> {
             0 => "Gpc",
             1 => "Xbar",
             2 => "Sys",
-            3 => "Hub",
+            3 => "Hub/L2C",
             4 => "M",
             5 => "Host",
             6 => "Disp",
@@ -167,7 +167,7 @@ pub(super) fn format_pstates20_private(output: &Value) -> Vec<String> {
             18 => "Hub2",
             19 => "Leg",
             20 => "Pwr",
-            21 => "Msd",
+            21 => "Msd/Vid",
             22 => "Utils",
             23 => "ColdNv",
             24 => "ColdHotclk",
@@ -294,6 +294,77 @@ pub(super) fn format_power_ceiling(output: &Value) -> Vec<String> {
         format!("  D-Notifier Cap: {}", watts(output, "dnotify_watt")),
         format!("  Default TGP: {}", watts(output, "default_watt")),
     ]
+}
+
+/// Human output for `get-power-command`: one ExtendedLimits power-command
+/// lease cell (raw value, or the mW/W view on the request command where the
+/// live unit is known).
+pub(super) fn format_power_command(output: &Value) -> Vec<String> {
+    let channel = output.get("channel").and_then(Value::as_u64).unwrap_or(0);
+    let command = output.get("command").and_then(Value::as_str).unwrap_or("?");
+    if output.get("unset").and_then(Value::as_bool) == Some(true) {
+        return vec![format!(
+            "  Power command (channel {channel}, {command}): unset (0xFFFFFFFF)"
+        )];
+    }
+    let value = output.get("value").and_then(Value::as_u64).unwrap_or(0);
+    let mut lines = vec![format!(
+        "  Power command (channel {channel}, {command}): {value}"
+    )];
+    if let (Some(mw), Some(watt)) = (
+        output.get("value_mW").and_then(Value::as_u64),
+        output.get("value_W").and_then(Value::as_f64),
+    ) {
+        lines.push(format!("    {mw} mW ({watt:.1} W)"));
+    }
+    if command == "request" {
+        lines.push(
+            "    note: echo layer — load-time enforcement stays at the legal slider window (set-pwr-cur-limit)".to_string(),
+        );
+    }
+    lines
+}
+
+/// Human output for `set-power-command` — the post-write readback nvapi-rs
+/// verified is what the formatter prints, with the envelope facts and the
+/// echo-layer warning (the lease does NOT move load-time enforcement).
+pub(super) fn format_set_power_command(output: &Value) -> Vec<String> {
+    let channel = output.get("channel").and_then(Value::as_u64).unwrap_or(0);
+    let command = output.get("command").and_then(Value::as_str).unwrap_or("?");
+    let value = output.get("value").and_then(Value::as_u64).unwrap_or(0);
+    let mut lines = match (
+        output.get("value_mW").and_then(Value::as_u64),
+        output.get("value_W").and_then(Value::as_f64),
+    ) {
+        (Some(mw), Some(watt)) => vec![format!(
+            "  Power command set: channel {channel} {command} = {mw} mW ({watt:.1} W)"
+        )],
+        _ => vec![format!(
+            "  Power command set: channel {channel} {command} = {value}"
+        )],
+    };
+    if let Some(baseline) = output.get("baseline_before_W").and_then(Value::as_f64) {
+        lines.push(format!(
+            "    baseline: {baseline:.1} W — restore with set-power-command {baseline:.0}"
+        ));
+    } else if let Some(baseline) = output.get("baseline_before").and_then(Value::as_u64) {
+        if baseline == u32::MAX as u64 {
+            lines
+                .push("    baseline: unset sentinel (0xFFFFFFFF) — nothing to restore".to_string());
+        } else {
+            lines.push(format!("    baseline: {baseline} raw"));
+        }
+    }
+    if let Some(default_mw) = output.get("board_default_mW").and_then(Value::as_u64) {
+        lines.push(format!("    board default: {default_mw} mW"));
+    }
+    if let Some(envelope) = output.get("envelope").and_then(Value::as_str) {
+        lines.push(format!("    envelope: {envelope}"));
+    }
+    lines.push(
+        "    ECHO LAYER ONLY: GET/NVML/nvidia-smi read this value; load-time enforcement stays at the legal slider window (set-pwr-cur-limit)".to_string(),
+    );
+    lines
 }
 
 pub(super) fn format_power_mode(output: &Value) -> Vec<String> {
@@ -3022,118 +3093,261 @@ fn format_memory_entries(indent: usize, object: &serde_json::Map<String, Value>)
         .collect()
 }
 
-/// Render the thermal `sensors` array. Each entry is a `[descriptor, temp]`
-/// tuple (sub-degree celsius). The `target` field is dropped (it adds no useful
-/// information beyond the sensor name) and each temperature gets a `C` unit.
-/// Sensor ranges are temperature limits, also shown with `C`; an all-zero range
-/// (the undocumented sensors carry no limit data) is omitted as uninformative.
+/// Render the thermal `sensors` array in COMPACT form: one line naming only
+/// the classified primary sensors (`GPU_AVG: 44.5 C  HOT_SPOT: 60.8 C`).
+/// The full research metadata per channel (Channel Num/Type, Offset Sw/Hw,
+/// Scaling, Range, sensor pairing) lives in `get-thermal-channels` — the
+/// JSON emitted here is unchanged, only the human rendering slims down.
+/// Non-tuple entries (legacy descriptor objects, e.g. the NVML/legacy
+/// path's named sensors) keep the generic block rendering; metadata-less
+/// tuple entries keep a bare temperature line.
 fn format_sensors_array(indent: usize, items: &[Value]) -> Vec<String> {
-    let mut lines = Vec::new();
+    let mut named: Vec<String> = Vec::new();
+    let mut other: Vec<String> = Vec::new();
     for sensor in items {
         let Some(tuple) = sensor.as_array() else {
-            lines.extend(format_value_block_with_context(sensor, indent, "sensors"));
+            other.extend(format_value_block_with_context(sensor, indent, "sensors"));
             continue;
         };
         let descriptor = tuple.first().and_then(Value::as_object);
         let temp = tuple.get(1);
-
-        if let Some(descriptor) = descriptor {
-            lines.extend(format_sensor_descriptor(indent, descriptor));
-        }
-        if let Some(temp) = temp {
-            let rendered = match temp {
-                Value::Number(number) => format!("{} C", number),
-                _ => format_scalar("", temp),
-            };
-            lines.push(format!(
-                "{}- {}",
-                indent_spaces(indent),
-                nvoc_cli_common::color::stylize(&rendered, false)
-            ));
+        let tag = match descriptor.map(|d| d.get("channel_type")).unwrap_or(None) {
+            Some(Value::Number(n)) => n.as_i64(),
+            _ => None,
+        };
+        let temp_text = temp.map(|t| match t {
+            Value::Number(number) => format_measurement(number.as_f64().unwrap_or(0.0), "C"),
+            _ => format_scalar("", t),
+        });
+        match (tag, temp_text) {
+            (Some(t), Some(text)) if (0..=4).contains(&t) => {
+                let name = match t {
+                    0 => "GPU_AVG",
+                    1 => "HOT_SPOT",
+                    2 => "BOARD",
+                    3 => "VRAM",
+                    _ => "PWR_SUPPLY",
+                };
+                named.push(format!(
+                    "{}: {}",
+                    nvoc_cli_common::color::stylize_title(name),
+                    nvoc_cli_common::color::stylize(&text, false)
+                ));
+            }
+            (_, Some(text)) => {
+                // unclassified (255) or metadata-less: bare temperature line
+                other.push(format!(
+                    "{}- {}",
+                    indent_spaces(indent),
+                    nvoc_cli_common::color::stylize(&text, false)
+                ));
+            }
+            (_, None) => {}
         }
     }
+    let mut lines = Vec::new();
+    if !named.is_empty() {
+        lines.push(format!("{}{}", indent_spaces(indent), named.join("  ")));
+    }
+    if named.is_empty() && other.is_empty() {
+        lines.push(format!(
+            "{}(research channels: get-thermal-channels)",
+            indent_spaces(indent)
+        ));
+    }
+    lines.extend(other);
     lines
 }
 
-/// Render a sensor descriptor (everything except `target`) as indented fields.
-/// `channel_num` is emitted verbatim; `channel_type` gets a human tag
-/// (GPU_AVG/GPU_MAX/BOARD/MEMORY/PWR_SUPPLY/unclassified); `range` is a
-/// temperature limit shown as `Max N C, Min N C`, skipped when it is `{0, 0}`
-/// (the RTSS GetInfo record may report no limits for a channel, so a zero
-/// range carries no information).
-fn format_sensor_descriptor(
-    indent: usize,
-    descriptor: &serde_json::Map<String, Value>,
-) -> Vec<String> {
-    let field = |key: &str, value: &Value| {
-        format!(
-            "{}{}: {}",
-            indent_spaces(indent),
-            nvoc_cli_common::color::stylize_title(&format_label(key)),
-            nvoc_cli_common::color::stylize(&format_scalar(key, value), false)
-        )
-    };
-
+/// Render the full ThermChannel map (get-thermal-channels): the classified
+/// primary channels with live temperatures, then every populated channel with
+/// its research metadata (type tag, offsets/scaling raw, decoded range, and
+/// the same-sensor pairing annotation for the `(dev, 1)` half whose STATUS
+/// reading already carries `offset_hw`).
+pub(super) fn format_thermal_channels(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some(range) = descriptor.get("range").and_then(Value::as_object) {
-        let max = range.get("max").and_then(Value::as_f64);
-        let min = range.get("min").and_then(Value::as_f64);
-        // Skip a {0, 0} range (no limit data for undocumented sensors).
-        let is_zero_range = matches!(
-            (max, min),
-            (Some(0.0), Some(0.0)) | (Some(0.0), None) | (None, Some(0.0))
-        );
-        if !is_zero_range
-            && let Some(max) = max
-            && let Some(min) = min
-        {
+    if output.get("supported").and_then(Value::as_bool) == Some(false) {
+        return vec!["  Thermal Channels: N/A (ThermChannel family unavailable)".to_string()];
+    }
+    let temp_text = |v: Option<&Value>| -> Option<String> {
+        v.and_then(Value::as_f64)
+            .map(|t| format_measurement(t, "C"))
+    };
+    let ch_tag = |t: f64| -> String {
+        match t as i64 {
+            0 => "GPU_AVG".to_string(),
+            1 => "HOT_SPOT".to_string(),
+            2 => "BOARD".to_string(),
+            3 => "VRAM".to_string(),
+            4 => "PWR_SUPPLY".to_string(),
+            255 => "unclassified".to_string(),
+            other => format!("type {other}"),
+        }
+    };
+    if let Some(primary) = output.get("primary").and_then(Value::as_array) {
+        for entry in primary {
+            let channel = entry.get("channel").and_then(Value::as_u64);
+            let temp = temp_text(entry.get("temp_c"));
+            let label = entry
+                .get("type")
+                .and_then(Value::as_str)
+                // Same vocabulary as the compact get-status line.
+                .map(|l| match l {
+                    "GPU_MAX(hotspot)" => "HOT_SPOT",
+                    "MEMORY(vram)" => "VRAM",
+                    other => other,
+                })
+                .unwrap_or("UNKNOWN");
+            match (channel, temp) {
+                (Some(ch), Some(t)) => lines.push(format!(
+                    "  {}: ch{} = {}",
+                    nvoc_cli_common::color::stylize_title(label),
+                    nvoc_cli_common::color::stylize(&ch.to_string(), false),
+                    nvoc_cli_common::color::stylize(&t, false)
+                )),
+                (Some(ch), None) => lines.push(format!(
+                    "  {}: ch{} (no live reading)",
+                    nvoc_cli_common::color::stylize_title(label),
+                    nvoc_cli_common::color::stylize(&ch.to_string(), false)
+                )),
+                _ => {}
+            }
+        }
+    }
+    if let Some(channels) = output.get("channels").and_then(Value::as_array) {
+        if !channels.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize_title("Channels").to_string());
+        }
+        for entry in channels {
+            let idx = entry
+                .get("channel")
+                .and_then(Value::as_u64)
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let ty = entry.get("ch_type").and_then(Value::as_f64);
+            let ty_text = match ty {
+                Some(t) => ch_tag(t),
+                None => "?".to_string(),
+            };
+            let temp = temp_text(entry.get("temp_c")).unwrap_or_else(|| "no reading".to_string());
+            let mut parts = vec![format!(
+                "ch{}: {} = {}",
+                nvoc_cli_common::color::stylize(&idx, false),
+                ty_text,
+                nvoc_cli_common::color::stylize(&temp, false)
+            )];
+            if let Some(dev) = entry.get("therm_dev").and_then(Value::as_array) {
+                let d = dev.first().and_then(Value::as_u64).unwrap_or(0);
+                let p = dev.get(1).and_then(Value::as_u64).unwrap_or(0);
+                parts.push(format!("dev({d},{p})"));
+                if p == 1
+                    && let Some(sib) = entry.get("same_sensor_as").and_then(Value::as_u64)
+                {
+                    parts.push(format!("same sensor as ch{sib} (+offset_hw)"));
+                }
+            }
+            for key in ["offset_sw", "offset_hw", "scaling"] {
+                if let Some(v) = entry.get(key).and_then(Value::as_i64) {
+                    parts.push(format!("{key} {v}"));
+                }
+            }
+            if let Some(range) = entry.get("range_c").and_then(Value::as_array) {
+                let lo = range.first().and_then(Value::as_f64);
+                let hi = range.get(1).and_then(Value::as_f64);
+                if let (Some(lo), Some(hi)) = (lo, hi) {
+                    parts.push(format!(
+                        "range {}..{}",
+                        format_measurement(lo, "C"),
+                        format_measurement(hi, "C")
+                    ));
+                }
+            }
+            lines.push(format!("  {}", parts.join(" | ")));
+        }
+    }
+    if output.get("status_supported").and_then(Value::as_bool) == Some(false) {
+        lines.push("  (live STATUS refused — metadata only)".to_string());
+    }
+    // RegisterOp raw reads (LACT parity): per-chip GDDR6x/7 sensors + the
+    // Blackwell+ hotspot register fallback. On Blackwell prefer the register
+    // hotspot over the channel map's HOT_SPOT slot (LACT does the same).
+    match output.get("register_views") {
+        Some(views) if views.get("supported").and_then(Value::as_bool) == Some(false) => {
+            let reason = views
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("RegisterOp unavailable");
             lines.push(format!(
-                "{}{}: Max {}, Min {}",
-                indent_spaces(indent),
-                nvoc_cli_common::color::stylize_title("Range"),
-                nvoc_cli_common::color::stylize(&format_measurement(max, "C"), false),
-                nvoc_cli_common::color::stylize(&format_measurement(min, "C"), false)
+                "  {} {}",
+                nvoc_cli_common::color::stylize_title("Register views:"),
+                nvoc_cli_common::color::stylize(&format!("N/A ({reason})"), false)
             ));
         }
-    }
-    if let Some(chan) = descriptor.get("channel_num") {
-        lines.push(field("channel_num", chan));
-    }
-    // Cross-reference to the raw sibling channel: RTSS exposes two channels
-    // per physical sensor — `(dev, 0)` raw and `(dev, 1)` with `offset_hw`
-    // already applied by the driver. Annotate the `(dev, 1)` half.
-    if let Some(sibling) = descriptor.get("same_sensor_as").and_then(Value::as_i64) {
-        lines.push(format!(
-            "{}{}: ch[{}] with offset_hw",
-            indent_spaces(indent),
-            nvoc_cli_common::color::stylize_title("Same Sensor As"),
-            nvoc_cli_common::color::stylize(&sibling.to_string(), false)
-        ));
-    }
-    // RTSS ThermChannel metadata (research fields from GetInfo). channel_type
-    // gets a human tag; offsets/scaling are shown raw (semantics undocumented).
-    if let Some(ch_type) = descriptor.get("channel_type").and_then(Value::as_i64) {
-        let tag = match ch_type {
-            0 => " (GPU_AVG)",
-            1 => " (GPU_MAX)",
-            2 => " (BOARD)",
-            3 => " (MEMORY)",
-            4 => " (PWR_SUPPLY)",
-            255 => " (unclassified)",
-            _ => "",
-        };
-        lines.push(format!(
-            "{}{}: {}{}",
-            indent_spaces(indent),
-            nvoc_cli_common::color::stylize_title("Channel Type"),
-            nvoc_cli_common::color::stylize(&ch_type.to_string(), false),
-            tag
-        ));
-    }
-    for key in ["offset_sw", "offset_hw", "scaling"] {
-        if let Some(val) = descriptor.get(key) {
-            lines.push(field(key, val));
+        Some(views) => {
+            lines.push(nvoc_cli_common::color::stylize_title("Register views").to_string());
+            if let Some(ram) = views.get("ram_type").and_then(Value::as_str) {
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("ram_type"),
+                    nvoc_cli_common::color::stylize(ram, false)
+                ));
+            }
+            if let Some(error) = views.get("vram_chip_error").and_then(Value::as_str) {
+                // A call-level NVAPI_ERROR (-1) is the non-admin signature of
+                // the kernel register lane (RE-proven on 610.47; every user-
+                // mode check passes first). Hint so the reading is actionable.
+                let hint = if error.contains("NVAPI_ERROR") {
+                    "; the register lane requires an elevated (admin) process"
+                } else {
+                    ""
+                };
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("VRAM chip probe"),
+                    nvoc_cli_common::color::stylize(&format!("aborted ({error}){hint}"), false)
+                ));
+            } else {
+                match views.get("vram_chips").and_then(Value::as_array) {
+                    Some(chips) if !chips.is_empty() => {
+                        for chip in chips {
+                            let label = chip.get("label").and_then(Value::as_str).unwrap_or("?");
+                            let temp = temp_text(chip.get("temp_c"))
+                                .unwrap_or_else(|| "no reading".to_string());
+                            lines.push(format!(
+                                "  {}: {}",
+                                nvoc_cli_common::color::stylize_title(&format!(
+                                    "VRAM chip {label}"
+                                )),
+                                nvoc_cli_common::color::stylize(&temp, false)
+                            ));
+                        }
+                    }
+                    Some(_) => {
+                        let ram = views.get("ram_type").and_then(Value::as_str).unwrap_or("?");
+                        lines.push(format!(
+                            "  {}: {}",
+                            nvoc_cli_common::color::stylize_title("VRAM chips"),
+                            nvoc_cli_common::color::stylize(
+                                &format!("none (probe set is GDDR6x/GDDR7; this is {ram})"),
+                                false
+                            )
+                        ));
+                    }
+                    None => {}
+                }
+            }
+            if let Some(temp) = views
+                .get("blackwell_hotspot_register_c")
+                .and_then(Value::as_f64)
+            {
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("Blackwell hotspot register"),
+                    nvoc_cli_common::color::stylize(&format_measurement(temp, "C"), false)
+                ));
+            }
         }
+        None => {}
     }
     lines
 }
@@ -3410,6 +3624,10 @@ fn format_label(key: &str) -> String {
             "nvapi" => "NVAPI".to_string(),
             "nvml" => "NVML".to_string(),
             "tdp" => "TDP".to_string(),
+            "tgp" => "TGP".to_string(),
+            "ocp" => "OCP".to_string(),
+            "nvvdd" => "NVVDD".to_string(),
+            "msvdd" => "MSVDD".to_string(),
             "vfp" => "VFP".to_string(),
             // SI unit words match case-insensitively — keys arrive both as
             // "mv" and "mV" (JSON field names carry the unit suffix), and a
@@ -3418,6 +3636,9 @@ fn format_label(key: &str) -> String {
             "mv" | "mV" | "MV" => "mV".to_string(),
             "mhz" | "MHz" | "MHZ" => "MHz".to_string(),
             "khz" | "kHz" | "KHZ" => "kHz".to_string(),
+            "ns" | "Ns" | "NS" => "ns".to_string(),
+            "ma" | "mA" | "MA" => "mA".to_string(),
+            "mw" | "mW" | "MW" => "mW".to_string(),
             "c" => "C".to_string(),
             other => {
                 let mut chars = other.chars();
@@ -3437,6 +3658,56 @@ fn indent_spaces(indent: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn set_power_command_renders_envelope_and_echo_warning() {
+        let value = serde_json::json!({
+            "channel": 0,
+            "command": "request",
+            "value": 300000,
+            "value_mW": 300000,
+            "value_W": 300.0,
+            "baseline_before": 250000,
+            "baseline_before_W": 250.0,
+            "board_default_mW": 250000,
+            "envelope": "board_default_x2",
+        });
+        let lines = super::format_set_power_command(&value);
+        assert!(lines[0].contains("300000 mW (300.0 W)"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("baseline: 250.0 W")
+                && l.contains("restore with set-power-command 250")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("board default: 250000 mW")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("envelope: board_default_x2")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("ECHO LAYER ONLY")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn get_power_command_request_carries_echo_note() {
+        let value = serde_json::json!({
+            "channel": 0, "command": "request", "value": 250000,
+            "value_mW": 250000, "value_W": 250.0,
+        });
+        let lines = super::format_power_command(&value);
+        assert!(lines.iter().any(|l| l.contains("echo layer")), "{lines:?}");
+        // observed cells stay clean
+        let value = serde_json::json!({ "channel": 0, "command": "observed", "value": 7 });
+        let lines = super::format_power_command(&value);
+        assert!(!lines.iter().any(|l| l.contains("echo layer")), "{lines:?}");
+    }
     use super::*;
     use crate::{Command, TargetResult, all_commands};
     use serde_json::json;
@@ -3467,6 +3738,55 @@ mod tests {
         assert!(rendered.contains("Watt: Max 350 W, Current 250 W, Min 100 W"));
         assert!(!rendered.contains('{'));
         assert!(!rendered.contains("\"current_watt\""));
+    }
+
+    /// SI casing on current/power units: keys carry the unit as a suffix
+    /// (`raw_mA`, `driver_window_mW`), and the generic label formatter must
+    /// read them back as mA/mW — an unlisted token fell through to plain
+    /// "uppercase the first letter" and rendered "Raw MA" (user report,
+    /// 40-series set-pwr-cur-limit run).
+    #[test]
+    fn si_unit_case_is_preserved_for_ma_and_mw() {
+        nvoc_cli_common::color::init(true);
+        let execution = Execution {
+            function: "set-pwr-cur-limit",
+            command: Command::SetPwrCurLimit,
+            backend: "nvapi".to_string(),
+            warnings: Vec::new(),
+            results: vec![TargetResult {
+                gpu_id: Some(7),
+                backend: "nvapi",
+                ok: true,
+                output: Some(json!({
+                    "applied": true,
+                    "target": "nvvdd",
+                    "index": 0,
+                    "identity": "(13,19)",
+                    "amperes": 135.0,
+                    "raw_mA": 135000,
+                    "driver_window_mA": [1, 135000],
+                    "requested_mA": 140000,
+                    "clamped_to_driver_window": true,
+                })),
+                error: None,
+            }],
+        };
+
+        let rendered = format_human(&execution);
+
+        assert!(rendered.contains("Raw mA: 135000"), "{rendered}");
+        assert!(rendered.contains("Driver Window mA"), "{rendered}");
+        assert!(rendered.contains("Requested mA: 140000"), "{rendered}");
+        assert!(!rendered.contains("MA"), "{rendered}");
+
+        // Board-power row: the same formatter path with the mW suffix.
+        let rendered_mw = format_label("raw_mW") + &format_label("driver_window_mW");
+        assert_eq!(rendered_mw, "Raw mWDriver Window mW");
+
+        // Acronyms keep their canonical spelling in labels too.
+        assert_eq!(format_label("is_ocp_current"), "Is OCP Current");
+        assert_eq!(format_label("nvvdd_ocp"), "NVVDD OCP");
+        assert_eq!(format_label("tgp_range"), "TGP Range");
     }
 
     #[test]
@@ -3602,6 +3922,134 @@ mod tests {
     }
 
     #[test]
+    fn sensors_array_renders_compact_primaries_only() {
+        nvoc_cli_common::color::init(true);
+        // Mirrors get-status `sensors`: [descriptor, temp] tuples. Classified
+        // primaries collapse onto one line; unclassified research channels are
+        // dropped from the human view (full detail lives in
+        // get-thermal-channels), and legacy descriptor objects keep the block
+        // rendering.
+        let output = json!({
+            "sensors": [
+                [{"target": "Gpu", "channel_num": 0, "channel_type": 0, "offset_sw": 0, "offset_hw": 0, "scaling": 256}, 44.53125],
+                [{"target": "Gpu", "channel_num": 1, "channel_type": 1, "offset_sw": 0, "offset_hw": 0, "scaling": 256}, 60.75],
+                [{"target": "Gpu", "channel_num": 2, "channel_type": 255, "offset_sw": 0, "offset_hw": 3736, "scaling": 256}, 44.59375],
+                {"name": "Core", "range": {"max": 139, "min": -35}}
+            ]
+        });
+        let rendered = format_value_block(&output, 0).join("\n");
+        // Classified primaries collapse onto one line (sub-degree temps go
+        // through the house measurement formatter); ANSI coloring sits between
+        // the segments, so assert the parts individually.
+        assert!(rendered.contains("GPU_AVG: 44.531 C"), "{rendered}");
+        assert!(rendered.contains("HOT_SPOT: 60.75 C"), "{rendered}");
+        // Unclassified channel dropped; research fields no longer rendered here.
+        assert!(!rendered.contains("Channel Type"));
+        assert!(!rendered.contains("44.59375"));
+        assert!(!rendered.contains("Offset Hw"));
+        // Legacy object entries keep the range line.
+        assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
+    }
+
+    #[test]
+    fn thermal_channels_formatter_renders_primaries_and_metadata() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "channel_mask": "0x000000ff",
+            "primary": [
+                {"type": "GPU_AVG", "channel": 0, "temp_c": 44.5},
+                {"type": "GPU_MAX(hotspot)", "channel": 1, "temp_c": 60.8},
+                {"type": "BOARD", "channel": null, "temp_c": null}
+            ],
+            "channels": [
+                {"channel": 0, "ch_type": 0, "therm_dev": [0, 0], "same_sensor_as": null,
+                 "offset_sw": 0, "offset_hw": 0, "scaling": 256, "temp_c": 44.5},
+                {"channel": 3, "ch_type": 255, "therm_dev": [0, 1], "same_sensor_as": 2,
+                 "offset_sw": 0, "offset_hw": 3736, "scaling": 256,
+                 "range_c": [-40, 150], "temp_c": 59.2}
+            ],
+            "status_supported": true
+        });
+        let rendered = super::format_thermal_channels(&output).join("\n");
+        assert!(rendered.contains("GPU_AVG: ch0 = 44.5 C"), "{rendered}");
+        assert!(rendered.contains("HOT_SPOT: ch1 = 60.8 C"), "{rendered}");
+        assert!(
+            rendered.contains("ch3: unclassified = 59.2 C"),
+            "{rendered}"
+        );
+        // Pairing annotation + research fields + decoded range (integer
+        // degrees render without decimals through format_measurement).
+        assert!(
+            rendered.contains("same sensor as ch2 (+offset_hw)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("offset_hw 3736"), "{rendered}");
+        assert!(rendered.contains("scaling 256"), "{rendered}");
+        assert!(rendered.contains("range -40 C..150 C"), "{rendered}");
+    }
+
+    #[test]
+    fn thermal_channels_formatter_renders_register_views() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "channel_mask": "0x000000ff",
+            "primary": [],
+            "channels": [],
+            "status_supported": true,
+            "register_views": {
+                "ram_type": "GDDR7",
+                "vram_chips": [
+                    {"label": "A0 (Front)", "temp_c": 45},
+                    {"label": "A0 (Back)", "temp_c": 41}
+                ],
+                "vram_chip_error": null,
+                "blackwell_hotspot_register_c": 52
+            }
+        });
+        let rendered = super::format_thermal_channels(&output).join("\n");
+        assert!(rendered.contains("Register views"), "{rendered}");
+        assert!(rendered.contains("ram_type: GDDR7"), "{rendered}");
+        assert!(
+            rendered.contains("VRAM chip A0 (Front): 45 C"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("VRAM chip A0 (Back): 41 C"), "{rendered}");
+        assert!(
+            rendered.contains("Blackwell hotspot register: 52 C"),
+            "{rendered}"
+        );
+
+        // Gated-out card: the probe set note carries the RAM type…
+        let gddr6 = json!({
+            "primary": [],
+            "channels": [],
+            "register_views": {
+                "ram_type": "GDDR6",
+                "vram_chips": [],
+                "vram_chip_error": null,
+                "blackwell_hotspot_register_c": null
+            }
+        });
+        let rendered = super::format_thermal_channels(&gddr6).join("\n");
+        assert!(
+            rendered.contains("VRAM chips: none (probe set is GDDR6x/GDDR7; this is GDDR6)"),
+            "{rendered}"
+        );
+
+        // …and an errored op degrades to the N/A line with the reason.
+        let failed = json!({
+            "primary": [],
+            "channels": [],
+            "register_views": {"supported": false, "error": "RegisterOp refused"}
+        });
+        let rendered = super::format_thermal_channels(&failed).join("\n");
+        assert!(
+            rendered.contains("Register views: N/A (RegisterOp refused)"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn human_output_formats_vfp_points_as_rows() {
         nvoc_cli_common::color::init(true);
         let output = json!({
@@ -3710,14 +4158,14 @@ mod tests {
         assert!(rendered.contains("Shared: 32573.785 MB"));
         assert!(rendered.contains("Dedicated Evictions: 0"));
         assert!(!rendered.contains("Dedicated: 8384512"));
-        // Sensors: target dropped, classified by channel type (no Name line),
-        // temperature gets a C unit.
+        // Sensors: compact primary line (the research metadata — Channel
+        // Num/Type, Range, offsets — moved to get-thermal-channels);
+        // temperature goes through the house measurement formatter.
         assert!(!rendered.contains("Target"));
         assert!(!rendered.contains("Name:"));
-        assert!(rendered.contains("Channel Num: 0"));
-        assert!(rendered.contains("Channel Type: 0 (GPU_AVG)"));
-        assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
-        assert!(rendered.contains("- 52.58203125 C"));
+        assert!(!rendered.contains("Channel Type"));
+        assert!(!rendered.contains("Offset"));
+        assert!(rendered.contains("GPU_AVG: 52.582 C"));
     }
 
     #[test]
@@ -3741,8 +4189,9 @@ mod tests {
 
         let rendered = render_command_output(Command::GetStatus, &output).join("\n");
 
-        assert!(rendered.contains("Channel Type: 1 (GPU_MAX)"));
-        assert!(rendered.contains("- 78.5 C"));
+        // The tuple path no longer renders ranges at all (research metadata
+        // lives in get-thermal-channels); the primary collapses to one line.
+        assert!(rendered.contains("HOT_SPOT: 78.5 C"));
         assert!(!rendered.contains("Range"));
         assert!(!rendered.contains("Target"));
         assert!(!rendered.contains("Name:"));
@@ -4315,7 +4764,7 @@ mod tests {
             }),
             Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
             Command::SetPpabStatus => json!({"applied": true, "dynamic_boost": true}),
-            Command::SetPowerLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
+            Command::SetPwrCurLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetPowerLimit => json!({"applied": true, "default_watt": 100.0}),
             Command::GetDNotifier => json!({
                 "active": "D2",
