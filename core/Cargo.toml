@@ -39,3 +39,5 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# kmd_pmxdrv_embedded:内嵌驱动载荷的 SHA256 指纹钉死。
+sha2 = { workspace = true }
