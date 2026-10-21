@@ -231,9 +231,9 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Services::CloseServiceHandle;
     use windows_sys::Win32::System::Services::{
-        ControlService, CreateServiceW, DeleteService, OpenSCManagerW, OpenServiceW, SC_HANDLE,
-        SC_MANAGER_CREATE_SERVICE, SERVICE_CONTROL_STOP, SERVICE_DEMAND_START,
-        SERVICE_ERROR_NORMAL, SERVICE_KERNEL_DRIVER, StartServiceW,
+        CreateServiceW, DeleteService, OpenSCManagerW, OpenServiceW, SC_HANDLE,
+        SC_MANAGER_CREATE_SERVICE, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+        SERVICE_KERNEL_DRIVER, StartServiceW,
     };
     const SERVICE_ALL_ACCESS: u32 = 0xF01FF;
 
@@ -267,12 +267,28 @@ fn service_register_and_start(binary_path: &Path) -> Result<(), KmdPowerError> {
     }
     let existing: SC_HANDLE = unsafe { OpenServiceW(mgr, name_w.as_ptr(), SERVICE_ALL_ACCESS) };
     if !existing.is_null() {
-        unsafe {
-            ControlService(existing, SERVICE_CONTROL_STOP, std::ptr::null_mut());
-            DeleteService(existing);
-            CloseServiceHandle(existing);
+        // 残留服务先停后删:必须等到真正 STOPPED 再 CreateService,否则
+        // 驱动还在跑、条目标删未清,新建必撞 ERROR_SERVICE_MARKED_FOR_DELETE。
+        let stopped = service_stop_and_wait(existing);
+        unsafe { DeleteService(existing) };
+        unsafe { CloseServiceHandle(existing) };
+        match stopped {
+            ServiceStop::Stopped | ServiceStop::NotActive => {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            ServiceStop::Refused(err) => {
+                unsafe { CloseServiceHandle(mgr) };
+                return Err(KmdPowerError::Service(format!(
+                    "leftover {SERVICE_NAME} stop refused (win32 {err}) — finish manually with `sc stop {SERVICE_NAME}` (then `sc delete`) or reboot, and re-run"
+                )));
+            }
+            ServiceStop::TimedOut => {
+                unsafe { CloseServiceHandle(mgr) };
+                return Err(KmdPowerError::Service(format!(
+                    "leftover {SERVICE_NAME} stop still pending after 5s — retry in a moment or reboot"
+                )));
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(300));
     }
     let svc = unsafe {
         CreateServiceW(
@@ -368,46 +384,90 @@ fn fallback_copy(binary_path: &Path) -> Result<PathBuf, KmdPowerError> {
     Ok(dst)
 }
 
-/// 停止并注销服务(finally 语义:必须执行)。返回是否确认 STOPPED ——
-/// 驱动可能拒绝卸载(引用计数/驱动自身不支持二次卸载),此时服务条目已
-/// 标记删除,重启后消失;返回 false 供步骤日志诚实上报。
-fn service_stop_and_delete() -> bool {
+/// STOP 控制的三种结局 —— 诊断面按此分叉上报。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceStop {
+    /// 控制被受理且轮询到 STOPPED(卸载完成,镜像锁已释放)。
+    Stopped,
+    /// 服务本就没在跑(1062),条目可直接删。
+    NotActive,
+    /// 控制被拒(带 win32 错误码)—— 手动 `sc stop` 大概率同样报该码,
+    /// 属环境/权限面问题,而非驱动不支持停止。
+    Refused(u32),
+    /// 控制被受理但 5s 内没等到 STOPPED(卸载还在进行)。
+    TimedOut,
+}
+
+const ERROR_SERVICE_NOT_ACTIVE: u32 = 1062;
+
+/// 对已打开的服务句柄发 STOP 并等待真正 STOPPED(驱动卸载是异步的):
+/// 控制被拒即时定性,被受理则轮询至 STOPPED,窗口 5s。
+fn service_stop_and_wait(svc: windows_sys::Win32::System::Services::SC_HANDLE) -> ServiceStop {
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Services::{
-        CloseServiceHandle, ControlService, DeleteService, OpenSCManagerW, OpenServiceW,
-        QueryServiceStatus, SC_HANDLE, SERVICE_CONTROL_STOP, SERVICE_STATUS,
+        ControlService, QueryServiceStatus, SERVICE_CONTROL_STOP, SERVICE_STATUS,
+    };
+    const SERVICE_STOPPED: u32 = 1;
+    let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    if unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) } == 0 {
+        let err = unsafe { GetLastError() };
+        return match err {
+            ERROR_SERVICE_NOT_ACTIVE => ServiceStop::NotActive,
+            _ => ServiceStop::Refused(err),
+        };
+    }
+    for _ in 0..50 {
+        let mut s: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+        if unsafe { QueryServiceStatus(svc, &mut s) } != 0 && s.dwCurrentState == SERVICE_STOPPED {
+            return ServiceStop::Stopped;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    ServiceStop::TimedOut
+}
+
+/// 先 STOP(等待真正 STOPPED,见 [`service_stop_and_wait`])再注销:
+/// 没停干净 Delete 只能标删,镜像锁也不释放。返回结局供步骤日志如实
+/// 上报 —— 服务条目总是被删除标记(本命令专属名,清理安全)。
+///
+/// 注意 SCM 数据库与服务对象是两套访问掩码:OpenSCManagerW 必须用
+/// `SC_MANAGER_*` 位。此前误传 SERVICE_ALL_ACCESS(0xF01FF,服务对象
+/// 专用),多出的 0x1C0 位令句柄必拒(win32 5),STOP 从未真正发出 ——
+/// 历史上的 "unload refused" 皆源于此。此处取最小权限 CONNECT。
+fn service_stop_and_delete() -> ServiceStop {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::Services::{
+        CloseServiceHandle, DeleteService, OpenSCManagerW, OpenServiceW, SC_HANDLE,
+        SC_MANAGER_CONNECT,
     };
     const SERVICE_ALL_ACCESS: u32 = 0xF01FF;
-    const SERVICE_STOPPED: u32 = 1;
     let wide = |s: &str| {
         s.encode_utf16()
             .chain(std::iter::once(0))
             .collect::<Vec<u16>>()
     };
     let name_w = wide(SERVICE_NAME);
-    let mgr = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SERVICE_ALL_ACCESS) };
+    let mgr = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
     if mgr.is_null() {
-        return false;
+        return ServiceStop::Refused(unsafe { GetLastError() });
     }
     let svc: SC_HANDLE = unsafe { OpenServiceW(mgr, name_w.as_ptr(), SERVICE_ALL_ACCESS) };
-    let mut stopped = false;
-    if !svc.is_null() {
-        unsafe {
-            let mut status: SERVICE_STATUS = std::mem::zeroed();
-            ControlService(svc, SERVICE_CONTROL_STOP, &mut status);
-            for _ in 0..20 {
-                let mut s: SERVICE_STATUS = std::mem::zeroed();
-                if QueryServiceStatus(svc, &mut s) != 0 && s.dwCurrentState == SERVICE_STOPPED {
-                    stopped = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            DeleteService(svc);
-            CloseServiceHandle(svc);
-        }
+    if svc.is_null() {
+        let err = unsafe { GetLastError() };
+        unsafe { CloseServiceHandle(mgr) };
+        // 1060 = ERROR_SERVICE_DOES_NOT_EXIST:条目不在,无可停无可删;
+        // 其余为真实的打开被拒。
+        return if err == 1060 {
+            ServiceStop::NotActive
+        } else {
+            ServiceStop::Refused(err)
+        };
     }
+    let outcome = service_stop_and_wait(svc);
+    unsafe { DeleteService(svc) };
+    unsafe { CloseServiceHandle(svc) };
     unsafe { CloseServiceHandle(mgr) };
-    stopped
+    outcome
 }
 
 /// PMXDRV_KMD 服务是否在(本命令专属注册名)。
@@ -1217,18 +1277,46 @@ pub const PMXDRV_SYS_SHA256: &str =
 /// 磁盘镜像)。确定性命名覆盖写,崩溃残留不累积;落盘后 re-read 逐字节
 /// 比对,防部分写。
 ///
+/// 残留服务停删后,内核释放镜像映射有一个短窗口:共享冲突(os error 32)
+/// 按 200ms 步进重试 ~2s,仍锁死才报错(报错里给手动清理路径)。
+///
 /// # Errors
 /// 写盘或读回校验失败即 [`KmdPowerError::Service`]。
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub fn extract_pmxdrv_sys() -> Result<PathBuf, KmdPowerError> {
     let path = std::env::temp_dir().join("nvoc-pmxdrv.sys");
-    std::fs::write(&path, PMXDRV_SYS).map_err(|e| {
-        KmdPowerError::Service(format!(
-            "embedded pmxdrv.sys write failed ({}): {e}",
+    extract_pmxdrv_to(&path)
+}
+
+/// 落盘+读回校验本体(路径参数化:单元测试用独立文件名,不与在役
+/// %TEMP% 路径上可能存在的内核映射争锁)。
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn extract_pmxdrv_to(path: &Path) -> Result<PathBuf, KmdPowerError> {
+    let mut locked = None;
+    for _ in 0..10 {
+        match std::fs::write(path, PMXDRV_SYS) {
+            Ok(()) => {
+                locked = None;
+                break;
+            }
+            // 32 = ERROR_SHARING_VIOLATION:镜像仍被内核映射
+            Err(e) if e.raw_os_error() == Some(32) => locked = Some(e),
+            Err(e) => {
+                return Err(KmdPowerError::Service(format!(
+                    "embedded pmxdrv.sys write failed ({}): {e}",
+                    path.display()
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    if let Some(e) = locked {
+        return Err(KmdPowerError::Service(format!(
+            "embedded pmxdrv.sys write failed ({}): {e} — the previous run's image is still mapped by the kernel (PMXDRV_KMD unload was refused); reboot, or `sc stop {SERVICE_NAME}` then delete the file",
             path.display()
-        ))
-    })?;
-    let written = std::fs::read(&path)
+        )));
+    }
+    let written = std::fs::read(path)
         .map_err(|e| KmdPowerError::Service(format!("embedded pmxdrv.sys readback failed: {e}")))?;
     if written != PMXDRV_SYS {
         return Err(KmdPowerError::Service(format!(
@@ -1236,25 +1324,64 @@ pub fn extract_pmxdrv_sys() -> Result<PathBuf, KmdPowerError> {
             path.display()
         )));
     }
-    Ok(path)
+    Ok(path.to_path_buf())
 }
 
-/// [`set_power_wall_kmd`] 的零参数形态:驱动用内嵌载荷,流程结束(含
-/// 失败路径)清理落盘副本。卸载被拒时内核仍映射着镜像,删除可能失败 ——
-/// 此时残留只是占盘,下次运行覆盖。
+/// [`set_power_wall_kmd`] 的零参数形态:复用优先 —— 设备仍在位(上次实例
+/// 未卸载)就跑复用路径,不落盘不注册;否则认领残留服务(停删解锁镜像)
+/// 后释放内嵌载荷再注册。流程结束(含失败路径)统一擦屁股:服务在
+/// [`set_power_wall_kmd`] 尾声停删,temp 副本在此删除;镜像仍映射时删除
+/// 失败,副本原样保留,下次运行复用优先,不再撞共享冲突(os error 32)。
 ///
 /// # Errors
 /// 透传 [`set_power_wall_kmd`] 的错误;释放失败在写盘一步即报。
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub fn set_power_wall_kmd_embedded(wall_mw: u32) -> Result<KmdSetWallOutcome, KmdPowerError> {
-    let path = extract_pmxdrv_sys()?;
-    let mut result = set_power_wall_kmd(wall_mw, &path);
-    let _ = std::fs::remove_file(&path);
-    if let Ok(outcome) = result.as_mut() {
-        outcome.steps.insert(
-            0,
-            "pmxdrv.sys extracted from embedded payload to temp dir (sha256 pinned)".into(),
+    let temp_path = std::env::temp_dir().join("nvoc-pmxdrv.sys");
+    let mut preamble: Vec<String> = Vec::new();
+    let mut epilogue: Vec<String> = Vec::new();
+    // 复用优先:设备仍在位 = 上次实例没卸干净 —— 直接复用跑本轮,不落盘
+    // (镜像锁着也无妨)、不碰服务;周期结束后统一擦屁股。
+    if PmxDrv::connect().is_ok() {
+        preamble.push(
+            "device \\\\.\\PMXDRV already loaded — reusing the running instance (no payload extraction; service + temp copy cleaned after the cycle)".into(),
         );
+    } else {
+        // 无在跑实例:残留服务条目先停删解锁镜像,再落盘新副本。
+        if service_exists() {
+            match service_stop_and_delete() {
+                ServiceStop::Stopped => preamble.push(format!(
+                    "leftover service {SERVICE_NAME} from a previous run reclaimed (stopped+deleted) before payload extraction"
+                )),
+                ServiceStop::NotActive => preamble.push(format!(
+                    "leftover service {SERVICE_NAME} entry reclaimed (driver was not running)"
+                )),
+                ServiceStop::Refused(err) => preamble.push(format!(
+                    "leftover service {SERVICE_NAME} stop refused (win32 {err}) — delete marked; payload overwrite may hit a sharing violation until `sc stop {SERVICE_NAME}` or reboot clears it"
+                )),
+                ServiceStop::TimedOut => preamble.push(format!(
+                    "leftover service {SERVICE_NAME} stop still pending — payload overwrite may hit a sharing violation"
+                )),
+            }
+        }
+        extract_pmxdrv_sys()?;
+        preamble
+            .push("pmxdrv.sys extracted from embedded payload to temp dir (sha256 pinned)".into());
+    }
+    let mut result = set_power_wall_kmd(wall_mw, &temp_path);
+    // 擦屁股第二半:temp 副本(服务已在 set_power_wall_kmd 尾声停删)。
+    // 停删被拒时镜像还映射着,删除失败 —— 副本原样保留,下次运行复用
+    // 优先,不碍事;`sc stop {SERVICE_NAME}` 或重启后自清。
+    if temp_path.exists() && std::fs::remove_file(&temp_path).is_err() {
+        epilogue.push(
+            "temp payload copy kept (driver instance still loaded — stop refused this run); next run reuses the loaded instance".into(),
+        );
+    }
+    if let Ok(outcome) = result.as_mut() {
+        let mut steps = std::mem::take(&mut preamble);
+        steps.append(&mut outcome.steps);
+        steps.append(&mut epilogue);
+        outcome.steps = steps;
     }
     result
 }
@@ -1278,21 +1405,22 @@ pub fn set_power_wall_kmd(
             "target {wall_mw} mW exceeds absolute cap {ABSOLUTE_WALL_CAP_MW} (hard refuse, no flag overrides)"
         )));
     }
-    if !pmxdrv_path.is_file() {
-        return Err(KmdPowerError::Service(format!(
-            "driver binary not found: {}",
-            pmxdrv_path.display()
-        )));
-    }
 
-    // 1) 设备已在位(用户自管服务在跑)→ 复用实例;但 PMXDRV_KMD 存在即
-    //    本命令上次崩溃的残留,认领所有权,流程结束清掉。
-    //    否则注册+启动瞬时服务(残留自清)。
+    // 1) 设备已在位(用户自管服务在跑,或上次残留实例)→ 复用:内核已映射
+    //    镜像,磁盘副本无关紧要(可能已被 temp 清理走)。否则注册+启动瞬时
+    //    服务,这才需要磁盘镜像在位。
+    //    PMXDRV_KMD 存在即本命令上次崩溃的残留,认领所有权,流程结束清掉。
     let mut steps: Vec<String> = Vec::new();
     let registered = if PmxDrv::connect().is_ok() {
         steps.push("device \\\\.\\PMXDRV already present - reusing running instance".into());
         service_exists() // 残留认领
     } else {
+        if !pmxdrv_path.is_file() {
+            return Err(KmdPowerError::Service(format!(
+                "driver binary not found: {}",
+                pmxdrv_path.display()
+            )));
+        }
         service_register_and_start(pmxdrv_path)?;
         steps.push(format!("service {SERVICE_NAME} registered+started ✓"));
         true
@@ -1301,12 +1429,25 @@ pub fn set_power_wall_kmd(
     // 2..7) 主流程;finally:自注册或崩溃残留才注销(用户自管服务不动)
     let result = set_power_wall_inner(wall_mw, &mut steps);
     if registered {
-        if service_stop_and_delete() {
-            steps.push(format!("service {SERVICE_NAME} stopped+deleted ✓"));
-        } else {
-            steps.push(format!(
-                "service {SERVICE_NAME} marked for deletion but driver still running (unload refused) — sc stop {SERVICE_NAME} or reboot to clean up; device itself remains reusable"
-            ));
+        match service_stop_and_delete() {
+            ServiceStop::Stopped => {
+                steps.push(format!("service {SERVICE_NAME} stopped+deleted ✓"));
+            }
+            ServiceStop::NotActive => {
+                steps.push(format!(
+                    "service {SERVICE_NAME} entry deleted (driver was not running) ✓"
+                ));
+            }
+            ServiceStop::Refused(err) => {
+                steps.push(format!(
+                    "service {SERVICE_NAME} delete marked but stop was refused (win32 {err}) — finish with `sc stop {SERVICE_NAME}` or reboot; the loaded instance stays reusable meanwhile"
+                ));
+            }
+            ServiceStop::TimedOut => {
+                steps.push(format!(
+                    "service {SERVICE_NAME} delete marked; stop still pending after 5s — verify with `sc query {SERVICE_NAME}`"
+                ));
+            }
         }
     }
 
@@ -1515,6 +1656,53 @@ mod tests {
             max_mw: max,
             min_mw: None,
         }
+    }
+
+    /// 回归:上一次落盘的镜像被无共享句柄锁住时(残留驱动映像的内核映射),
+    /// 落盘曾直接撞共享冲突(os error 32)整轮失败。现要求重试穿透瞬态锁。
+    #[test]
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn extract_retries_past_transient_sharing_violation() {
+        use std::os::windows::fs::OpenOptionsExt;
+        // 独立文件名:在役 %TEMP%\nvoc-pmxdrv.sys 可能真被内核映射着(正是
+        // 本修复要自愈的现场),测试不与它争锁。
+        let path =
+            std::env::temp_dir().join(format!("nvoc-pmxdrv-test-{}.sys", std::process::id()));
+        std::fs::write(&path, b"stale").unwrap();
+        // 无共享模式句柄 = 模拟内核映射;300ms 后随线程退出释放,
+        // 落在 200ms 步进重试窗口内。
+        let holder = {
+            let holder_path = path.clone();
+            std::thread::spawn(move || {
+                // 杀软实时扫描会短暂占住刚落盘的 .sys(读句柄不带写共享),
+                // holder 拿锁本身也可能撞共享冲突 —— 同样重试到拿到为止。
+                let mut handle = None;
+                for _ in 0..20 {
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .share_mode(0)
+                        .open(&holder_path)
+                    {
+                        Ok(h) => {
+                            handle = Some(h);
+                            break;
+                        }
+                        Err(e) if e.raw_os_error() == Some(32) => {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                        Err(e) => panic!("holder open failed: {e}"),
+                    }
+                }
+                let _handle = handle.expect("exclusive lock not acquired within 1s");
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                // _handle 在线程退出时关闭 → 锁释放,落盘重试随即成功
+            })
+        };
+        let extracted = extract_pmxdrv_to(&path).expect("extract must outwait the transient lock");
+        holder.join().unwrap();
+        assert_eq!(extracted, path);
+        assert_eq!(std::fs::read(&path).unwrap(), PMXDRV_SYS);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
