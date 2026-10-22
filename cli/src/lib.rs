@@ -1410,7 +1410,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "Raw cell value; a bare number is watts (×1000 = the mW driver unit), a `mw` suffix is the raw integer. 0 and 0xFFFFFFFF are rejected (unset sentinels)",
                 )])),
                     formatter: Some(output::format_set_power_command),
-                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value. --kmd KERNEL PATH (HIGH RISK, admin): one-shot kernel cycle via the kmd lane (pmxdrv service register → page-walk + static layout probe → GPU-table chain walk → arm select: ROOT ARM (armed PowerRoot, mobile/board-config form) UPPER single-u32 write with readback + native tgp write (window follows UPPER) | BOARD ARM (desktop form: PowerRoot never arms, constructor finds no board-config object) live-window triplet locate of the Board control table → window-max single-u32 write with readback + GET follow verification (mirror-copy guard) + percent write (0xAD95F5ED safe path; the poisonous 0xAFFC2279 SET is never touched) → this lease write LAST (echo sync) → re-verify → service unregister). --pmxdrvpath <file> is the driver binary (required with --kmd). The wall field is volatile (resets on reboot); absolute cap 500 W; --force required (it also bypasses the lease envelope)")
+                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value. --kmd KERNEL PATH (HIGH RISK, admin): one-shot kernel cycle via the kmd lane (pmxdrv service register → page-walk + static layout probe → GPU-table chain walk → arm select: ROOT ARM (armed PowerRoot, mobile/board-config form) UPPER single-u32 write with readback + native tgp write (window follows UPPER) | BOARD ARM (desktop form: PowerRoot never arms, constructor finds no board-config object) live-window triplet locate of the Board control table → window-max single-u32 write with readback + GET follow verification (mirror-copy guard) + percent write (0xAD95F5ED safe path; the poisonous 0xAFFC2279 SET is never touched) → this lease write LAST (echo sync) → re-verify → service unregister). --pmxdrvpath <file> overrides the embedded pmxdrv.sys (optional; embedded by default on windows x64). The wall field is volatile (resets on reboot); absolute cap 500 W; --force required (it also bypasses the lease envelope)")
                 },
             ),
             (
@@ -2652,11 +2652,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::SetTrue)
             .conflicts_with("channel")
             .conflicts_with("command")
-            .help("set-power-command: KERNEL wall raise via the kmd lane (pmxdrv). The positional becomes the target wall in watts; the command runs the full one-shot cycle (service register -> chain walk -> arm select (root: UPPER+tgp / board: window max+percent) -> lease -> verify -> unregister). Admin + --force + --pmxdrvpath required; the wall field is volatile; hard cap 500 W"),
+            .help("set-power-command: KERNEL wall raise via the kmd lane (pmxdrv). The positional becomes the target wall in watts; the command runs the full one-shot cycle (service register -> chain walk -> arm select (root: UPPER+tgp / board: window max+percent) -> lease -> verify -> unregister). Admin + --force required; pmxdrv.sys ships embedded (windows x64) or via --pmxdrvpath; the wall field is volatile; hard cap 500 W"),
         "pmxdrvpath" => Arg::new("pmxdrvpath")
             .long("pmxdrvpath")
             .value_name("FILE")
-            .help("set-power-command --kmd: path to pmxdrv.sys (the Intel2019 signed build)"),
+            .help("set-power-command --kmd: optional path to pmxdrv.sys (defaults to the embedded Intel2019 signed build, windows x64)"),
         "port" => Arg::new("port")
             .long("port")
             .value_name("N")
@@ -8136,76 +8136,91 @@ fn execute_set_power_command_kmd(
     }
     #[cfg(windows)]
     {
-        let Some(raw) = option_one(invocation, "pmxdrvpath") else {
-            return Err(CliError::new(
-                "--kmd requires --pmxdrvpath <pmxdrv.sys> (the Intel2019 signed driver binary)",
-            ));
-        };
-        let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
-        // kmd 语义:目标墙(租约单位 mW;墙下限 50 W 由 core 门把守)
-        let wall_mw = value_raw;
-        let outcome = nvoc_core::kmd::power::set_power_wall_kmd(wall_mw, std::path::Path::new(raw))
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = invocation;
+            let _ = command;
+            // pmxdrv.sys 只有 x64 构建;WoA 内核无 x64 模拟,任何路径都装载
+            // 不上 —— fail-fast,不等到 StartService 报坏 exe 格式(193)。
+            Err(CliError::new(
+                "--kmd requires an x64 kernel driver; Windows ARM64 cannot load x64 drivers (no kernel-mode emulation)",
+            ))
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
+            // kmd 语义:目标墙(租约单位 mW;墙下限 50 W 由 core 门把守)
+            let wall_mw = value_raw;
+            // --pmxdrvpath 缺省用内嵌载荷;显式路径仍走手动副本(向后兼容)
+            let outcome = match option_one(invocation, "pmxdrvpath") {
+                Some(raw) => {
+                    nvoc_core::kmd::power::set_power_wall_kmd(wall_mw, std::path::Path::new(raw))
+                }
+                None => nvoc_core::kmd::power::set_power_wall_kmd_embedded(wall_mw),
+            }
             .map_err(|e| CliError::new(format!("kmd wall raise failed: {e}")))?;
-        let steps = outcome
-            .steps
-            .iter()
-            .map(|s| format!("  {s}"))
-            .collect::<Vec<_>>();
-        let mut value = json!({
-            "kmd": true,
-            "arm": outcome.arm.as_str(),
-            "wall_before_mw": outcome.wall_before_mw,
-            "wall_after_mw": outcome.wall_after_mw,
-            "tgp_written_w": outcome.tgp_written_w,
-            "tgp_note": outcome.tgp_write_note,
-            "lease_written_mw": outcome.lease_written_mw,
-            "lease_note": outcome.lease_note,
-            "layout": outcome.layout_summary,
-            "service": outcome.service,
-            "steps": steps,
-            "note": "wall field write is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
-        });
-        if let Some(root) = &outcome.root {
-            value["root_va"] = json!(format!("{:#016X}", root.root_va));
-            value["root_frame"] = json!(format!("{:#X}", root.frame_root));
-            value["upper_frame"] = json!(format!("{:#X}", root.frame_upper));
-        }
-        if let Some(board) = &outcome.board {
-            value["board_page_va"] = json!(format!("{:#016X}", board.page_va));
-            value["board_frame"] = json!(format!("{:#X}", board.frame));
-            value["window_offsets"] = json!({
-                "kind": board.row_kind,
-                "max": board.max_off,
-                "max_all": board.max_offs,
-                "cur": board.cur_off,
-                "def": board.def_off,
-                "min": board.min_off,
+            let steps = outcome
+                .steps
+                .iter()
+                .map(|s| format!("  {s}"))
+                .collect::<Vec<_>>();
+            let mut value = json!({
+                "kmd": true,
+                "arm": outcome.arm.as_str(),
+                "wall_before_mw": outcome.wall_before_mw,
+                "wall_after_mw": outcome.wall_after_mw,
+                "tgp_written_w": outcome.tgp_written_w,
+                "tgp_note": outcome.tgp_write_note,
+                "lease_written_mw": outcome.lease_written_mw,
+                "lease_note": outcome.lease_note,
+                "layout": outcome.layout_summary,
+                "service": outcome.service,
+                "steps": steps,
+                "note": "wall field write is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
             });
-            value["live_window"] = json!({
-                "current_mw": board.live_current_mw,
-                "default_mw": board.live_default_mw,
-                "max_mw": board.live_max_mw,
-                "min_mw": board.live_min_mw,
-            });
-            value["window_followed"] = json!(board.window_followed);
-            value["followers"] = json!(board.followers);
-            value["percent_written"] = json!(board.percent_written);
-            value["current_readback_mw"] = json!(board.current_readback_mw);
-            value["candidates_seen"] = json!(board.candidates_seen);
+            if let Some(root) = &outcome.root {
+                value["root_va"] = json!(format!("{:#016X}", root.root_va));
+                value["root_frame"] = json!(format!("{:#X}", root.frame_root));
+                value["upper_frame"] = json!(format!("{:#X}", root.frame_upper));
+            }
+            if let Some(board) = &outcome.board {
+                value["board_page_va"] = json!(format!("{:#016X}", board.page_va));
+                value["board_frame"] = json!(format!("{:#X}", board.frame));
+                value["window_offsets"] = json!({
+                    "kind": board.row_kind,
+                    "max": board.max_off,
+                    "max_all": board.max_offs,
+                    "cur": board.cur_off,
+                    "def": board.def_off,
+                    "min": board.min_off,
+                });
+                value["live_window"] = json!({
+                    "current_mw": board.live_current_mw,
+                    "default_mw": board.live_default_mw,
+                    "max_mw": board.live_max_mw,
+                    "min_mw": board.live_min_mw,
+                });
+                value["window_followed"] = json!(board.window_followed);
+                value["followers"] = json!(board.followers);
+                value["percent_written"] = json!(board.percent_written);
+                value["current_readback_mw"] = json!(board.current_readback_mw);
+                value["candidates_seen"] = json!(board.candidates_seen);
+            }
+            Ok(Execution {
+                function: command.name(),
+                command,
+                backend: "kmd".to_string(),
+                warnings: Vec::new(),
+                results: vec![TargetResult {
+                    gpu_id: None,
+                    backend: "kmd",
+                    ok: true,
+                    output: Some(value),
+                    error: None,
+                }],
+            })
         }
-        Ok(Execution {
-            function: command.name(),
-            command,
-            backend: "kmd".to_string(),
-            warnings: Vec::new(),
-            results: vec![TargetResult {
-                gpu_id: None,
-                backend: "kmd",
-                ok: true,
-                output: Some(value),
-                error: None,
-            }],
-        })
     }
 }
 
