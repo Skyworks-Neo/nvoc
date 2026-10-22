@@ -19,6 +19,7 @@ This wiki is split by component responsibilities, architecture, build/test comma
 - [Compatibility Matrix](./Compatibility-Matrix.md)
 - [Reverse Engineering](./Reverse-Engineering.md)
 - [Safety and Recovery](./Safety-and-Recovery.md)
+- [Profiles](./Profiles.md)
 - [Contributing](./Contributing.md)
 - [FAQ](./FAQ.md)
 - [中文首页](./Home-zh.md)

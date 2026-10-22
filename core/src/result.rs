@@ -139,6 +139,7 @@ pub enum OperationKind {
     /// (GetInfo relation payload — not a hard-coded value). No-op output
     /// None when the driver exposes no default for the edge.
     ResetTopRelsRatioToDefault,
+    SetTopRelsRatioSlotRaw,
     SetSubdomainFreqRatio,
     ResetSubdomainFreqRatio,
     QuerySubdomainFreqRatioSlot,
@@ -432,6 +433,9 @@ impl OperationKind {
                 | ResetNvapiVoltRailLimit
                 | SetNvapiFramerateLimit
                 | SetNvapiI2cWrite
+                | SetTopRelsRatioSlotRaw
+                | SetSubdomainFreqRatio
+                | ResetSubdomainFreqRatio
         )
     }
 }
