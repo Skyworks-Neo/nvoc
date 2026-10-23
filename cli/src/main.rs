@@ -35,6 +35,19 @@ fn cli_main() {
 
     nvoc_cli_common::color::init(invocation.no_color);
 
+    // G-Helper OC conflict guard (Windows only): back up + strip G-Helper's
+    // persisted GPU OC keys before any GPU call — the standalone-CLI twin of
+    // the TUI/GUI startup guards. Best-effort and silent unless something
+    // actionable happened (keys stripped / GHelper.exe alive); diagnostics
+    // go to stderr so stdout stays pristine for output parsers.
+    let ghelper_running = nvoc_cli_common::ghelper_guard::ghelper_running();
+    let ghelper = nvoc_cli_common::ghelper_guard::run_guard(None, ghelper_running);
+    if !ghelper.removed.is_empty() || ghelper.ghelper_running == Some(true) {
+        for line in &ghelper.lines {
+            eprintln!("{line}");
+        }
+    }
+
     match nvoc_cli::run_invocation(&invocation) {
         Ok(run) => {
             println!("{}", run.rendered);
