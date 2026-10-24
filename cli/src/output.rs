@@ -1970,12 +1970,29 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
             .map(|e| {
                 let app = e.get("application").and_then(Value::as_str).unwrap_or("?");
                 let tgt = e.get("target").and_then(Value::as_str).unwrap_or("?");
-                let stored = e
-                    .get("desc")
+                let d = e.get("desc").filter(|d| !d.is_null());
+                let stored = d
                     .and_then(|d| d.get("stored_size"))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                format!("{app}/{tgt} {stored:#x}")
+                // FWSEC 族（V2/V3 描述符）追加 IMEM/DMEM 几何与签名位图。
+                let geom = d
+                    .and_then(|d| {
+                        let ver = d.get("version").and_then(Value::as_u64)?;
+                        let imem = d.get("imem_load_size").and_then(Value::as_u64)?;
+                        let dmem = d.get("dmem_load_size").and_then(Value::as_u64)?;
+                        let sig = d.get("signature_count").and_then(Value::as_u64)?;
+                        let sigv = d.get("signature_versions").and_then(Value::as_u64)?;
+                        Some(if ver >= 2 && sig > 0 {
+                            format!(" imem {imem:#x} dmem {dmem:#x} sig {sig}@{sigv:#x}")
+                        } else if ver >= 2 {
+                            format!(" imem {imem:#x} dmem {dmem:#x}")
+                        } else {
+                            String::new()
+                        })
+                    })
+                    .unwrap_or_default();
+                format!("{app}/{tgt} {stored:#x}{geom}")
             })
             .collect();
         if !items.is_empty() {

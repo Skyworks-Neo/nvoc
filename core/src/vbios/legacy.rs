@@ -1214,7 +1214,10 @@ pub fn find_perf_ptr_map(data: &[u8]) -> Result<PerfPtrMap, Error> {
 
 // ── Falcon ucode 表（BIT 'p' v2/len4；kepler-ada hexpat 完整布局）────────
 
-/// Falcon ucode 应用 ID（hexpat `UCodeApplicationID`）。
+/// Falcon ucode 应用 ID（hexpat `UCodeApplicationID`；FWSEC 双轨见
+/// open-gpu-kernel-modules kernel_gsp_fwsec.c：
+/// `FALCON_UCODE_ENTRY_APPID_FWSEC_DBG 0x45 / _FWSEC_PROD 0x85`，驱动按
+/// debug 模式二选一加载，TU106 实测两者描述符几何逐位相同）。
 pub fn falcon_app_name(app: u8) -> Option<&'static str> {
     Some(match app {
         0x01 => "PRE_OS",
@@ -1226,6 +1229,8 @@ pub fn falcon_app_name(app: u8) -> Option<&'static str> {
         0x09 => "HULK",
         0x13 => "DEVINIT_FMC",
         0x14 => "POSTLTSSM",
+        0x45 => "FWSEC_DBG",
+        0x85 => "FWSEC_PROD",
         _ => return None,
     })
 }
@@ -1240,22 +1245,45 @@ pub fn falcon_target_name(target: u8) -> Option<&'static str> {
     })
 }
 
-/// Falcon ucode 描述符（`FALCON_UCODE_DESC_V1` 头部字段；IMEM/DMEM blob
-/// 不提取——那是加密/压缩载荷，RE 属 falcon 工具链范畴）。
+/// Falcon ucode 描述符（`FALCON_UCODE_DESC_V1/V2/V3` 三版布局，字段
+/// 语义以 open-gpu-kernel-modules kernel_gsp_fwsec.c 为准；IMEM/DMEM
+/// blob 本体不提取——那是加密/压缩载荷，RE 属 falcon 工具链范畴）。
+///
+/// vDesc 头（bit0=版本存在、bit2=加密、[15:8]=版本、[31:16]=描述符长）：
+/// V1（Fermi-Pascal，无头时字段直接从 0 起）；
+/// V2（Turing；TU106 1.rom 实测 FWSEC_PROD：InterfaceOffset@16 插在
+/// IMEM 字段前、IMEMSecBase@32/SecSize@36 是 IMEM 内安全代码区，
+/// 0x300+0x9300=0x9600=IMEMLoadSize 自洽）；
+/// V3（GA10x+，gpu-unlock vbios_610.c 44B：PKCDataOffset@8 替代
+/// UncompressedSize、签名区跟在描述符后，每条 384B RSA3K）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FalconUcodeDesc {
     /// 首字节 bit0：是否带 4 字节 version/crypt 头。
     pub has_version_crypt: bool,
     /// version/crypt 头里的版本（无头时 0）。
     pub version: u8,
+    /// vDesc[31:16]：描述符全长（V1=40、V2=60、V3=44）。
+    pub desc_size: u16,
+    /// vDesc bit2：载荷加密位。
+    pub encrypted: bool,
     pub stored_size: u32,
     pub uncompressed_size: u32,
     /// 代码入口点。
     pub virtual_entry: u32,
     pub imem_phys_base: u32,
     pub imem_load_size: u32,
+    /// V2/V3；V1 为 0。
+    pub imem_virt_base: u32,
+    /// V2：IMEM 内安全代码区（V3 并入整段 HS 加载，为 0）。
+    pub imem_sec_base: u32,
+    pub imem_sec_size: u32,
     pub dmem_phys_base: u32,
     pub dmem_load_size: u32,
+    /// V2/V3：DMEM 内 RM 接口块偏移；V1 为 0。
+    pub interface_offset: u32,
+    /// V3：描述符后 384B/条的 PKC 签名条数与版本位图（V2 为 0）。
+    pub signature_count: u8,
+    pub signature_versions: u16,
 }
 
 /// Falcon ucode 表一条目（`FALCON_UCODE_TABLE_ENTRY_V1`，6B）。
@@ -1361,27 +1389,94 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
                 continue;
             };
             let d = table_offset + rel_desc - rel_ptr;
-            // 字段最多用到 version/crypt 头(4) + 11 个 u32 的前 10 个(40)。
-            let has_version_crypt = data.get(d).copied().unwrap_or(0) & 1 != 0;
-            let field_base = d + if has_version_crypt { 4 } else { 0 };
-            if field_base + 40 <= data.len() {
+            if d + 4 <= data.len() {
                 let rd = |a: usize| {
                     u32::from(data[a])
                         | u32::from(data[a + 1]) << 8
                         | u32::from(data[a + 2]) << 16
                         | u32::from(data[a + 3]) << 24
                 };
-                desc = Some(FalconUcodeDesc {
-                    has_version_crypt,
-                    version: if has_version_crypt { data[d + 1] } else { 0 },
-                    stored_size: rd(field_base),
-                    uncompressed_size: rd(field_base + 4),
-                    virtual_entry: rd(field_base + 8),
-                    imem_phys_base: rd(field_base + 12),
-                    imem_load_size: rd(field_base + 16),
-                    dmem_phys_base: rd(field_base + 32),
-                    dmem_load_size: rd(field_base + 36),
-                });
+                // vDesc 头：bit0=版本存在、bit2=加密、[15:8]=版本、[31:16]=长。
+                let vdesc = rd(d);
+                let has_version_crypt = vdesc & 1 != 0;
+                let version = if has_version_crypt {
+                    ((vdesc >> 8) & 0xff) as u8
+                } else {
+                    0
+                };
+                // 无 vDesc 头时字段从描述符 0 起读（Pascal PRE_OS 实测），
+                // 有头则跳过 4B；V1 与 V2/V3 的字段序在此处分叉。
+                let f = d + usize::from(has_version_crypt) * 4;
+                if f + 40 <= data.len() {
+                    let (
+                        interface_offset,
+                        imem_phys_base,
+                        imem_load_size,
+                        imem_virt_base,
+                        imem_sec_base,
+                        imem_sec_size,
+                        dmem_phys_base,
+                        dmem_load_size,
+                    ) = if version >= 3 {
+                        // V3 (GA10x+)：PKC@8、Interface@12、IMEMPhys@16、
+                        // IMEMLoad@20、Virt@24、DMEMPhys@28、DMEMLoad@32、
+                        // 签名区跟在描述符后（384B RSA3K/条）。
+                        (
+                            rd(f + 8),
+                            rd(f + 12),
+                            rd(f + 16),
+                            rd(f + 20),
+                            0,
+                            0,
+                            rd(f + 24),
+                            rd(f + 28),
+                        )
+                    } else if version == 2 {
+                        // V2 (Turing)：Interface@16、IMEMPhys@20、IMEMLoad@24、
+                        // Virt@28、SecBase@32、SecSize@36（TU106 实测自洽）。
+                        (
+                            rd(f + 12),
+                            rd(f + 16),
+                            rd(f + 20),
+                            rd(f + 24),
+                            rd(f + 28),
+                            rd(f + 32),
+                            if f + 48 <= data.len() { rd(f + 40) } else { 0 },
+                            if f + 52 <= data.len() { rd(f + 44) } else { 0 },
+                        )
+                    } else {
+                        // V1：IMEMPhys@12、IMEMLoad@16、DMEMPhys@32、DMEMLoad@36。
+                        (0, rd(f + 12), rd(f + 16), 0, 0, 0, rd(f + 32), rd(f + 36))
+                    };
+                    let (signature_count, signature_versions) =
+                        if version >= 3 && f + 42 <= data.len() {
+                            (
+                                data[f + 35],
+                                u16::from(data[f + 36]) | u16::from(data[f + 37]) << 8,
+                            )
+                        } else {
+                            (0, 0)
+                        };
+                    desc = Some(FalconUcodeDesc {
+                        has_version_crypt,
+                        version,
+                        desc_size: (vdesc >> 16) as u16,
+                        encrypted: vdesc & 4 != 0,
+                        stored_size: rd(f),
+                        uncompressed_size: rd(f + 4),
+                        virtual_entry: rd(f + 8),
+                        imem_phys_base,
+                        imem_load_size,
+                        imem_virt_base,
+                        imem_sec_base,
+                        imem_sec_size,
+                        dmem_phys_base,
+                        dmem_load_size,
+                        interface_offset,
+                        signature_count,
+                        signature_versions,
+                    });
+                }
             }
         }
         out.push(FalconUcodeEntry {
@@ -4486,6 +4581,42 @@ mod tests {
                 active,
                 vec!["PRE_OS", "PRIMARY_DEVINIT_ENGINE", "FIRMWARE_SEC_LIC"]
             );
+        }
+    }
+
+    /// Turing FWSEC 双轨对照：TU106 1.rom（RTX 2070, 90.06.18）。
+    /// kernel_gsp_fwsec.c 的 `APPID_FWSEC_DBG 0x45 / _FWSEC_PROD 0x85`，
+    /// V2 描述符几何两者逐位相同：IMEMLoad 0x9600、SecBase 0x300 +
+    /// SecSize 0x9300（=IMEMLoad，自洽）、Interface 0xdc；0x89
+    /// （target 0x05）是驱动侧未命名的第三条 FWSEC 族条目。
+    #[test]
+    fn falcon_turing_fwsec_when_present() {
+        if let Ok(d) = std::fs::read("../1.rom") {
+            let f = find_falcon_table(&d).expect("bit ok").expect("falcon");
+            let named: Vec<(u8, &str)> = f
+                .entries
+                .iter()
+                .filter_map(|e| e.application.map(|a| (e.application_id, a)))
+                .collect();
+            assert!(named.contains(&(0x01, "PRE_OS")));
+            assert!(named.contains(&(0x08, "LS_UDE")));
+            assert!(named.contains(&(0x45, "FWSEC_DBG")));
+            assert!(named.contains(&(0x85, "FWSEC_PROD")));
+            let prod = f
+                .entries
+                .iter()
+                .find(|e| e.application_id == 0x85)
+                .and_then(|e| e.desc.as_ref())
+                .expect("fwsec prod desc");
+            assert_eq!(prod.version, 2);
+            assert_eq!(prod.desc_size, 0x3c);
+            assert_eq!(prod.stored_size, 0x9a10);
+            assert_eq!(prod.interface_offset, 0xdc);
+            assert_eq!(prod.imem_load_size, 0x9600);
+            assert_eq!(prod.imem_sec_base, 0x300);
+            assert_eq!(prod.imem_sec_size, 0x9300);
+            assert_eq!(prod.imem_sec_base + prod.imem_sec_size, prod.imem_load_size);
+            assert_eq!(prod.signature_count, 0); // V2 无 V3 式 PKC 签名区
         }
     }
 
