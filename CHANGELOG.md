@@ -65,6 +65,8 @@ single source of truth is `[workspace.package].version` in the root
 ### Fixed
 
 - TUI no longer crashes when the config file is unwritable.
+- release: stage the renamed `nvoc-srv` / `nvoc-srv-ctl` binaries instead of
+  the retired `nvoc_service`-style names, which broke the Windows build jobs.
 - GUI/TUI VF-curve apply and reset now route **per point**: a point the public
   V/F table can move is written through the open interface, and only a point
   whose public `point_type` reads Fixed goes to the private table. A GPC curve
