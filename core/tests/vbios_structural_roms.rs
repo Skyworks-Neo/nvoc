@@ -211,7 +211,10 @@ fn gb20x_5090_laptop_tgp_matches_filename() {
 fn vix_gui_field_map_on_4090_48g() {
     // vix-editor GUI（4090_48G 截图）逐值对照：slot 66W、NVVDD threshold
     // 600/900W、12V 45A×2、OCP 378A；角色名来自通道模板识别。
-    let data = load("4090_48G_AD102_MAX_450W_1075mV_95023C0002.rom").expect("4090_48g rom");
+    let Some(data) = load("4090_48G_AD102_MAX_450W_1075mV_95023C0002.rom") else {
+        eprintln!("skip: 4090_48G rom not present");
+        return;
+    };
     let ctx = tables_v3::TableContext::new(&data, Family::Ada).expect("ctx");
     let channels = tables_v3::power_channels(&data, &ctx).unwrap();
     let role = |i: usize| channels.entries[i].role_name();
@@ -248,37 +251,37 @@ fn shunt_sense_scales_nonunity_samples() {
     // 通道条目 bytes 6..8（u16 Q4.12，0x1000=1.0）= 感测倍率：3090 NVVDD
     // 相位输出出厂 4.0；4070S 非公 12V-2x6 连接器 2.0；4090 CC07B shunt
     // mod 连接器 1.3333；参考卡恒 1.0。
-    let scales = |name: &str, idx: usize| {
-        let data = load(name).expect(name);
+    let scales = |name: &str, idx: usize| -> Option<(&'static str, f32)> {
+        let data = load(name)?;
         let ctx = tables_v3::TableContext::new(&data, Family::Ampere)
             .or_else(|_| tables_v3::TableContext::new(&data, Family::Ada))
             .expect("ctx");
         let ch = &tables_v3::power_channels(&data, &ctx).unwrap().entries[idx];
-        (ch.role_name(), ch.sense_scale().expect("scale"))
+        Some((ch.role_name(), ch.sense_scale().expect("scale")))
     };
-    assert_eq!(
-        scales("3090_GA102_940226C035_371W_10DE_2204_1B4C_1454.rom", 19),
-        ("nvvdd-current", 4.0)
-    );
-    assert_eq!(
-        scales("AD104_4070S_10DE_2783_1458_4138_320W.rom", 3),
-        ("12v-connector", 2.0)
-    );
+    // 逐样本条件断言：任何一张样本 ROM 缺席（CI 无 reverse/VBIOS）就跳过
+    // 该样本，不拖垮整个测试。
+    if let Some(got) = scales("3090_GA102_940226C035_371W_10DE_2204_1B4C_1454.rom", 19) {
+        assert_eq!(got, ("nvvdd-current", 4.0));
+    }
+    if let Some(got) = scales("AD104_4070S_10DE_2783_1458_4138_320W.rom", 3) {
+        assert_eq!(got, ("12v-connector", 2.0));
+    }
     // 0x1555 = 5461 → Q4.12 量化值 1.333252（4/3 的最近定点表示）。
-    assert_eq!(
-        scales("4090_48G_AD102_MAX_450W_1075mV_95023CC07B.rom", 2),
-        ("12v-connector", 5461.0 / 4096.0)
-    );
+    if let Some(got) = scales("4090_48G_AD102_MAX_450W_1075mV_95023CC07B.rom", 2) {
+        assert_eq!(got, ("12v-connector", 5461.0 / 4096.0));
+    }
     // 参考 4090 全通道 1.0。
-    let data = load("4090_48G_AD102_MAX_450W_1075mV_95023C0002.rom").expect("ref rom");
-    let ctx = tables_v3::TableContext::new(&data, Family::Ada).expect("ctx");
-    let channels = tables_v3::power_channels(&data, &ctx).unwrap();
-    assert!(
-        channels
-            .entries
-            .iter()
-            .all(|c| c.sense_scale().is_none_or(|s| (s - 1.0).abs() < 1e-6))
-    );
+    if let Some(data) = load("4090_48G_AD102_MAX_450W_1075mV_95023C0002.rom") {
+        let ctx = tables_v3::TableContext::new(&data, Family::Ada).expect("ctx");
+        let channels = tables_v3::power_channels(&data, &ctx).unwrap();
+        assert!(
+            channels
+                .entries
+                .iter()
+                .all(|c| c.sense_scale().is_none_or(|s| (s - 1.0).abs() < 1e-6))
+        );
+    }
 }
 
 #[test]
@@ -286,7 +289,10 @@ fn memtweak_v20_bitfields_decode_monotonic() {
     // NVRM 617.42 内嵌 RM sub_1C67060 逆向布局，3090 实测值固化：
     // 高频段 set0 最紧（CL3 p44=25 p45=26），低频段 set6 松（CL2 p44=10
     // p45=12），CCDL/CCDS = Config3 byte3 低/高 nibble。
-    let data = load("3090_GA102_940226C035_371W_10DE_2204_1B4C_1454.rom").expect("3090 rom");
+    let Some(data) = load("3090_GA102_940226C035_371W_10DE_2204_1B4C_1454.rom") else {
+        eprintln!("skip: 3090 rom not present");
+        return;
+    };
     let tweak = nvoc_core::vbios::legacy::find_memory_tweak_table(&data)
         .expect("parse ok")
         .expect("table present");
