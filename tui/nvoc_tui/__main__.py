@@ -14,6 +14,7 @@
 
 import argparse
 import os
+import sys
 import time
 
 # Cap BLAS/OpenMP thread pools before numpy loads through textual-plotext. The
@@ -46,12 +47,41 @@ _boot_marker("main entered (textual/plotext/pynvoc import pending)")
 
 if __package__:
     from .app import NVOCApp
+    from .ghelper_guard import run_guard
     from .native import apply_native_paths
 else:
     from nvoc_tui.app import NVOCApp
+    from nvoc_tui.ghelper_guard import run_guard
     from nvoc_tui.native import apply_native_paths
 
 _boot_marker("imports done (textual+plotext+pynvoc)")
+
+
+def _support_log_line(text: str) -> None:
+    """Append a plain (non-boot-marker) line to the support log, best effort."""
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        log_dir = os.path.join(base, "nvoc-tui")
+        os.makedirs(log_dir, exist_ok=True)
+        stamp = time.strftime("%H:%M:%S")
+        with open(os.path.join(log_dir, "boot.log"), "a", encoding="utf-8") as file:
+            file.write(f"{stamp} {text}\n")
+    except OSError:
+        pass
+
+
+def _run_ghelper_guard() -> None:
+    """Neutralize G-Helper's persisted GPU OC before the first GPU call.
+
+    Windows-only inside ghelper_guard.run_guard; every line lands on stderr
+    and in the support boot.log so the strip stays auditable after the fact.
+    """
+    if sys.platform != "win32":
+        return
+    report = run_guard()
+    for line in report.lines:
+        print(line, file=sys.stderr)
+        _support_log_line(line)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -88,6 +118,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _build_parser().parse_args()
     apply_native_paths(args.nvapi_path, args.nvml_path, override=True)
+    _run_ghelper_guard()
     app = NVOCApp()
     _boot_marker("NVOCApp constructed")
     app.run()

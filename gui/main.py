@@ -159,6 +159,7 @@ def main() -> int:
 
     from src.app import App
     from src.backend.native import apply_native_paths
+    from src.ghelper_guard import run_guard
     from src.single_instance import SingleInstanceGuard
 
     _boot_marker("src imports done")
@@ -177,6 +178,13 @@ def main() -> int:
             f"Failed to initialize single-instance guard: {exc}"
         ) from exc
 
+    # G-Helper OC 冲突防护（仅 Windows 生效）：备份并剥离其持久化的 GPU
+    # 超频键，必须在 App() 的首次 GPU 调用之前。行先落 console.log，控制台
+    # 窗口建好后由 _flush_ghelper_lines 补显。
+    ghelper_report = run_guard()
+    for line in ghelper_report.lines:
+        _boot_marker(line)
+
     start_time = time.perf_counter()
 
     try:
@@ -191,7 +199,13 @@ def main() -> int:
                 f"[GUI] Application started in {elapsed_time:.3f} seconds.\n"
             )
 
+        def _flush_ghelper_lines() -> None:
+            for line in ghelper_report.lines:
+                app.console.append(line + "\n")
+
         app.after(50, log_startup_time)
+        if ghelper_report.lines:
+            app.after(80, _flush_ghelper_lines)
         app.mainloop()
         return 0
     finally:

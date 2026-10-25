@@ -252,5 +252,4 @@ __all__ = [
     "set_volt_rail_target",
     "set_voltage_boost",
     "sync_memory_pstate_as_p0",
-
 ]
