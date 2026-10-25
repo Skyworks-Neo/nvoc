@@ -44,7 +44,7 @@ The matrix produces:
 | Bundled `nvoc-auto-optimizer` executable | Yes | Yes | Yes | Yes |
 | Standalone `cli-stressor-cuda-rs` executable | Yes | Yes | Yes | Yes |
 | OpenCL stressor | Yes | Yes | Yes | No |
-| Standalone NVOC-SRV executables | No | No | Yes | Yes |
+| Standalone NVOC-SRV executables (`nvoc-srv`, `nvoc-srv-ctl`) | No | No | Yes | Yes |
 
 Each matrix cell builds natively and runs CLI smoke tests. Linux amd64 CLI
 artifacts are also tested in Debian 12 and Ubuntu 22.04 containers. No tools or

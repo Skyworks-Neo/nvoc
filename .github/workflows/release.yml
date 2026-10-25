@@ -229,9 +229,8 @@ jobs:
           if ($env:RELEASE_ARCH -eq "amd64") {
             Copy-Item cli-stressor-opencl/dist/NVOC-CLI-Stressor-opencl.exe "$out/nvoc-stressor-opencl-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
           }
-          foreach ($name in @("nvoc_service", "install_service", "uninstall_service", "notify_service", "pause_continue", "service_config", "service_failure_actions")) {
-            Copy-Item "target/release/$name.exe" "$out/nvoc-srv-$name-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
-          }
+          Copy-Item target/release/nvoc-srv.exe "$out/nvoc-srv-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
+          Copy-Item target/release/nvoc-srv-ctl.exe "$out/nvoc-srv-ctl-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH.exe"
 
       - name: Verify Debian 12 / Ubuntu 22.04 Linux baseline
         if: matrix.platform == 'linux' && matrix.arch == 'amd64'
