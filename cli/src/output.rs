@@ -1441,45 +1441,157 @@ fn render_fans_v3(t: &Value, lines: &mut Vec<String>) {
 }
 
 fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
+    let sort_start = lines.len();
     // structural layer (vix 对照补差：镜像链/架构门/按族表解码)
     push_structural_sections(output, lines);
-    // power table (target/limit/slider per CPR power scan)
-    if let Some(power) = output.get("power").and_then(Value::as_array)
-        && let Some(p) = power.first()
-    {
-        let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
-        let target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
-        let limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
-        let slider = p
-            .get("slider")
-            .and_then(|s| s.get("enabled"))
-            .and_then(Value::as_bool);
-        let slider_text = match slider {
-            Some(true) => "enabled",
-            Some(false) => "disabled",
-            None => "not found",
-        };
-        let min_w = p
-            .get("min_watt")
-            .and_then(Value::as_f64)
-            .map(|v| format!("min {v:.0} W, "));
-        let range = p
-            .get("adjustment_percent")
-            .and_then(Value::as_str)
-            .map(|r| format!(", range {r}"))
-            .unwrap_or_default();
-        let count = if power.len() > 1 {
-            format!(" ({} copies)", power.len())
-        } else {
-            String::new()
-        };
-        lines.push(nvoc_cli_common::color::stylize(
+    // power：锚点扫描（CPR 路径）与 BIT 'P'+0x2C PowerBudget（结构化路径）
+    // 合并为一行。两条读取器读同一份数据——budget 表占位通道的 avg/peak
+    // 哨兵对正是锚点扫描的魔数；一致时缩写为一行互证，不一致即解析器红旗
+    // （warning 高亮两侧数值）。仅一侧可用时退回各自的原格式。
+    let power_arr = output.get("power").and_then(Value::as_array);
+    let anchor_power = power_arr.and_then(|a| a.first());
+    let budget = output
+        .get("power_v2")
+        .and_then(|p2| p2.get("budget"))
+        .filter(|b| b.get("cap_entry_power").is_some_and(Value::is_object));
+    let watts = |min: Option<f64>, t: f64, l: f64| match min {
+        Some(m) => format!("{m:.0}/{t:.0}/{l:.0} W"),
+        None => format!("{t:.0}/{l:.0} W"),
+    };
+    match (anchor_power, budget) {
+        (Some(p), Some(b)) => {
+            let cap = b.get("cap_entry_power").unwrap();
+            let a_min = p.get("min_watt").and_then(Value::as_f64);
+            let a_target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let a_limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let uw = |k: &str| {
+                cap.get(k)
+                    .and_then(Value::as_u64)
+                    .map(|v| v as f64 / 1000.0)
+            };
+            let (b_min, b_avg, b_peak) = (uw("min_mw"), uw("avg_mw"), uw("peak_mw"));
+            let agree = (a_min.is_none() || b_min.is_none() || a_min == b_min)
+                && Some(a_target) == b_avg
+                && Some(a_limit) == b_peak;
+            if agree {
+                let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+                let copies = if power_arr.is_some_and(|a| a.len() > 1) {
+                    format!(", {} copies", power_arr.map(|a| a.len()).unwrap_or(1))
+                } else {
+                    String::new()
+                };
+                let slider = p
+                    .get("slider")
+                    .and_then(|s| s.get("enabled"))
+                    .and_then(Value::as_bool);
+                let slider_text = match slider {
+                    Some(true) => ", slider enabled",
+                    Some(false) => ", slider disabled",
+                    None => "",
+                };
+                let range = p
+                    .get("adjustment_percent")
+                    .and_then(Value::as_str)
+                    .map(|r| format!(", range {r}"))
+                    .unwrap_or_default();
+                let anchor_off = p
+                    .get("anchor_offset")
+                    .and_then(Value::as_u64)
+                    .map(|v| format!("{v:#x}"))
+                    .unwrap_or_else(|| "?".into());
+                let version = b
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .trim_start_matches("0x")
+                    .to_string();
+                let cap_entry = b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0);
+                // min 缺席侧（mobile 锚点路径）由另一侧补齐。
+                let min = a_min.or(b_min);
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power: {}{range}{slider_text} — anchor {anchor_off} ({platform}{copies}) ≡ P+0x2C v{version} cap#{cap_entry}",
+                        watts(min, a_target, a_limit)
+                    ),
+                    false,
+                ));
+            } else {
+                let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+                let version = b
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .trim_start_matches("0x")
+                    .to_string();
+                let cap_entry = b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0);
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    power MISMATCH: anchor scan ({platform}) {} vs P+0x2C v{version} cap#{cap_entry} {} — cross-check failed",
+                    watts(a_min, a_target, a_limit),
+                    watts(b_min, b_avg.unwrap_or(0.0), b_peak.unwrap_or(0.0)),
+                )));
+            }
+        }
+        (Some(p), None) => {
+            let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+            let target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let slider = p
+                .get("slider")
+                .and_then(|s| s.get("enabled"))
+                .and_then(Value::as_bool);
+            let slider_text = match slider {
+                Some(true) => "enabled",
+                Some(false) => "disabled",
+                None => "not found",
+            };
+            let min_w = p
+                .get("min_watt")
+                .and_then(Value::as_f64)
+                .map(|v| format!("min {v:.0} W, "));
+            let range = p
+                .get("adjustment_percent")
+                .and_then(Value::as_str)
+                .map(|r| format!(", range {r}"))
+                .unwrap_or_default();
+            let count = if power_arr.is_some_and(|a| a.len() > 1) {
+                format!(" ({} copies)", power_arr.map(|a| a.len()).unwrap_or(1))
+            } else {
+                String::new()
+            };
+            lines.push(nvoc_cli_common::color::stylize(
                 &format!(
                     "    power ({platform}): {}target {target:.0} W, limit {limit:.0} W{range}, slider {slider_text}{count}",
                     min_w.unwrap_or_default()
                 ),
                 false,
             ));
+        }
+        (None, Some(b)) => {
+            let cap = b.get("cap_entry_power").unwrap();
+            let fmt = |k: &str| {
+                cap.get(k)
+                    .and_then(Value::as_u64)
+                    .map(|v| v / 1000)
+                    .unwrap_or(0)
+            };
+            let version = b
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .trim_start_matches("0x")
+                .to_string();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    power budget (P+0x2C v{version}): cap entry {} = min {} W / avg {} W / peak {} W",
+                    b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0),
+                    fmt("min_mw"),
+                    fmt("avg_mw"),
+                    fmt("peak_mw")
+                ),
+                false,
+            ));
+        }
+        (None, None) => {}
     }
     // thermal/fan: documented BIT 'P' table (nouveau semantics). The
     // absence note only prints when no modern-slot fan/thermal data rendered
@@ -2299,33 +2411,6 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
             ));
         }
     }
-    // BIT 'P' v2 功率子表：cap 条目即 nvidia-smi 三元组。
-    if let Some(p2) = output.get("power_v2")
-        && let Some(budget) = p2.get("budget")
-        && let Some(cap) = budget.get("cap_entry_power")
-    {
-        let fmt = |k: &str| {
-            cap.get(k)
-                .and_then(Value::as_u64)
-                .map(|v| v / 1000)
-                .unwrap_or(0)
-        };
-        lines.push(nvoc_cli_common::color::stylize(
-            &format!(
-                "    power budget (P+0x2C v{}): cap entry {} = min {} W / avg {} W / peak {} W",
-                budget
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .unwrap_or("?")
-                    .trim_start_matches("0x"),
-                budget.get("cap_entry").and_then(Value::as_u64).unwrap_or(0),
-                fmt("min_mw"),
-                fmt("avg_mw"),
-                fmt("peak_mw")
-            ),
-            false,
-        ));
-    }
     // BIT token 级子表：目录 + 'M' 内存类型 + NVINIT 脚本指针。
     if let Some(bt) = output.get("bit_tokens") {
         if let Some(dir) = bt.get("directory").and_then(Value::as_array)
@@ -2401,6 +2486,59 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 ));
             }
         }
+    }
+    // 段名字典序：本函数追加的各段行按行首段名（首个单词，大小写不敏感）
+    // 稳定排序——同族段保持插入序（power policy → power rows、memory →
+    // memory variants），warning 行一律置尾。函数起点之前的行（VP 阶梯
+    // 表/pstate marks/dual bank）不参与。深缩进续行黏附其组头（perf ptrs
+    // 槽表），排序键取自剥离 ANSI 序列后的纯文本（着色模式下 stylize 会
+    // 逐 token 包裹）。
+    fn plain_text(l: &str) -> String {
+        let mut out = String::with_capacity(l.len());
+        let mut chars = l.chars();
+        while let Some(c) = chars.next() {
+            if c == '' {
+                for e in chars.by_ref() {
+                    if e.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+    let tail: Vec<String> = lines.drain(sort_start..).collect();
+    let header_indent = tail
+        .first()
+        .map(|l| {
+            let plain = plain_text(l);
+            plain.len() - plain.trim_start().len()
+        })
+        .unwrap_or(0);
+    let mut groups: Vec<(bool, String, Vec<String>)> = Vec::new();
+    for l in tail {
+        let plain = plain_text(&l);
+        let indent = plain.len() - plain.trim_start().len();
+        let keyword = plain
+            .trim_start()
+            .split([':', ' '])
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let is_warning = plain.contains("warning:");
+        if indent > header_indent
+            && let Some(last) = groups.last_mut()
+        {
+            last.2.push(l);
+            continue;
+        }
+        groups.push((is_warning, keyword, vec![l]));
+    }
+    groups.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    for (_, _, group_lines) in groups {
+        lines.extend(group_lines);
     }
 }
 
