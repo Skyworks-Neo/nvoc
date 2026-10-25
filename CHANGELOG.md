@@ -8,8 +8,30 @@ single source of truth is `[workspace.package].version` in the root
 
 ## [Unreleased]
 
+## [0.3.1-alpha.1] — 2026-10-25
+
 ### Added
 
+- profile: full capture / apply / restore / export / import surface across
+  core, CLI, and pynvoc, covering clock, fan-policy, volt-rail, VF-point,
+  TopRels-ratio, and private clock-plane domains, with per-domain verification,
+  rollback, and multi-GPU fan-out.
+- re+cli: Afterburner 19412 parity for the private NVAPI lanes (locks,
+  TopRels, I2C, FRL, tempsim) and the kernel-mode wide table.
+- srv: closed-loop control service replacing the windows-service stub.
+- fan-curve: editable fan curve in GUI, TUI, and pynvoc, plus standalone
+  fan-cooler RE probes.
+- stressor: ride-on-load verification circuit, Vulkan render stress, OpenCL
+  verification, and offscreen Vulkan stress on Linux.
+- kmd: embedded `pmxdrv.sys` for `nvoc-cli` on Windows x64 with SHA-256 pin
+  and arm64 refusal.
+- vbios: structural layer, 3x/GB20x table decoding, and FWSEC inventory.
+- guard: neutralize persisted G-Helper GPU OC on TUI/GUI/CLI startup
+  (Windows).
+- volt: `set-volt-rail-limit --slot` (0..5), pinning P100 / 582.41 slot
+  semantics.
+- xtask: tkinter environment diagnosis and self-repair; pynvoc pytest step
+  fails when every test skips.
 - Repo-wide version unification (workspace inheritance for all crates, PEP 440
   mirror for Python packages) with a CI consistency gate.
 - Supply-chain CI: cargo-audit, pip-audit, actionlint, Dependabot version
@@ -42,6 +64,7 @@ single source of truth is `[workspace.package].version` in the root
 
 ### Fixed
 
+- TUI no longer crashes when the config file is unwritable.
 - GUI/TUI VF-curve apply and reset now route **per point**: a point the public
   V/F table can move is written through the open interface, and only a point
   whose public `point_type` reads Fixed goes to the private table. A GPC curve
