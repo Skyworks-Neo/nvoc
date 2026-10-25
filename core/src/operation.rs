@@ -2093,6 +2093,25 @@ impl GpuOperation for QueryNvapiBarInfo {
     }
 }
 
+/// ADC sense-device directory + live rail-voltage readings
+/// (`ClockAdcDevicesGetInfo` 0x68789E2A / `GetStatus` 0x43D9B26A) —
+/// see [`OperationKind::QueryNvapiAdcDevices`]. Read-only telemetry:
+/// a refusal means the part exposes no ADC devices (`Ok(None)`), never a
+/// failure of the surrounding report.
+pub struct QueryNvapiAdcDevices;
+
+impl GpuOperation for QueryNvapiAdcDevices {
+    type Output = Option<::nvapi::hi::AdcDevices>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiAdcDevices
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target.nvapi()?.adc_devices().map_err(Error::from)
+    }
+}
+
 /// Compute/topology capability counters (GPU-Z 2.71 audit gap-fill,
 /// `docs/reverse-engineering/gpu-z/gpuz-sensor-audit.md` §9): BTree of
 /// counter name → raw u32 (`None` where the board refuses the counter).

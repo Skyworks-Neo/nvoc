@@ -259,6 +259,12 @@ fn ruff_exclude_args(root: &std::path::Path) -> Vec<String> {
     excludes.append(&mut sub_excludes);
     excludes.sort();
     excludes.dedup();
+    // `reverse/` 整目录排除（用户裁定 2026-10-25）：RE 工作区几乎全是本地
+    // 产物，逐条第二段前缀 exclude 会随 untracked 内容无限增长；其内少数
+    // tracked 脚本的格式/lint 门交给 ci.yml 的新鲜 checkout 侧（那里的
+    // ruff 不带 exclude、只见 tracked 文件）。
+    excludes.retain(|p| p != "reverse" && !p.starts_with("reverse/"));
+    excludes.push("reverse".to_string());
     // Callers append the vec straight onto the ruff argv — keep the flags in
     // band, matching the original flat_map contract.
     excludes

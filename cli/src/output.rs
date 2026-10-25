@@ -701,6 +701,7 @@ fn format_blackwell_table(output: &Value) -> Vec<String> {
             false,
         ));
     }
+    push_structural_sections(output, &mut lines);
     lines
 }
 
@@ -861,18 +862,24 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
             false,
         ));
     }
-    // VP footers: per-ID memory clocks (CPR footer walk, file order)
+    // VP footers: per-ID memory clocks (CPR footer walk, file order). The
+    // footer id is the pstate slot encoding; label it like the profiles row.
     if let Some(footers) = output.get("footers").and_then(Value::as_array) {
         let items: Vec<String> = footers
             .iter()
             .map(|f| {
                 let id = f.get("id").and_then(Value::as_str).unwrap_or("?");
+                let pstate = f
+                    .get("pstate")
+                    .and_then(Value::as_str)
+                    .map(|p| format!("({p})"))
+                    .unwrap_or_default();
                 let mem = f.get("mem_clock_mhz").and_then(Value::as_i64).unwrap_or(0);
                 let ddr = f
                     .get("mem_clock_ddr_mhz")
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
-                format!("{id} {mem}/{ddr}")
+                format!("{id}{pstate} {mem}/{ddr}")
             })
             .collect();
         if !items.is_empty() {
@@ -880,6 +887,34 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
                 &format!("    footers (DRAM/DDR MHz): {}", items.join(", ")),
                 false,
             ));
+        }
+    }
+    if let Some(dual) = output.get("dual_bank") {
+        let banks = dual.get("banks").and_then(Value::as_u64).unwrap_or(0);
+        match dual.get("identical").and_then(Value::as_bool) {
+            Some(true) => {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dual bank: {banks} banks, contents identical (bank0 rendered)"),
+                    false,
+                ));
+            }
+            Some(false) => {
+                let fields: Vec<String> = dual
+                    .get("differences")
+                    .and_then(Value::as_array)
+                    .map(|ds| {
+                        ds.iter()
+                            .filter_map(|d| d.get("field").and_then(Value::as_str))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    dual bank: {banks} banks DIFFER in {} (bank0 rendered; see dual_bank.differences)",
+                    fields.join(", ")
+                )));
+            }
+            _ => {}
         }
     }
     push_detail_shared_sections(output, &mut lines);
@@ -891,44 +926,723 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
 /// lines as Pascal): power, thermal, DCB display map, identity,
 /// internal-use, flash directory, memory, thermal limits, fan curve /
 /// coolers, falcon ucode, NVGI and the PERF_PTR slot map.
-fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
-    // power table (target/limit/slider per CPR power scan)
-    if let Some(power) = output.get("power").and_then(Value::as_array)
-        && let Some(p) = power.first()
-    {
-        let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
-        let target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
-        let limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
-        let slider = p
-            .get("slider")
-            .and_then(|s| s.get("enabled"))
-            .and_then(Value::as_bool);
-        let slider_text = match slider {
-            Some(true) => "enabled",
-            Some(false) => "disabled",
-            None => "not found",
+/// Structural layer (vix 对照补差) human rendering: image chain + 架构门 +
+/// 按族表解码，每表一段紧凑行。unsupported 形状以 warning 行呈现（fail
+/// closed 保持可见）。
+fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
+    let Some(st) = output.get("structural") else {
+        return;
+    };
+    // 镜像链 + 架构门。
+    if let Some(arch) = st.get("architecture") {
+        let (pci, npds, issues) = match st.get("image_chain") {
+            Some(chain) => (
+                chain
+                    .get("pci_images")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+                chain
+                    .get("npds_images")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+                chain
+                    .get("issues")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+            ),
+            None => (0, 0, 0),
         };
-        let min_w = p
-            .get("min_watt")
-            .and_then(Value::as_f64)
-            .map(|v| format!("min {v:.0} W, "));
-        let range = p
-            .get("adjustment_percent")
+        let family = arch
+            .get("family")
             .and_then(Value::as_str)
-            .map(|r| format!(", range {r}"))
+            .unwrap_or("unknown");
+        let product = arch.get("product").and_then(Value::as_str).unwrap_or("?");
+        let device = arch
+            .get("pci_device")
+            .and_then(Value::as_str)
+            .unwrap_or("????");
+        let inferred = arch
+            .get("family_inferred")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let versions: Vec<String> = arch
+            .get("bios_versions")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
-        let count = if power.len() > 1 {
-            format!(" ({} copies)", power.len())
+        let ver_note = versions
+            .first()
+            .map(|v| format!(" bios {v}"))
+            .unwrap_or_default();
+        let scope_note = if arch.get("in_scope").and_then(Value::as_bool) == Some(false) {
+            " OUT-OF-SCOPE"
+        } else {
+            ""
+        };
+        let infer_note = if inferred {
+            " (family inferred from BIOS prefix)"
+        } else {
+            ""
+        };
+        let issue_note = if issues > 0 {
+            format!(", {issues} ISSUES")
         } else {
             String::new()
         };
         lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    structural: {pci} PCI + {npds} NPDS images{issue_note} | {family}{scope_note}{infer_note} {device} {product}{ver_note}"
+            ),
+            false,
+        ));
+    } else if let Some(status) = st
+        .get("image_chain")
+        .and_then(|c| c.get("status"))
+        .and_then(Value::as_str)
+    {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    structural: {status}"),
+            false,
+        ));
+    }
+    // 3x 世代表（Turing/Ampere/Ada）。
+    if let Some(t) = st.get("tables_v3") {
+        if let Some(reason) = t.get("reason").and_then(Value::as_str) {
+            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                "    structural: {reason}"
+            )));
+        } else {
+            let family = t.get("family").and_then(Value::as_str).unwrap_or("?");
+            if let Some(p) = t.get("power_policy").and_then(Value::as_object)
+                && let (Some(rows), Some(tgp)) = (
+                    p.get("rows").and_then(Value::as_array),
+                    p.get("tgp_index").and_then(Value::as_u64),
+                )
+                && let Some(tgp_row) = rows.get(tgp as usize)
+            {
+                let ver = p.get("version").and_then(Value::as_str).unwrap_or("?");
+                let nb = if p.get("notebook").and_then(Value::as_bool) == Some(true) {
+                    " notebook"
+                } else {
+                    ""
+                };
+                let unit = tgp_row.get("unit").and_then(Value::as_str).unwrap_or("mW");
+                let scale = if unit == "mA" { 1.0 } else { 1000.0 };
+                let fmt = |v: u64| {
+                    if unit == "mA" {
+                        format!("{v} {unit}")
+                    } else {
+                        format!("{:.0} W", v as f64 / scale)
+                    }
+                };
+                let empty = rows
+                    .iter()
+                    .filter(|r| {
+                        r.get("kind").and_then(Value::as_u64) == Some(0)
+                            && r.get("maximum_raw").and_then(Value::as_u64) == Some(0)
+                    })
+                    .count();
+                let empty_note = if empty > 0 {
+                    format!(", {empty} empty")
+                } else {
+                    String::new()
+                };
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power policy (v3x {ver} {family}{nb}): TGP row{tgp} {}/{}/{}, {} rows{empty_note}",
+                        fmt(tgp_row
+                            .get("minimum_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        fmt(tgp_row
+                            .get("default_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        fmt(tgp_row
+                            .get("maximum_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        rows.len()
+                    ),
+                    false,
+                ));
+
+                // 全行解码（对照 NVAPI GetPwrCurInfo：Index = 行号、Subtype = 通道
+                // 字节、min/def/max 逐值一致；空行是驱动运行时隐藏的超集）。kind
+                // 名为 vix 语料观测语义，未列出的按 raw 显示。
+                if let Some(rows) = t
+                    .get("power_policy")
+                    .and_then(Value::as_object)
+                    .and_then(|p| p.get("rows"))
+                    .and_then(Value::as_array)
+                {
+                    let tgp = t
+                        .get("power_policy")
+                        .and_then(Value::as_object)
+                        .and_then(|p| p.get("tgp_index"))
+                        .and_then(Value::as_u64);
+                    let items: Vec<String> = rows
+                        .iter()
+                        .filter(|r| {
+                            !(r.get("kind").and_then(Value::as_u64) == Some(0)
+                                && r.get("maximum_raw").and_then(Value::as_u64) == Some(0))
+                        })
+                        .map(|r| {
+                            let row = r.get("row").and_then(Value::as_u64).unwrap_or(0);
+                            // 角色名（vix 通道模板识别）优先于 kind 字节名。
+                            if let Some(role) = r.get("role").and_then(Value::as_str)
+                                && !role.is_empty()
+                            {
+                                return format_power_row(row, role, r);
+                            }
+                            let kind = r.get("kind").and_then(Value::as_u64).unwrap_or(0);
+                            let ch = r.get("channel").and_then(Value::as_u64).unwrap_or(0);
+                            // 存储单位旗标原样标注（mW/mA）；实际物理单位由 RM 策略
+                            // 侧决定（NVAPI 实测与旗标在哨兵行上不一致），不做断言性
+                            // 换算。
+                            let unit = r.get("unit").and_then(Value::as_str).unwrap_or("mW");
+                            let star = if Some(row) == tgp { "*" } else { "" };
+                            format!(
+                                "#{row}{star} {}/{} {}..{}..{} {}",
+                                power_row_kind_name(kind as u8),
+                                ch,
+                                r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0),
+                                r.get("default_raw").and_then(Value::as_u64).unwrap_or(0),
+                                r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0),
+                                unit
+                            )
+                        })
+                        .collect();
+                    if !items.is_empty() {
+                        lines.push(nvoc_cli_common::color::stylize(
+                            &format!("    power rows (* = TGP): {}", items.join(" | ")),
+                            false,
+                        ));
+                    }
+                }
+            }
+            render_rails(t, lines);
+            render_rel_limits(t.get("rel_limits"), lines);
+            render_vmin(t.get("vmin"), lines);
+            render_clocks(t.get("clocks"), true, lines);
+            render_memory_nvml_scale(t.get("clocks"), lines);
+            render_fans_v3(t, lines);
+        }
+    }
+    // GB20x（50 系）。
+    if let Some(g) = st.get("gb20x") {
+        if let Some(reason) = g.get("reason").and_then(Value::as_str) {
+            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                "    structural: {reason}"
+            )));
+            return;
+        }
+        if let Some(i) = g.get("integrity") {
+            let ok = i.get("valid").and_then(Value::as_bool).unwrap_or(false);
+            let objects = i.get("object_count").and_then(Value::as_u64).unwrap_or(0);
+            let legacy = i
+                .get("legacy_directory_present")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let legacy_note = if legacy { ", legacy dir ok" } else { "" };
+            let text = if ok {
+                format!("    integrity: {objects} objects sha384 OK, image sums zero{legacy_note}")
+            } else {
+                let bad = i
+                    .get("bad_object_ids")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len());
+                format!("    integrity: FAILED ({bad} bad objects)")
+            };
+            if ok {
+                lines.push(nvoc_cli_common::color::stylize(&text, false));
+            } else {
+                lines.push(nvoc_cli_common::color::stylize_warning(&text));
+            }
+        }
+        if let Some(p) = g.get("power_policy").and_then(Value::as_object)
+            && let Some(rows) = p.get("rows").and_then(Value::as_array)
+        {
+            let notebook = p.get("notebook").and_then(Value::as_bool) == Some(true);
+            let tgp_row_idx = if notebook { 2 } else { 8 };
+            if let Some(r) = rows.get(tgp_row_idx) {
+                let ver = p.get("version").and_then(Value::as_str).unwrap_or("?");
+                let nb = if notebook { " notebook" } else { "" };
+                let fmt = |v: u64| format!("{:.0} W", v as f64 / 1000.0);
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power policy (gb20x {ver}{nb}): TGP row{tgp_row_idx} {}/{}/{}, {} rows",
+                        fmt(r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        fmt(r.get("default_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        fmt(r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        rows.len()
+                    ),
+                    false,
+                ));
+            }
+        }
+        render_rel_limits(g.get("rel_limits"), lines);
+        render_vmin(g.get("vmin"), lines);
+        render_clocks(g.get("clocks"), false, lines);
+        render_memory_nvml_scale(g.get("clocks"), lines);
+        if let Some(profiles) = g.get("profiles").and_then(Value::as_array)
+            && !profiles.is_empty()
+        {
+            let items: Vec<String> = profiles
+                .iter()
+                .map(|p| {
+                    let entries: Vec<String> = p
+                        .get("entries")
+                        .and_then(Value::as_array)
+                        .map(|es| {
+                            es.iter()
+                                .map(|e| {
+                                    format!(
+                                        "p{}/{}/{:#x}",
+                                        e.get("policy").and_then(Value::as_u64).unwrap_or(0),
+                                        e.get("field").and_then(Value::as_str).unwrap_or("?"),
+                                        e.get("value_raw").and_then(Value::as_u64).unwrap_or(0)
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        "#{}: {}",
+                        p.get("index").and_then(Value::as_u64).unwrap_or(0),
+                        entries.join(" ")
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    override profiles: {}", items.join(" | ")),
+                false,
+            ));
+        }
+    }
+}
+
+/// vix 语料观测的 3x power 行 type 字节语义（extended-fields.md / GB20x
+/// 行类型交叉）；未收录的按 `type0x{n}` 显示。
+fn power_row_kind_name(kind: u8) -> String {
+    match kind {
+        0 => "out".into(),
+        1 => "board".into(),
+        2 => "slot".into(),
+        4 => "conn".into(),
+        5 => "in-cur".into(),
+        7 => "ocp".into(),
+        10 => "ocp".into(),
+        11 => "in".into(),
+        12 => "board".into(),
+        13 => "link".into(),
+        other => format!("type{other:#x}"),
+    }
+}
+
+/// power rows 图例的行格式（vix 通道模板 role 命中时使用；命名对应
+/// vix-editor GUI：pcie-slot=PCIe slot power、12v-input=12V input current、
+/// nvvdd-power/current=NVVDD output power/current、total-board=board power）。
+fn format_power_row(row: u64, role: &str, r: &Value) -> String {
+    let unit = r.get("unit").and_then(Value::as_str).unwrap_or("mW");
+    format!(
+        "#{row} {role} {}..{}..{} {}",
+        r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0),
+        r.get("default_raw").and_then(Value::as_u64).unwrap_or(0),
+        r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0),
+        unit
+    )
+}
+
+/// DRAM 行的 NVML 换算注记：offset 工具（NVML/Linux、MSI Afterburner 的
+/// memory 轴）按表值 ×2 呈现（vix extended-fields："NVML = 2 × table MHz"；
+/// vix GUI 显示 "6000 MHz · Windows (MSI Afterburner): 3000 MHz"）。
+fn render_memory_nvml_scale(clocks: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(clocks) = clocks.and_then(Value::as_array) else {
+        return;
+    };
+    let Some(dram) = clocks
+        .iter()
+        .find(|c| c.get("domain").and_then(Value::as_str) == Some("DRAM"))
+    else {
+        return;
+    };
+    if dram.get("range_stored").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let (lo, hi) = (
+        dram.get("min_mhz").and_then(Value::as_i64).unwrap_or(0),
+        dram.get("max_mhz").and_then(Value::as_i64).unwrap_or(0),
+    );
+    if (lo, hi) == (0, 0) {
+        return;
+    }
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!(
+            "    memory offset (NVML x2 scale): {}..{} MHz (table {}..{})",
+            lo * 2,
+            hi * 2,
+            lo,
+            hi
+        ),
+        false,
+    ));
+}
+
+fn render_rails(t: &Value, lines: &mut Vec<String>) {
+    let Some(rails) = t.get("rails").and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = rails
+        .iter()
+        .map(|r| {
+            let name = r.get("name").and_then(Value::as_str).unwrap_or("?");
+            let boot = r
+                .get("boot_voltage_uv")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let sels: Vec<String> = r
+                .get("selectors")
+                .and_then(Value::as_array)
+                .map(|ss| {
+                    ss.iter()
+                        .filter(|s| s.get("absent").and_then(Value::as_bool) != Some(true))
+                        .map(|s| {
+                            format!(
+                                "{}={}",
+                                s.get("role").and_then(Value::as_str).unwrap_or("?"),
+                                s.get("raw").and_then(Value::as_u64).unwrap_or(0)
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            format!("{name} boot {}mV {}", boot / 1000, sels.join(" "))
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    rails: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_rel_limits(limits: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(limits) = limits.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = limits
+        .iter()
+        .map(|l| {
+            let rail = l.get("rail").and_then(Value::as_str).unwrap_or("?");
+            let mv = l.get("max_mv").and_then(Value::as_f64).unwrap_or(0.0);
+            match l.get("kind").and_then(Value::as_str) {
+                Some(kind) => format!("{rail} REL max {mv:.1} mV ({kind})"),
+                None => format!("{rail} REL max {mv:.1} mV"),
+            }
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    rel limits: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_vmin(vmins: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(vmins) = vmins.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = vmins
+        .iter()
+        .map(|v| {
+            let rail = v.get("rail").and_then(Value::as_str).unwrap_or("?");
+            match (
+                v.get("value_mv").and_then(Value::as_f64),
+                v.get("diagnostic").and_then(Value::as_str),
+            ) {
+                (Some(mv), _) => format!("{rail} {mv:.1} mV pinned"),
+                (None, Some(d)) => format!("{rail} {d}"),
+                (None, None) => format!("{rail} unpinned"),
+            }
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    vmin: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_clocks(clocks: Option<&Value>, filter_stored: bool, lines: &mut Vec<String>) {
+    let Some(clocks) = clocks.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = clocks
+        .iter()
+        .filter(|c| !filter_stored || c.get("range_stored").and_then(Value::as_bool) == Some(true))
+        .map(|c| {
+            format!(
+                "{} {}..{}",
+                c.get("domain").and_then(Value::as_str).unwrap_or("?"),
+                c.get("min_mhz").and_then(Value::as_i64).unwrap_or(0),
+                c.get("max_mhz").and_then(Value::as_i64).unwrap_or(0)
+            )
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    clock ranges (MHz): {}", items.join(", ")),
+            false,
+        ));
+    }
+}
+
+fn render_fans_v3(t: &Value, lines: &mut Vec<String>) {
+    match t.get("fans") {
+        Some(f) if f.get("present").and_then(Value::as_bool) == Some(true) => {
+            let channels = f
+                .get("channels")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_u64).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let rows: Vec<String> = f
+                .get("rows")
+                .and_then(Value::as_array)
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|r| r.get("active").and_then(Value::as_bool) == Some(true))
+                .map(|r| {
+                    format!(
+                        "ch{} {}..{}% {}..{}rpm {}Hz",
+                        r.get("index").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("level_min").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("level_max").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("rpm_min").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("rpm_max").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("pwm_frequency_hz")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    fan channels {:?}: {}", channels, rows.join(" | ")),
+                false,
+            ));
+            let extras: Vec<String> = f
+                .get("extra_curves")
+                .and_then(Value::as_array)
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|c| {
+                    c.get("points")
+                        .and_then(Value::as_array)
+                        .is_some_and(|p| !p.is_empty())
+                })
+                .map(|c| {
+                    let pts: Vec<String> = c
+                        .get("points")
+                        .and_then(Value::as_array)
+                        .unwrap_or(&Vec::new())
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{}C/{}rpm",
+                                p.get("temp_c").and_then(Value::as_f64).unwrap_or(0.0),
+                                p.get("rpm").and_then(Value::as_u64).unwrap_or(0)
+                            )
+                        })
+                        .collect();
+                    pts.join(" ")
+                })
+                .enumerate()
+                .map(|(i, pts)| format!("extra{}: {}", i + 1, pts))
+                .collect();
+            if !extras.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    fan extra curves: {}", extras.join(" | ")),
+                    false,
+                ));
+            }
+        }
+        Some(f) if f.get("present").and_then(Value::as_bool) == Some(false) => {
+            lines.push(nvoc_cli_common::color::stylize(
+                "    fan channels: none (no GPU-driven fan)",
+                false,
+            ));
+        }
+        Some(f) => {
+            if let Some(reason) = f.get("reason").and_then(Value::as_str) {
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    fan channels: unsupported ({reason})"
+                )));
+            }
+        }
+        None => {}
+    }
+}
+
+fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
+    let sort_start = lines.len();
+    // structural layer (vix 对照补差：镜像链/架构门/按族表解码)
+    push_structural_sections(output, lines);
+    // power：锚点扫描（CPR 路径）与 BIT 'P'+0x2C PowerBudget（结构化路径）
+    // 合并为一行。两条读取器读同一份数据——budget 表占位通道的 avg/peak
+    // 哨兵对正是锚点扫描的魔数；一致时缩写为一行互证，不一致即解析器红旗
+    // （warning 高亮两侧数值）。仅一侧可用时退回各自的原格式。
+    let power_arr = output.get("power").and_then(Value::as_array);
+    let anchor_power = power_arr.and_then(|a| a.first());
+    let budget = output
+        .get("power_v2")
+        .and_then(|p2| p2.get("budget"))
+        .filter(|b| b.get("cap_entry_power").is_some_and(Value::is_object));
+    let watts = |min: Option<f64>, t: f64, l: f64| match min {
+        Some(m) => format!("{m:.0}/{t:.0}/{l:.0} W"),
+        None => format!("{t:.0}/{l:.0} W"),
+    };
+    match (anchor_power, budget) {
+        (Some(p), Some(b)) => {
+            let cap = b.get("cap_entry_power").unwrap();
+            let a_min = p.get("min_watt").and_then(Value::as_f64);
+            let a_target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let a_limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let uw = |k: &str| {
+                cap.get(k)
+                    .and_then(Value::as_u64)
+                    .map(|v| v as f64 / 1000.0)
+            };
+            let (b_min, b_avg, b_peak) = (uw("min_mw"), uw("avg_mw"), uw("peak_mw"));
+            let agree = (a_min.is_none() || b_min.is_none() || a_min == b_min)
+                && Some(a_target) == b_avg
+                && Some(a_limit) == b_peak;
+            if agree {
+                let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+                let copies = if power_arr.is_some_and(|a| a.len() > 1) {
+                    format!(", {} copies", power_arr.map(|a| a.len()).unwrap_or(1))
+                } else {
+                    String::new()
+                };
+                let slider = p
+                    .get("slider")
+                    .and_then(|s| s.get("enabled"))
+                    .and_then(Value::as_bool);
+                let slider_text = match slider {
+                    Some(true) => ", slider enabled",
+                    Some(false) => ", slider disabled",
+                    None => "",
+                };
+                let range = p
+                    .get("adjustment_percent")
+                    .and_then(Value::as_str)
+                    .map(|r| format!(", range {r}"))
+                    .unwrap_or_default();
+                let anchor_off = p
+                    .get("anchor_offset")
+                    .and_then(Value::as_u64)
+                    .map(|v| format!("{v:#x}"))
+                    .unwrap_or_else(|| "?".into());
+                let version = b
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .trim_start_matches("0x")
+                    .to_string();
+                let cap_entry = b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0);
+                // min 缺席侧（mobile 锚点路径）由另一侧补齐。
+                let min = a_min.or(b_min);
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power: {}{range}{slider_text} — anchor {anchor_off} ({platform}{copies}) ≡ P+0x2C v{version} cap#{cap_entry}",
+                        watts(min, a_target, a_limit)
+                    ),
+                    false,
+                ));
+            } else {
+                let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+                let version = b
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .trim_start_matches("0x")
+                    .to_string();
+                let cap_entry = b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0);
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    power MISMATCH: anchor scan ({platform}) {} vs P+0x2C v{version} cap#{cap_entry} {} — cross-check failed",
+                    watts(a_min, a_target, a_limit),
+                    watts(b_min, b_avg.unwrap_or(0.0), b_peak.unwrap_or(0.0)),
+                )));
+            }
+        }
+        (Some(p), None) => {
+            let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+            let target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let slider = p
+                .get("slider")
+                .and_then(|s| s.get("enabled"))
+                .and_then(Value::as_bool);
+            let slider_text = match slider {
+                Some(true) => "enabled",
+                Some(false) => "disabled",
+                None => "not found",
+            };
+            let min_w = p
+                .get("min_watt")
+                .and_then(Value::as_f64)
+                .map(|v| format!("min {v:.0} W, "));
+            let range = p
+                .get("adjustment_percent")
+                .and_then(Value::as_str)
+                .map(|r| format!(", range {r}"))
+                .unwrap_or_default();
+            let count = if power_arr.is_some_and(|a| a.len() > 1) {
+                format!(" ({} copies)", power_arr.map(|a| a.len()).unwrap_or(1))
+            } else {
+                String::new()
+            };
+            lines.push(nvoc_cli_common::color::stylize(
                 &format!(
                     "    power ({platform}): {}target {target:.0} W, limit {limit:.0} W{range}, slider {slider_text}{count}",
                     min_w.unwrap_or_default()
                 ),
                 false,
             ));
+        }
+        (None, Some(b)) => {
+            let cap = b.get("cap_entry_power").unwrap();
+            let fmt = |k: &str| {
+                cap.get(k)
+                    .and_then(Value::as_u64)
+                    .map(|v| v / 1000)
+                    .unwrap_or(0)
+            };
+            let version = b
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .trim_start_matches("0x")
+                .to_string();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    power budget (P+0x2C v{version}): cap entry {} = min {} W / avg {} W / peak {} W",
+                    b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0),
+                    fmt("min_mw"),
+                    fmt("avg_mw"),
+                    fmt("peak_mw")
+                ),
+                false,
+            ));
+        }
+        (None, None) => {}
     }
     // thermal/fan: documented BIT 'P' table (nouveau semantics). The
     // absence note only prints when no modern-slot fan/thermal data rendered
@@ -1075,6 +1789,255 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 false,
             ));
         }
+        // strap variants 聚合渲染：按 (type/vendor/density/org) 分组，列出
+        // 各组的 strap 槽（同组热/功率参数一致才省略）。
+        if let Some(variants) = mem
+            .get("info")
+            .and_then(|i| i.get("variants"))
+            .and_then(Value::as_array)
+            && !variants.is_empty()
+        {
+            let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+            let mut extras = std::collections::BTreeSet::new();
+            for v in variants {
+                let mut key_bits: Vec<String> = Vec::new();
+                for key in ["type", "vendor", "density"] {
+                    match v.get(key).and_then(Value::as_str) {
+                        Some(val) if val != "?" => key_bits.push(val.to_string()),
+                        _ => key_bits.push("?".into()),
+                    }
+                }
+                let org = v.get("org").and_then(Value::as_u64);
+                let org_part = org
+                    .map(|o| format!("org x{o:02x}"))
+                    .unwrap_or_else(|| "org ?".into());
+                key_bits.push(org_part);
+                let key = key_bits.join(" ");
+                let strap = v
+                    .get("strap")
+                    .and_then(Value::as_u64)
+                    .map(|st| format!("x{st:02x}"))
+                    .unwrap_or_else(|| "?".into());
+                // 同键下其它字段不一致就记进 extras（不省略差异）。
+                let tj = v.get("tj_max_fan_limit").and_then(Value::as_u64);
+                if let Some(tj) = tj
+                    && tj != 0
+                {
+                    extras.insert(format!("tjmax {tj}C"));
+                }
+                match groups.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, straps)) => straps.push(strap),
+                    None => groups.push((key, vec![strap])),
+                }
+            }
+            // type/vendor 双缺的组是未填的 strap 占位槽，不渲染。
+            groups.retain(|(k, _)| !k.starts_with("? ? "));
+            if !groups.is_empty() {
+                let items: Vec<String> = groups
+                    .iter()
+                    .map(|(key, straps)| {
+                        let shown = straps.iter().take(8).cloned().collect::<Vec<_>>().join(",");
+                        let more = if straps.len() > 8 {
+                            format!(",…(+{})", straps.len() - 8)
+                        } else {
+                            String::new()
+                        };
+                        format!("{key} [{shown}{more}]")
+                    })
+                    .collect();
+                let extra_note = if extras.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " | {}",
+                        extras.iter().cloned().collect::<Vec<_>>().join(", ")
+                    )
+                };
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    memory variants: {}{}", items.join(" | "), extra_note),
+                    false,
+                ));
+            }
+        }
+        // 时序表形状（时序位段 hexpat 亦未命名，只给结构）。
+        if let Some(tw) = mem.get("tweak_table").and_then(Value::as_object)
+            && tw.get("timing_sets").is_some()
+        {
+            let base = tw
+                .get("base_entry_size")
+                .and_then(Value::as_u64)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into());
+            let ext = tw
+                .get("extended_entry_size")
+                .and_then(Value::as_u64)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into());
+            let eec = tw
+                .get("extended_entry_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let ver = tw.get("version").and_then(Value::as_str).unwrap_or("?");
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    memory timings: v{ver}, {} sets (base {base}B + {eec}×{ext}B reg; bitfields decoded below, full bytes in JSON)",
+                    tw.get("timing_sets").and_then(Value::as_i64).unwrap_or(0)
+                ),
+                false,
+            ));
+        }
+        // v0x20 位段参数摘要：按 (CL, p44, p45, CCDL, CCDS) 元组聚合 set。
+        if let Some(decoded) = mem
+            .get("tweak_table")
+            .and_then(|t| t.get("decoded"))
+            .and_then(Value::as_array)
+            && !decoded.is_empty()
+        {
+            let key = |d: &Value| {
+                (
+                    d.get("cl_ramtype2").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("param44").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("param45").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("ccdl").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("ccds").and_then(Value::as_u64).unwrap_or(0),
+                )
+            };
+            /// (CL, p44, p45, CCDL, CCDS) 参数元组 → 覆盖的 set 下标段。
+            type TimingKey = ((u64, u64, u64, u64, u64), Vec<usize>);
+            let mut groups: Vec<TimingKey> = Vec::new();
+            for (i, d) in decoded.iter().enumerate() {
+                let k = key(d);
+                match groups.last_mut() {
+                    Some((gk, idx)) if *gk == k => idx.push(i),
+                    _ => groups.push((k, vec![i])),
+                }
+            }
+            let items: Vec<String> = groups
+                .iter()
+                .map(|((cl, p44, p45, ccdl, ccds), idx)| {
+                    let span = if idx.len() == 1 {
+                        format!("#{}", idx[0])
+                    } else {
+                        format!("#{}..#{}", idx[0], idx[idx.len() - 1])
+                    };
+                    format!("{span}: CL{cl} p44={p44} p45={p45} CCDL{ccdl}/CCDS{ccds}")
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    memory timing params: {}", items.join(" | ")),
+                false,
+            ));
+        }
+        // shunt/感测倍率 ≠ 1.0 的通道（Q4.12；4090 CC07B 连接器 1.3333、
+        // 4070S 2.0、3090 NVVDD 相位 4.0 实测）。1.0 通道不列。
+        if let Some(scales) = output
+            .get("structural")
+            .and_then(|t| t.get("tables_v3"))
+            .and_then(|t| t.get("power_channels"))
+            .and_then(|c| c.get("channel_scaling"))
+            .and_then(Value::as_array)
+            && let Some(roles) = output
+                .get("structural")
+                .and_then(|t| t.get("tables_v3"))
+                .and_then(|t| t.get("power_channels"))
+                .and_then(|c| c.get("roles"))
+                .and_then(Value::as_array)
+        {
+            // 只列 12V 感测族（voltage_uv == 12,000,000 且有模板 role）：
+            // 该族的 bytes 6..8 = 感测倍率（shunt 校准）。其它 class 的同位
+            // 置字节语义未证实（vix 观察 class-2 求和通道在 bytes 6..7 存
+            // 别的值），不标 shunt。
+            let items: Vec<String> = scales
+                .iter()
+                .zip(roles.iter())
+                .enumerate()
+                .filter_map(|(i, (sc, role))| {
+                    if sc.get("voltage_uv").and_then(Value::as_u64) != Some(12_000_000) {
+                        return None;
+                    }
+                    let role = role.as_str().unwrap_or("");
+                    if role.is_empty() {
+                        return None;
+                    }
+                    let scale = sc.get("scale").and_then(Value::as_f64)?;
+                    if (scale - 1.0).abs() < 1e-4 {
+                        return None;
+                    }
+                    Some(format!("ch{i} {role} x{scale:.4}"))
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    shunt/sense scales: {}", items.join(" | ")),
+                    false,
+                ));
+            }
+        }
+        // range → tweak set 映射（strap 副本 byte 0 的关联键）。各 strap 同
+        // 组时折叠为 #k；0xFF（无）折叠为 none。
+        if let Some(ranges) = mem
+            .get("clock_table")
+            .and_then(|c| c.get("freq_ranges"))
+            .and_then(Value::as_array)
+        {
+            let items: Vec<String> = ranges
+                .iter()
+                .filter(|r| {
+                    // 空槽 range（0..0）不渲染。
+                    !matches!(
+                        (
+                            r.get("freq_min_raw").and_then(Value::as_i64),
+                            r.get("freq_max_raw").and_then(Value::as_i64),
+                        ),
+                        (Some(0), Some(0))
+                    )
+                })
+                .map(|r| {
+                    let lo = r.get("freq_min_raw").and_then(Value::as_i64).unwrap_or(0);
+                    let hi = r.get("freq_max_raw").and_then(Value::as_i64).unwrap_or(0);
+                    let idxs: Vec<u8> = r
+                        .get("tweak_indices")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_u64)
+                                .map(|v| v as u8)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let label = if idxs.is_empty() {
+                        "?".into()
+                    } else {
+                        let uniq: std::collections::BTreeSet<u8> = idxs.iter().copied().collect();
+                        if uniq.len() == 1 {
+                            match uniq.iter().next().unwrap() {
+                                0xFF => "none".into(),
+                                k => format!("#{k}"),
+                            }
+                        } else {
+                            format!(
+                                "[{}]",
+                                idxs.iter()
+                                    .map(|k| if *k == 0xFF {
+                                        "-".into()
+                                    } else {
+                                        format!("{k}")
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            )
+                        }
+                    };
+                    format!("{lo}..{hi}→{label}")
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    memory timing map: {}", items.join("  ")),
+                    false,
+                ));
+            }
+        }
     }
     // Thermal limits (GPU-Z aligned: rated / maximum from ThermalPolicy)
     if let Some(tp) = output.get("thermal_policy")
@@ -1122,8 +2085,19 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
         ));
     }
     // Fan cooler envelope (per-cooler max duty / max RPM; count = cooler
-    // controllers the ROM provisions — NVAPI cooler Count same semantics)
-    if let Some(fc) = output.get("fan_cooler")
+    // controllers the ROM provisions — NVAPI cooler Count same semantics).
+    // Skipped when the structural layer already rendered the same cooler
+    // table with its full channel rows (3x families): the old line is a
+    // strict subset (duty/max-rpm) of the structural fan channels row.
+    let structural_fans_rendered = output
+        .get("structural")
+        .and_then(|st| st.get("tables_v3"))
+        .and_then(|t| t.get("fans"))
+        .and_then(|f| f.get("present"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !structural_fans_rendered
+        && let Some(fc) = output.get("fan_cooler")
         && fc.get("present").and_then(Value::as_bool) == Some(true)
         && let Some(coolers) = fc.get("coolers").and_then(Value::as_array)
     {
@@ -1159,12 +2133,29 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
             .map(|e| {
                 let app = e.get("application").and_then(Value::as_str).unwrap_or("?");
                 let tgt = e.get("target").and_then(Value::as_str).unwrap_or("?");
-                let stored = e
-                    .get("desc")
+                let d = e.get("desc").filter(|d| !d.is_null());
+                let stored = d
                     .and_then(|d| d.get("stored_size"))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                format!("{app}/{tgt} {stored:#x}")
+                // FWSEC 族（V2/V3 描述符）追加 IMEM/DMEM 几何与签名位图。
+                let geom = d
+                    .and_then(|d| {
+                        let ver = d.get("version").and_then(Value::as_u64)?;
+                        let imem = d.get("imem_load_size").and_then(Value::as_u64)?;
+                        let dmem = d.get("dmem_load_size").and_then(Value::as_u64)?;
+                        let sig = d.get("signature_count").and_then(Value::as_u64)?;
+                        let sigv = d.get("signature_versions").and_then(Value::as_u64)?;
+                        Some(if ver >= 2 && sig > 0 {
+                            format!(" imem {imem:#x} dmem {dmem:#x} sig {sig}@{sigv:#x}")
+                        } else if ver >= 2 {
+                            format!(" imem {imem:#x} dmem {dmem:#x}")
+                        } else {
+                            String::new()
+                        })
+                    })
+                    .unwrap_or_default();
+                format!("{app}/{tgt} {stored:#x}{geom}")
             })
             .collect();
         if !items.is_empty() {
@@ -1364,6 +2355,241 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 "    warning: {w}"
             )));
         }
+    }
+    // DCB 指针子表族（envytools nvbios 移植）：I2C 端口/GPIO 命名线/
+    // EXTDEV 外设/CONN。
+    if let Some(ext) = output.get("dcb_ext") {
+        if let Some(i2c) = ext.get("i2c") {
+            let ports: Vec<String> = i2c
+                .get("ports")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter(|p| p.get("kind").and_then(Value::as_str) != Some("UNUSED"))
+                        .map(|p| {
+                            let idx = p.get("index").and_then(Value::as_u64).unwrap_or(0);
+                            let kind = p.get("kind").and_then(Value::as_str).unwrap_or("?");
+                            match p.get("kind").and_then(Value::as_str) {
+                                Some("PMGR") => {
+                                    let drive = p.get("drive").and_then(Value::as_u64);
+                                    let aux = p.get("auxch").and_then(Value::as_u64);
+                                    let d =
+                                        drive.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+                                    let x =
+                                        aux.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+                                    format!("p{idx}:PMGR(drv {d},aux {x})")
+                                }
+                                _ => format!("p{idx}:{kind}"),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !ports.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dcb i2c ports: {}", ports.join(", ")),
+                    false,
+                ));
+            }
+        }
+        if let Some(gpio) = ext.get("gpio")
+            && let Some(gpio_lines) = gpio.get("lines").and_then(Value::as_array)
+        {
+            let named: Vec<String> = gpio_lines
+                .iter()
+                .filter(|l| {
+                    !matches!(
+                        l.get("name").and_then(Value::as_str),
+                        Some("UNUSED") | Some("UNKNOWN")
+                    )
+                })
+                .map(|l| {
+                    format!(
+                        "{}:{}",
+                        l.get("line").and_then(Value::as_u64).unwrap_or(0),
+                        l.get("name").and_then(Value::as_str).unwrap_or("?")
+                    )
+                })
+                .collect();
+            if !named.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dcb gpio: {}", named.join(", ")),
+                    false,
+                ));
+            }
+        }
+        if let Some(extdev) = ext.get("extdev")
+            && let Some(devs) = extdev.get("devices").and_then(Value::as_array)
+            && !devs.is_empty()
+        {
+            let items: Vec<String> = devs
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}@{}",
+                        d.get("name").and_then(Value::as_str).unwrap_or("?"),
+                        d.get("address").and_then(Value::as_str).unwrap_or("?")
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    dcb extdev: {}", items.join(", ")),
+                false,
+            ));
+        }
+        if let Some(conn) = ext.get("conn")
+            && let Some(entries) = conn.get("entries").and_then(Value::as_array)
+            && !entries.is_empty()
+        {
+            let items: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    let hpd = e
+                        .get("hpd")
+                        .and_then(Value::as_u64)
+                        .map(|v| format!("/HPD{v}"))
+                        .unwrap_or_default();
+                    format!(
+                        "{}{}",
+                        e.get("type").and_then(Value::as_str).unwrap_or("?"),
+                        hpd
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    dcb conn: {}", items.join(", ")),
+                false,
+            ));
+        }
+    }
+    // BIT token 级子表：目录 + 'M' 内存类型 + NVINIT 脚本指针。
+    if let Some(bt) = output.get("bit_tokens") {
+        if let Some(dir) = bt.get("directory").and_then(Value::as_array)
+            && !dir.is_empty()
+        {
+            let items: Vec<String> = dir
+                .iter()
+                .map(|t| {
+                    format!(
+                        "{}{}({:#04x})",
+                        t.get("id").and_then(Value::as_str).unwrap_or("?"),
+                        t.get("ver").and_then(Value::as_u64).unwrap_or(0),
+                        t.get("len").and_then(Value::as_u64).unwrap_or(0)
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    bit tokens: {}", items.join(" ")),
+                false,
+            ));
+        }
+        if let Some(mem) = bt.get("mem")
+            && let Some(tt) = mem.get("type_table")
+        {
+            let mut counts: Vec<(String, usize)> = Vec::new();
+            for e in tt
+                .get("entries")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let name = e
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string();
+                match counts.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, c)) => *c += 1,
+                    None => counts.push((name, 1)),
+                }
+            }
+            let items: Vec<String> = counts
+                .into_iter()
+                .map(|(n, c)| format!("{n}x{c}"))
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    bit 'M': groups {}, ramcfg types {}",
+                    mem.get("group_count").and_then(Value::as_u64).unwrap_or(0),
+                    items.join(", ")
+                ),
+                false,
+            ));
+        }
+        if let Some(nvinit) = bt.get("nvinit")
+            && let Some(slots) = nvinit.get("slots").and_then(Value::as_array)
+        {
+            let items: Vec<String> = slots
+                .iter()
+                .filter(|s| s.get("ptr").and_then(Value::as_u64).unwrap_or(0) != 0)
+                .map(|s| {
+                    format!(
+                        "{}={:#06x}",
+                        s.get("slot").and_then(Value::as_str).unwrap_or("?"),
+                        s.get("ptr").and_then(Value::as_u64).unwrap_or(0)
+                    )
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    nvinit (BIT 'I' u16 ptrs): {}", items.join(", ")),
+                    false,
+                ));
+            }
+        }
+    }
+    // 段名字典序：本函数追加的各段行按行首段名（首个单词，大小写不敏感）
+    // 稳定排序——同族段保持插入序（power policy → power rows、memory →
+    // memory variants），warning 行一律置尾。函数起点之前的行（VP 阶梯
+    // 表/pstate marks/dual bank）不参与。深缩进续行黏附其组头（perf ptrs
+    // 槽表），排序键取自剥离 ANSI 序列后的纯文本（着色模式下 stylize 会
+    // 逐 token 包裹）。
+    fn plain_text(l: &str) -> String {
+        let mut out = String::with_capacity(l.len());
+        let mut chars = l.chars();
+        while let Some(c) = chars.next() {
+            if c == '' {
+                for e in chars.by_ref() {
+                    if e.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+    let tail: Vec<String> = lines.drain(sort_start..).collect();
+    let header_indent = tail
+        .first()
+        .map(|l| {
+            let plain = plain_text(l);
+            plain.len() - plain.trim_start().len()
+        })
+        .unwrap_or(0);
+    let mut groups: Vec<(bool, String, Vec<String>)> = Vec::new();
+    for l in tail {
+        let plain = plain_text(&l);
+        let indent = plain.len() - plain.trim_start().len();
+        let keyword = plain
+            .trim_start()
+            .split([':', ' '])
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let is_warning = plain.contains("warning:");
+        if indent > header_indent
+            && let Some(last) = groups.last_mut()
+        {
+            last.2.push(l);
+            continue;
+        }
+        groups.push((is_warning, keyword, vec![l]));
+    }
+    groups.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    for (_, _, group_lines) in groups {
+        lines.extend(group_lines);
     }
 }
 
@@ -2400,19 +3626,36 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                 )];
             }
 
-            items
+            // 对象/数组项渲染为多行"块"；块与块之间插一条分隔线，否则相邻
+            // 块的字段行无法目视归属（如 get-pwr-cur-info 的 Policies 列表）。
+            // 标量项保持紧凑列表，不插线。
+            let rendered: Vec<(bool, Vec<String>)> = items
                 .iter()
-                .flat_map(|item| match item {
+                .map(|item| match item {
                     Value::Object(_) | Value::Array(_) => {
-                        format_value_block_with_context(item, indent, context)
+                        let lines = format_value_block_with_context(item, indent, context);
+                        (lines.len() >= 2, lines)
                     }
-                    _ => vec![format!(
-                        "{}- {}",
-                        indent_spaces(indent),
-                        nvoc_cli_common::color::stylize(&format_scalar("", item), false)
-                    )],
+                    _ => (
+                        false,
+                        vec![format!(
+                            "{}- {}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize(&format_scalar("", item), false)
+                        )],
+                    ),
                 })
-                .collect()
+                .collect();
+            let mut out: Vec<String> = Vec::new();
+            let mut prev_block = false;
+            for (is_block, mut lines) in rendered {
+                if is_block && prev_block {
+                    out.push(format!("{}{}", indent_spaces(indent), "-".repeat(30)));
+                }
+                out.append(&mut lines);
+                prev_block = is_block;
+            }
+            out
         }
         _ => vec![format!(
             "{}{}",
@@ -3947,7 +5190,7 @@ mod tests {
         assert!(text.contains("0x0f(P0) 1911/1811"), "{text}");
         assert!(text.contains("mem clock (DDR): 4004 MHz"), "{text}");
         assert!(
-            text.contains("footers (DRAM/DDR MHz): 0x0f 2002/4004"),
+            text.contains("footers (DRAM/DDR MHz): 0x0f(P0) 2002/4004"),
             "{text}"
         );
         assert!(

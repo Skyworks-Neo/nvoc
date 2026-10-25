@@ -7,7 +7,7 @@ fn main() {
             eprintln!("{path}: unreadable");
             continue;
         };
-        let tables = nvoc_core::legacy_vbios_parser::find_vp_tables(&data);
+        let tables = nvoc_core::vbios::legacy::find_vp_tables(&data);
         println!("{path}: {} VP table(s), {} bytes", tables.len(), data.len());
         for t in &tables {
             println!(
@@ -47,7 +47,7 @@ fn main() {
                     .collect::<Vec<_>>()
             );
         }
-        for p in nvoc_core::legacy_vbios_parser::find_power_tables(&data) {
+        for p in nvoc_core::vbios::legacy::find_power_tables(&data) {
             println!(
                 "  power: {} target={}W limit={}W slider={:?} anchor=0x{:X}",
                 p.platform.name(),
@@ -57,7 +57,7 @@ fn main() {
                 p.anchor_offset
             );
         }
-        match nvoc_core::legacy_vbios_parser::find_perf_ptr_map(&data) {
+        match nvoc_core::vbios::legacy::find_perf_ptr_map(&data) {
             Ok(m) => {
                 println!(
                     "  perf ptrs: P@0x{:X} len={} ({} non-zero)",
@@ -74,7 +74,7 @@ fn main() {
             }
             Err(e) => println!("  perf ptrs: err {e}"),
         }
-        if let Ok(Some(mc)) = nvoc_core::legacy_vbios_parser::find_memory_clock_table(&data) {
+        if let Ok(Some(mc)) = nvoc_core::vbios::legacy::find_memory_clock_table(&data) {
             println!(
                 "  memclock: @0x{:X} ver={:#x} ranges={}",
                 mc.table_offset,
@@ -90,7 +90,7 @@ fn main() {
                 );
             }
         }
-        if let Ok(Some(mt)) = nvoc_core::legacy_vbios_parser::find_memory_tweak_table(&data) {
+        if let Ok(Some(mt)) = nvoc_core::vbios::legacy::find_memory_tweak_table(&data) {
             println!(
                 "  memtweak: @0x{:X} ver={:#x} sets={} x {}B (ext {}x{}B)",
                 mt.table_offset,
@@ -101,7 +101,7 @@ fn main() {
                 mt.extended_entry_size
             );
         }
-        if let Ok(Some(mi)) = nvoc_core::legacy_vbios_parser::find_memory_info(&data) {
+        if let Ok(Some(mi)) = nvoc_core::vbios::legacy::find_memory_info(&data) {
             println!(
                 "  meminfo: @0x{:X} straps={} variants={}",
                 mi.table_offset,
@@ -111,22 +111,22 @@ fn main() {
             for e in &mi.entries {
                 println!(
                     "    type={:?} vendor={:?} dens={:?} strap={} rev={}",
-                    nvoc_core::legacy_vbios_parser::memory_type_name(e.variant.mem_type),
-                    nvoc_core::legacy_vbios_parser::memory_vendor_name(e.variant.vendor_id),
-                    nvoc_core::legacy_vbios_parser::memory_density_name(e.variant.density),
+                    nvoc_core::vbios::legacy::memory_type_name(e.variant.mem_type),
+                    nvoc_core::vbios::legacy::memory_vendor_name(e.variant.vendor_id),
+                    nvoc_core::vbios::legacy::memory_density_name(e.variant.density),
                     e.variant.strap,
                     e.variant.rev_id
                 );
             }
         }
-        match nvoc_core::legacy_vbios_parser::find_bios_identity(&data) {
+        match nvoc_core::vbios::legacy::find_bios_identity(&data) {
             Ok(id) => println!(
                 "  identity: version={:?} build={:?} msg={:?} board={:?}",
                 id.version, id.build_date, id.message, id.board_id
             ),
             Err(e) => println!("  identity: err {e}"),
         }
-        if let Ok(Some(tp)) = nvoc_core::legacy_vbios_parser::find_thermal_policy(&data) {
+        if let Ok(Some(tp)) = nvoc_core::vbios::legacy::find_thermal_policy(&data) {
             println!("  thermal policy: @0x{:X}", tp.table_offset);
             for e in &tp.entries {
                 println!(
@@ -135,7 +135,7 @@ fn main() {
                 );
             }
         }
-        if let Ok(Some(fc)) = nvoc_core::legacy_vbios_parser::find_fan_cooler(&data) {
+        if let Ok(Some(fc)) = nvoc_core::vbios::legacy::find_fan_cooler(&data) {
             println!(
                 "  fan coolers ({}): @0x{:X}",
                 fc.coolers.len(),
@@ -148,7 +148,7 @@ fn main() {
                 );
             }
         }
-        if let Ok(Some(fp)) = nvoc_core::legacy_vbios_parser::find_fan_policy(&data) {
+        if let Ok(Some(fp)) = nvoc_core::vbios::legacy::find_fan_policy(&data) {
             println!(
                 "  fan policy: @0x{:X} entry_len={}",
                 fp.table_offset, fp.entry_len
@@ -172,7 +172,7 @@ fn main() {
                 }
             }
         }
-        match nvoc_core::legacy_vbios_parser::find_falcon_table(&data) {
+        match nvoc_core::vbios::legacy::find_falcon_table(&data) {
             Ok(Some(f)) => {
                 println!("  falcon: @0x{:X} raw={:#x}", f.table_offset, f.raw_ptr);
                 for e in &f.entries {
@@ -190,13 +190,13 @@ fn main() {
             Ok(None) => println!("  falcon: None"),
             Err(e) => println!("  falcon: err {e}"),
         }
-        if let Some(n) = nvoc_core::legacy_vbios_parser::parse_nvgi(&data) {
+        if let Some(n) = nvoc_core::vbios::legacy::parse_nvgi(&data) {
             println!(
                 "  nvgi: version={:#x} total={:#x} sub={:#x}:{:#x}",
                 n.version, n.total_data_size, n.xve_sub_vendor, n.xve_subsystem_id
             );
         }
-        match nvoc_core::legacy_vbios_parser::find_thermal(&data) {
+        match nvoc_core::vbios::legacy::find_thermal(&data) {
             Ok(Some(th)) => println!(
                 "  thermal: ver={:#x} mode={:?} duty={:?}/{:?} linear={:?}..{:?} pwm={:?} unknown={:?}",
                 th.ver,
@@ -211,7 +211,7 @@ fn main() {
             Ok(None) => println!("  thermal: pointer zero (absent)"),
             Err(e) => println!("  thermal: err {e}"),
         }
-        if let Some(b) = nvoc_core::vbios_dcb::DcbBlock::primary(&data) {
+        if let Some(b) = nvoc_core::vbios::dcb::DcbBlock::primary(&data) {
             println!("  dcb: @0x{:X} conn @0x{:X}", b.offset, b.connector_offset);
             for p in b.display_map().iter().filter(|p| !p.roles.is_empty()) {
                 println!(

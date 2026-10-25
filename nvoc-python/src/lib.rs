@@ -7,7 +7,7 @@ use nvoc_core::{
     DisableNvapiThermalSim, FabricTree, FanCurvePointReadout, GetFanCurves, GpuTarget, GpuType,
     NvapiPStateNativeLock, NvapiPerfFreqCap, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
-    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq,
+    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiAdcDevices, QueryNvapiClkDomainFreq,
     QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiFramerateLimit, QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter,
@@ -511,6 +511,30 @@ fn decode_perf_flags(bits: u32) -> Vec<&'static str> {
         .iter()
         .filter(|(bit, _)| bits & bit != 0)
         .map(|(_, name)| *name)
+        .collect();
+    if reasons.is_empty() {
+        vec!["None"]
+    } else {
+        reasons
+    }
+}
+
+/// Decode an `NVAPI_GPU_PERF_DECREASE` bitmask (`GetPerfDecreaseInfo`
+/// 0x7F7F4600) into reason names; empty = `["None"]` (running at full speed).
+/// Deliberately excludes the `UNKNOWN = 0x00` alias — it carries no bit.
+fn decode_perf_decrease_flags(bits: u32) -> Vec<&'static str> {
+    use ::nvapi::PerformanceDecreaseReason as Pdr;
+    let named: &[(&'static str, u32)] = &[
+        ("THERMAL_PROTECTION", Pdr::THERMAL_PROTECTION.bits()),
+        ("POWER_CONTROL", Pdr::POWER_CONTROL.bits()),
+        ("AC_BATTERY", Pdr::AC_BATTERY.bits()),
+        ("API_TRIGGERED", Pdr::API_TRIGGERED.bits()),
+        ("INSUFFICIENT_POWER", Pdr::INSUFFICIENT_POWER.bits()),
+    ];
+    let reasons: Vec<&'static str> = named
+        .iter()
+        .filter(|(_, bit)| bits & bit != 0)
+        .map(|(name, _)| *name)
         .collect();
     if reasons.is_empty() {
         vec!["None"]
@@ -1174,6 +1198,77 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             ),
         ]),
     );
+
+    // NVAPI-side performance-decrease reasons (`GetPerfDecreaseInfo`
+    // 0x7F7F4600 — thermal/power/AC-battery/API/insufficient-power). Raw
+    // bitset plus decoded names, mirroring the `perf` block above; the
+    // dashboard can now show WHY the GPU is below peak, not just that it is.
+    {
+        let bits = status.performance_decrease.bits();
+        map.insert(
+            "perf_decrease".into(),
+            value_object([
+                ("raw", u64_value(bits as u64)),
+                ("flags", text_array_value(decode_perf_decrease_flags(bits))),
+            ]),
+        );
+    }
+
+    // Power topology (`ClientPowerTopologyGetStatus` 0xEDCF624E): per-channel
+    // percentage-of-limit (Total/Normalized power). Percent-of-limit, not
+    // watts — pair with `power_w` for the absolute reading.
+    if !status.power.is_empty() {
+        let entries = status
+            .power
+            .iter()
+            .map(|(channel, share)| (channel.to_string(), percent_value(*share)))
+            .collect::<Vec<_>>();
+        map.insert(
+            "power_topology".into(),
+            value_object(entries.iter().map(|(k, v)| (k.as_str(), v.clone()))),
+        );
+    }
+
+    // PowerMonitor v4 decoded channel table (GetInfo 0xC12EB19E + GetStatus
+    // 0xF40238EF): per-channel rail identity + live raw readings. The
+    // friendly rail name comes from the three-layer merged resolver
+    // (AmpereOC → RTSS → GPU-Z); `raw_status` units are not yet validated —
+    // display-grade watts stay on `power_w` / `power_rails_w`.
+    if let Some(channels) = &status.power_monitor {
+        let entries = channels
+            .iter()
+            .map(|c| {
+                let mut obj = vec![
+                    ("byte_offset", u64_value(c.byte_offset as u64)),
+                    ("channel_type", u64_value(c.channel_type as u64)),
+                    ("pwr_rail", u64_value(c.pwr_rail as u64)),
+                    (
+                        "name",
+                        match c.friendly_name() {
+                            Some(n) => text(n),
+                            None => Value::Null,
+                        },
+                    ),
+                    ("volt_fixed_uv", u64_value(c.volt_fixed_uv as u64)),
+                ];
+                if let Some(s) = &c.raw_status {
+                    obj.push((
+                        "raw_status",
+                        value_object([
+                            ("pwr_avg", u64_value(s.pwr_avg as u64)),
+                            ("pwr_min", u64_value(s.pwr_min as u64)),
+                            ("pwr_max", u64_value(s.pwr_max as u64)),
+                            ("curr", u64_value(s.curr as u64)),
+                            ("volt", u64_value(s.volt as u64)),
+                            ("energy", u64_value(s.energy)),
+                        ]),
+                    ));
+                }
+                value_object(obj)
+            })
+            .collect::<Vec<_>>();
+        map.insert("power_monitor_channels".into(), Value::Array(entries));
+    }
 
     Ok(Value::Object(map))
 }
@@ -1980,7 +2075,7 @@ fn query_public_vftable(
 
 /// vBIOS GPU Boost 2.0 阶梯（Maxwell/Kepler 的 "隐藏" V/F 曲线）。
 ///
-/// 读整片 VBIOS 镜像后用 core 的 legacy_vbios_parser 解码 boost-ladder
+/// 读整片 VBIOS 镜像后用 core 的 vbios::legacy 解码 boost-ladder
 /// v0x10 表（BIT 'P'+0x34）：79×5B 点（u16 半 MHz + vmap 电压索引）+ pstate
 /// 边界标记。`curve_start_index`/`curve_end_index` 从标记推导出实际曲线窗口
 /// （最低速 pstate 边界 .. P0 边界，GM200 = 5..74；两端之外的点是低功耗态
@@ -2002,7 +2097,7 @@ fn query_vbios_vf_curve(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 /// 阶梯表 → 绘图就绪 payload（GUI/TUI 共用）。表缺失（非 Maxwell/Kepler
 /// 世代镜像）时返回 `{"available": false}` 而非报错，便于上层静默隐藏。
 fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
-    let vb = nvoc_core::legacy_vbios_parser::parse(image)?;
+    let vb = nvoc_core::vbios::legacy::parse(image)?;
     let Some(ladder) = &vb.boost_ladder else {
         return Ok(Value::Object(
             [("available".to_string(), Value::Bool(false))]
@@ -2061,7 +2156,7 @@ fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
                 [
                     (
                         "pstate".to_string(),
-                        nvoc_core::legacy_vbios_parser::pstate_display_name(m.pstate_raw)
+                        nvoc_core::vbios::legacy::pstate_display_name(m.pstate_raw)
                             .map(Value::String)
                             .unwrap_or(Value::Null),
                     ),
@@ -2645,6 +2740,82 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
             None => value_object([("supported", Value::from(false))]),
         })
     })?;
+    py_value(py, &value)
+}
+
+/// ADC sense-device directory + live rail-voltage readings
+/// (`ClockAdcDevicesGetInfo` 0x68789E2A / `GetStatus` 0x43D9B26A) — the only
+/// dynamic per-channel µV rail-voltage stream besides VoltRails; useful as an
+/// independent cross-check of the voltage axis on V/F pages. Returns
+/// `{"supported": false}` when the part exposes no ADC devices. In `status`
+/// entries, `value_uv` holds the rail voltage in µV (live cross-certified:
+/// channels track different rails idle-vs-load); `vf_point_id_a/b` are
+/// VF-table voltage-point index hypotheses, NOT temperatures.
+#[pyfunction]
+fn query_adc_devices(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let devices = run(target, QueryNvapiAdcDevices).map_err(to_py_err)?.output;
+        Ok(match devices {
+            Some(d) => value_object([
+                ("supported", Value::from(true)),
+                ("info", serde_json::to_value(&d.info).unwrap_or(Value::Null)),
+                (
+                    "status",
+                    match &d.status {
+                        Some(s) => serde_json::to_value(s).unwrap_or(Value::Null),
+                        None => Value::Null,
+                    },
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// NVAPI interface doctor — resolve the interface IDs nvoc depends on, one
+/// `QueryInterface` null-check each (mVolt+-style self-inventory; see
+/// `docs/reverse-engineering/nvapi/mvolt-plus-nvapi-surface.md`). Safe with
+/// no GPU present and on any driver: resolved handlers are never called.
+/// Primary use is post-driver-bump triage — "which surfaces did this driver
+/// stop exporting" — before running any write path against 617.42-class
+/// drivers.
+#[pyfunction]
+fn nvapi_doctor(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let report = nvoc_core::nvapi_doctor_report();
+    let entries = report
+        .entries
+        .iter()
+        .map(|e| {
+            value_object([
+                ("name", text(e.name)),
+                ("id", text(format!("0x{:08X}", e.id))),
+                ("resolved", Value::from(e.resolved)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let value = value_object([
+        (
+            "interface_version",
+            match &report.interface_version {
+                Some(v) => text(v),
+                None => Value::Null,
+            },
+        ),
+        (
+            "load_error",
+            match &report.load_error {
+                Some(v) => text(v),
+                None => Value::Null,
+            },
+        ),
+        ("all_resolved", Value::from(report.all_resolved())),
+        (
+            "missing",
+            Value::Array(report.missing().into_iter().map(text).collect()),
+        ),
+        ("entries", Value::Array(entries)),
+    ]);
     py_value(py, &value)
 }
 
@@ -6002,6 +6173,8 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_dnotifier, m)?)?;
     m.add_function(wrap_pyfunction!(query_framerate_limit, m)?)?;
     m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
+    m.add_function(wrap_pyfunction!(query_adc_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(nvapi_doctor, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_target, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_slot_offset, m)?)?;
