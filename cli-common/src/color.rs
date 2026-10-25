@@ -273,14 +273,103 @@ pub fn stylize_scanner(message: &str, is_stderr: bool) -> String {
         .join(" ")
 }
 
+/// `set-power-command --kmd` 人读步骤行的着色器:结论行(KERNEL PATCH
+/// APPLIED)与首行(KERNEL WALL PATCHED)整行亮绿加粗 —— 这是"内核驱动
+/// 已内存 patch"的主证据;卸载被拒/共享冲突的处置行整行黄加粗告警;
+/// 写回证据行的 ✓ 标绿加粗(其余 token 走通用数值/关键字规则);note 行
+/// 暗调弱化;其余行走通用 stylize。缩进原样保留。
+pub fn stylize_kmd_step(message: &str) -> String {
+    if !colors_enabled() {
+        return message.to_string();
+    }
+    let trimmed = message.trim_start();
+    let indent = &message[..message.len() - trimmed.len()];
+    let lower = trimmed.to_ascii_lowercase();
+    let body =
+        if lower.starts_with("kernel wall patched") || lower.starts_with("kernel patch applied") {
+            trimmed.bright_green().bold().to_string()
+        } else if lower.starts_with("note:") {
+            trimmed.bright_black().to_string()
+        } else if lower.contains("refused") || lower.contains("sharing violation") {
+            trimmed.yellow().bold().to_string()
+        } else if trimmed.contains('✓') {
+            stylize(trimmed, false).replace('✓', &"✓".bright_green().bold().to_string())
+        } else {
+            stylize(trimmed, false)
+        };
+    format!("{indent}{body}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{init, stylize_group_heading, stylize_help_command, stylize_warning};
+    use super::{
+        init, stylize_group_heading, stylize_help_command, stylize_kmd_step, stylize_warning,
+    };
     use std::sync::{Mutex, OnceLock};
 
     fn color_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn kmd_step_styles_verdict_evidence_and_refusal_lines() {
+        let _guard = color_test_lock();
+        init(false);
+        if std::env::var_os("NO_COLOR").is_some() {
+            return; // colors_enabled() gates on the env; nothing to observe
+        }
+        // cargo test pipes stdout (not a tty) — force colored to render so
+        // the assertion is deterministic.
+        colored::control::set_override(true);
+
+        // 首行/结论行:整行亮绿加粗
+        let header = stylize_kmd_step(
+            "  Kernel wall patched via pmxdrv (root arm): 190000 mW → 180000 mW (180.0 W)",
+        );
+        assert!(header.starts_with("  ")); // 缩进保留
+        assert!(header.contains("\u{1b}["));
+        assert!(header.contains("Kernel wall patched via pmxdrv"));
+        let verdict = stylize_kmd_step(
+            "    KERNEL PATCH APPLIED: the enforced wall in driver memory was rewritten …",
+        );
+        assert!(verdict.starts_with("    "));
+        assert!(verdict.contains("\u{1b}["));
+
+        // 写回证据行:✓ 绿加粗,数值走通用青色
+        let evidence = stylize_kmd_step("    UPPER 190000 → 180000 ✓ readback match");
+        assert!(evidence.starts_with("    "));
+        assert!(evidence.contains("✓"));
+        assert!(evidence.contains("\u{1b}["));
+
+        // 卸载被拒/共享冲突行:整行黄加粗告警
+        let refused = stylize_kmd_step(
+            "    service PMXDRV_KMD marked for deletion but driver still running (unload refused) — sc stop PMXDRV_KMD or reboot to clean up",
+        );
+        assert!(refused.contains("\u{1b}["));
+        let violation = stylize_kmd_step(
+            "    leftover service marked for deletion — payload overwrite may hit a sharing violation",
+        );
+        assert!(violation.contains("\u{1b}["));
+
+        // note 行:暗调
+        let note = stylize_kmd_step("    note: wall field write is volatile (resets on reboot)");
+        assert!(note.contains("\u{1b}["));
+
+        colored::control::unset_override();
+    }
+
+    #[test]
+    fn kmd_step_plain_when_disabled() {
+        let _guard = color_test_lock();
+        init(true);
+
+        let line = "    UPPER 190000 → 180000 ✓ readback match";
+        assert_eq!(stylize_kmd_step(line), line);
+        let header = "  Kernel wall patched via pmxdrv (root arm): 1 mW → 2 mW (2.0 W)";
+        assert_eq!(stylize_kmd_step(header), header);
+
+        init(false);
     }
 
     #[test]

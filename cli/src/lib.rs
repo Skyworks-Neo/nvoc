@@ -2,6 +2,12 @@ use clap::{
     Arg, ArgAction, ColorChoice, Command as ClapCommand,
     builder::{PossibleValue, PossibleValuesParser},
 };
+use nvoc_core::profile::{
+    ApplyOptions, ApplyPlan, DomainKind, DomainOutcome, ImportPolicy, PlanOptions, ProfileDoc,
+    ProfileStore, build_plan, capture_backup_now, capture_baseline, capture_domains,
+    execute_profile, export_package, import_package, new_profile_doc, read_package_file,
+    restore_backup, write_package,
+};
 use nvoc_core::{
     BackendSet, ClearEdid, ClkVfDomainHint, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
     DisableNvapiThermalSim, FanCurvePointReadout, GetFanCurves, GetPowerMode, GpuSelector,
@@ -279,6 +285,18 @@ pub enum Command {
     ResetLegacyGpcRailOvervoltLimit,
     ResetPstateGlobalFreqOffset,
     ResetPublicGpcRailVoltBoost,
+    ProfileCaptureStock,
+    ProfileSave,
+    ProfileList,
+    ProfileShow,
+    ProfileDiff,
+    ProfileApply,
+    ProfileRestoreLast,
+    ProfileRename,
+    ProfileCopy,
+    ProfileDelete,
+    ProfileExport,
+    ProfileImport,
 }
 
 static NVAPI_ONLY: [BackendAdapter; 1] = [BackendAdapter::Nvapi];
@@ -397,6 +415,7 @@ enum Group {
     Vfp,
     Perf,
     Scanner,
+    Profile,
 }
 
 impl Group {
@@ -412,6 +431,7 @@ impl Group {
             Self::Vfp => "vfp",
             Self::Perf => "perf",
             Self::Scanner => "scanner",
+            Self::Profile => "profile",
         }
     }
 
@@ -427,6 +447,7 @@ impl Group {
             Self::Vfp => "V/F curve tables",
             Self::Perf => "Performance policies",
             Self::Scanner => "OC scanner",
+            Self::Profile => "Overclock profiles (multi-slot save / load / import / export)",
         }
     }
 
@@ -447,6 +468,7 @@ const GROUP_ORDER: &[Group] = &[
     Group::Vfp,
     Group::Perf,
     Group::Scanner,
+    Group::Profile,
 ];
 
 /// Everything the CLI needs to know about one command, in one row. The
@@ -862,6 +884,136 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::ProfileApply,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["dry-run", "no-verify", "no-rollback", "rebase", "profile-root"])),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_name",
+                    "NAME",
+                    "Profile slot to apply",
+                )])),
+                    ..CommandSpec::new("profile-apply", Group::Profile, "Apply a saved profile to every selected GPU (default: all; narrow with --gpu): per GPU identity check -> plan -> backup-last.json -> write -> read-back verify -> rollback on failure; --dry-run prints the plan only")
+                },
+            ),
+            (
+                Command::ProfileCaptureStock,
+                CommandSpec {
+                    options: Box::leak(Box::new(["note", "profile-root"])),
+                    ..CommandSpec::new("profile-capture-stock", Group::Profile, "Snapshot the CURRENT settings as each selected GPU's stock.json reference (run at stock for a meaningful baseline)")
+                },
+            ),
+            (
+                Command::ProfileCopy,
+                CommandSpec {
+                    options: Box::leak(Box::new(["profile-root"])),
+                    arity: (2, 2),
+                    positionals: Box::leak(Box::new([
+                    PositionalArg::free("arg_source", "SOURCE", "Existing profile name"),
+                    PositionalArg::free("arg_new_name", "NEW_NAME", "Copy target name"),
+                ])),
+                    ..CommandSpec::new("profile-copy", Group::Profile, "Copy a profile slot under a new name")
+                },
+            ),
+            (
+                Command::ProfileDelete,
+                CommandSpec {
+                    options: Box::leak(Box::new(["profile-root"])),
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_name",
+                    "NAME",
+                    "Profile slot to delete",
+                )])),
+                    ..CommandSpec::new("profile-delete", Group::Profile, "Delete a profile slot (clears the active marker if it pointed at it)")
+                },
+            ),
+            (
+                Command::ProfileDiff,
+                CommandSpec {
+                    options: Box::leak(Box::new(["profile-root"])),
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_name",
+                    "NAME",
+                    "Profile slot to compare",
+                )])),
+                    ..CommandSpec::new("profile-diff", Group::Profile, "Compare a profile's captured domains against the live driver state (per-domain in-sync / drift)")
+                },
+            ),
+            (
+                Command::ProfileExport,
+                CommandSpec {
+                    options: Box::leak(Box::new(["out", "profile-root", "purpose"])),
+                    ..CommandSpec::new("profile-export", Group::Profile, "Export every selected GPU's profile slots (all, or the named ones) into one portable .nvocprofile.json package; default output ./nvoc-profiles.nvocprofile.json")
+                },
+            ),
+            (
+                Command::ProfileImport,
+                CommandSpec {
+                    options: Box::leak(Box::new(["on-conflict", "dry-run", "profile-root"])),
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_file",
+                    "FILE",
+                    "Package file to import (*.nvocprofile.json)",
+                )])),
+                    ..CommandSpec::new("profile-import", Group::Profile, "Import a portable profile package into the store (slots stay bound to their captured GPU identity); --on-conflict skip|overwrite|rename")
+                },
+            ),
+            (
+                Command::ProfileList,
+                CommandSpec {
+                    options: Box::leak(Box::new(["profile-root"])),
+                    ..CommandSpec::new("profile-list", Group::Profile, "List each selected GPU's saved profile slots plus stock/backup/active markers")
+                },
+            ),
+            (
+                Command::ProfileRename,
+                CommandSpec {
+                    options: Box::leak(Box::new(["profile-root"])),
+                    arity: (2, 2),
+                    positionals: Box::leak(Box::new([
+                    PositionalArg::free("arg_old_name", "OLD_NAME", "Existing profile name"),
+                    PositionalArg::free("arg_new_name", "NEW_NAME", "New profile name"),
+                ])),
+                    ..CommandSpec::new("profile-rename", Group::Profile, "Rename a profile slot (keeps the active marker pointing at it)")
+                },
+            ),
+            (
+                Command::ProfileRestoreLast,
+                CommandSpec {
+                    options: Box::leak(Box::new(["profile-root"])),
+                    ..CommandSpec::new("profile-restore-last", Group::Profile, "Replay backup-last.json: restore the pre-apply settings snapshot (values the snapshot lacks are reported, never silently skipped)")
+                },
+            ),
+            (
+                Command::ProfileSave,
+                CommandSpec {
+                    options: Box::leak(Box::new(["domains", "note", "profile-root"])),
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_name",
+                    "NAME",
+                    "Profile slot name to create/overwrite",
+                )])),
+                    ..CommandSpec::new("profile-save", Group::Profile, "Capture the live overclocking state of every selected GPU (default: all; narrow with --gpu) into a named slot per GPU (default domains: clock-offsets, clk-domain-offsets, private-vf-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, toprels-ratios, vfp-locks; --domains narrows)")
+                },
+            ),
+            (
+                Command::ProfileShow,
+                CommandSpec {
+                    options: Box::leak(Box::new(["profile-root"])),
+                    arity: (1, 1),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_name",
+                    "NAME",
+                    "Profile slot to display",
+                )])),
+                    ..CommandSpec::new("profile-show", Group::Profile, "Print one profile slot's full JSON document")
+                },
+            ),
+            (
                 Command::ResetAutoboostStatus,
                 CommandSpec {
                     adapters: &NVML_ONLY,
@@ -1270,7 +1422,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "Raw cell value; a bare number is watts (×1000 = the mW driver unit), a `mw` suffix is the raw integer. 0 and 0xFFFFFFFF are rejected (unset sentinels)",
                 )])),
                     formatter: Some(output::format_set_power_command),
-                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value. --kmd KERNEL PATH (HIGH RISK, admin): one-shot kernel cycle via the kmd lane (pmxdrv service register → page-walk + static layout probe → GPU-table chain walk → arm select: ROOT ARM (armed PowerRoot, mobile/board-config form) UPPER single-u32 write with readback + native tgp write (window follows UPPER) | BOARD ARM (desktop form: PowerRoot never arms, constructor finds no board-config object) live-window triplet locate of the Board control table → window-max single-u32 write with readback + GET follow verification (mirror-copy guard) + percent write (0xAD95F5ED safe path; the poisonous 0xAFFC2279 SET is never touched) → this lease write LAST (echo sync) → re-verify → service unregister). --pmxdrvpath <file> is the driver binary (required with --kmd). The wall field is volatile (resets on reboot); absolute cap 500 W; --force required (it also bypasses the lease envelope)")
+                    ..CommandSpec::new("set-power-command", Group::Power, "Write one ExtendedLimits power-command lease cell (NDA 0x17695269 SET, packet stamp v1|1320; xOCD 2.0 SetPowerCommand) — distinct from set-pwr-cur-limit (0x8B3E7343/0xAFFC2279). --command request (0xFE, default; the writable request/lease, live unit mW) | observed (0xF8, readback-only); --channel 0..31 (default 0); --force bypasses the safety envelope (board default × 2, floor 1 W; no anchor = refuse). ECHO-LAYER ONLY (P100 load-proven 2026-10-06): GET/NVML/nvidia-smi read back the new value but load-time enforcement stays at the legal slider window (set-pwr-cur-limit). Safety envelope on by default; no implicit restore — the printed baseline is the restore value. --kmd KERNEL PATH (HIGH RISK, admin): one-shot kernel cycle via the kmd lane (pmxdrv service register → page-walk + static layout probe → GPU-table chain walk → arm select: ROOT ARM (armed PowerRoot, mobile/board-config form) UPPER single-u32 write with readback + native tgp write (window follows UPPER) | BOARD ARM (desktop form: PowerRoot never arms, constructor finds no board-config object) live-window triplet locate of the Board control table → window-max single-u32 write with readback + GET follow verification (mirror-copy guard) + percent write (0xAD95F5ED safe path; the poisonous 0xAFFC2279 SET is never touched) → this lease write LAST (echo sync) → re-verify → service unregister). --pmxdrvpath <file> overrides the embedded pmxdrv.sys (optional; embedded by default on windows x64). The wall field is volatile (resets on reboot); absolute cap 500 W; --force required (it also bypasses the lease envelope)")
                 },
             ),
             (
@@ -2287,6 +2439,47 @@ fn cli_command(command_hint: Option<Command>) -> ClapCommand {
 
 fn command_specific_arg(name: &'static str) -> Arg {
     match name {
+        "domains" => Arg::new("domains")
+            .long("domains")
+            .value_name("DOMAINS")
+            .action(ArgAction::Set)
+            .help("Comma-separated profile domains to capture: clock-offsets, clk-domain-offsets, private-vf-offsets, public-vftable, voltage, volt-rails, power, thermal, fan, toprels-ratios, locked-clocks, vfp-locks (default: all except locked-clocks)"),
+        "note" => Arg::new("note")
+            .long("note")
+            .value_name("TEXT")
+            .action(ArgAction::Set)
+            .help("Free-form note stored with the profile / stock snapshot"),
+        "dry-run" => Arg::new("dry-run")
+            .long("dry-run")
+            .action(ArgAction::SetTrue)
+            .help("Print the plan (or the import result) without writing anything"),
+        "no-verify" => Arg::new("no-verify")
+            .long("no-verify")
+            .action(ArgAction::SetTrue)
+            .help("Skip the post-apply read-back verification"),
+        "no-rollback" => Arg::new("no-rollback")
+            .long("no-rollback")
+            .action(ArgAction::SetTrue)
+            .help("Do NOT restore the pre-apply snapshot when a domain fails"),
+        "rebase" => Arg::new("rebase")
+            .long("rebase")
+            .action(ArgAction::SetTrue)
+            .help("Re-bind the profile to this GPU despite a hardware-fingerprint drift (VBIOS flash / subsystem change); refresh the baseline afterwards"),
+        "on-conflict" => Arg::new("on-conflict")
+            .long("on-conflict")
+            .value_name("POLICY")
+            .action(ArgAction::Set)
+            .help("profile-import name-conflict policy: skip (default), overwrite, rename"),
+        "purpose" => Arg::new("purpose")
+            .long("purpose")
+            .value_name("TEXT")
+            .action(ArgAction::Set)
+            .help("Purpose text embedded in the exported package"),
+        "profile-root" => Arg::new("profile-root")
+            .long("profile-root")
+            .value_name("DIR")
+            .action(ArgAction::Set)
+            .help("Profile store root (default: <PROGRAMDATA>/nvoc/profiles on Windows, $XDG_CONFIG_HOME/nvoc/profiles or /etc/nvoc/profiles on Linux)"),
         "verbose" => Arg::new("verbose")
             .long("verbose")
             .action(ArgAction::SetTrue)
@@ -2477,7 +2670,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("out")
             .value_name("FILE")
             .action(ArgAction::Set)
-            .help("Write the VBIOS image to FILE (e.g. vbios.rom); without it a summary is printed"),
+            .help("get-vbios: write the VBIOS image to FILE (e.g. vbios.rom); profile-export: output package path (.nvocprofile.json, default ./nvoc-profiles.nvocprofile.json)"),
         "dump" => Arg::new("dump")
             .long("dump")
             .action(ArgAction::SetTrue)
@@ -2525,11 +2718,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .action(ArgAction::SetTrue)
             .conflicts_with("channel")
             .conflicts_with("command")
-            .help("set-power-command: KERNEL wall raise via the kmd lane (pmxdrv). The positional becomes the target wall in watts; the command runs the full one-shot cycle (service register -> chain walk -> arm select (root: UPPER+tgp / board: window max+percent) -> lease -> verify -> unregister). Admin + --force + --pmxdrvpath required; the wall field is volatile; hard cap 500 W"),
+            .help("set-power-command: KERNEL wall raise via the kmd lane (pmxdrv). The positional becomes the target wall in watts; the command runs the full one-shot cycle (service register -> chain walk -> arm select (root: UPPER+tgp / board: window max+percent) -> lease -> verify -> unregister). Admin + --force required; pmxdrv.sys ships embedded (windows x64) or via --pmxdrvpath; the wall field is volatile; hard cap 500 W"),
         "pmxdrvpath" => Arg::new("pmxdrvpath")
             .long("pmxdrvpath")
             .value_name("FILE")
-            .help("set-power-command --kmd: path to pmxdrv.sys (the Intel2019 signed build)"),
+            .help("set-power-command --kmd: optional path to pmxdrv.sys (defaults to the embedded Intel2019 signed build, windows x64)"),
         "port" => Arg::new("port")
             .long("port")
             .value_name("N")
@@ -2679,6 +2872,10 @@ fn collect_named_options(
             | "verbose"
             | "temporary"
             | "immediate"
+            | "dry-run"
+            | "no-verify"
+            | "no-rollback"
+            | "rebase"
             | "freq-mode"
             | "raw"
             | "raw-converted"
@@ -2924,6 +3121,41 @@ fn execute_backend(
         )));
     }
 
+    match multi_gpu_mode(command) {
+        MultiGpuMode::Once => {
+            // The handler never reads the live target (package slots carry
+            // their own captured identities), so it runs exactly once per
+            // invocation no matter how many GPUs are selected.
+            let result = match execute_target(command, adapter, &filtered[0], invocation) {
+                Ok(output) => TargetResult {
+                    gpu_id: None,
+                    backend: adapter.label(),
+                    ok: true,
+                    output: Some(output),
+                    error: None,
+                },
+                Err(error) => TargetResult {
+                    gpu_id: None,
+                    backend: adapter.label(),
+                    ok: false,
+                    output: None,
+                    error: Some(error.to_string()),
+                },
+            };
+            return Ok(Execution {
+                function: command.name(),
+                command,
+                backend: adapter.label().to_string(),
+                warnings: Vec::new(),
+                results: vec![result],
+            });
+        }
+        MultiGpuMode::Aggregate => {
+            return execute_profile_export(invocation, command, adapter, filtered);
+        }
+        MultiGpuMode::PerGpu => {}
+    }
+
     let mut results = Vec::with_capacity(filtered.len());
     for target in filtered {
         let result = match execute_target(command, adapter, &target, invocation) {
@@ -2951,6 +3183,110 @@ fn execute_backend(
         backend: adapter.label().to_string(),
         warnings: Vec::new(),
         results,
+    })
+}
+
+/// How a command scales when more than one GPU is selected. Profile commands
+/// fan out per GPU safely: the store is keyed per GPU identity, so each GPU
+/// only ever reads and writes its own slot directory (apply-time identity
+/// checks stay per GPU). The exceptions are the package commands — import
+/// routes every slot by its own captured identity and export must produce one
+/// file — classified here so `execute_backend` can special-case them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MultiGpuMode {
+    /// One `TargetResult` per GPU; per-GPU errors are isolated and visible.
+    PerGpu,
+    /// Run the handler exactly once per invocation (it ignores the live
+    /// target). A per-target fan-out would double-apply the work — with
+    /// `profile-import --on-conflict rename` it would mint duplicate renamed
+    /// slots.
+    Once,
+    /// Aggregate every selected GPU before producing a single result: the
+    /// output file is shared, so a fan-out would clobber it (last write wins).
+    Aggregate,
+}
+
+fn multi_gpu_mode(command: Command) -> MultiGpuMode {
+    match command {
+        Command::ProfileImport => MultiGpuMode::Once,
+        Command::ProfileExport => MultiGpuMode::Aggregate,
+        _ => MultiGpuMode::PerGpu,
+    }
+}
+
+/// `profile-export`: collect the matching slots from EVERY selected GPU into
+/// one portable package, written once to `--out`. A wanted name counts as
+/// found when it exists on at least one selected GPU; per-GPU presence is
+/// reported so partial coverage is visible.
+fn execute_profile_export(
+    invocation: &Invocation,
+    command: Command,
+    adapter: BackendAdapter,
+    filtered: Vec<GpuTarget<'_>>,
+) -> CliResult<Execution> {
+    let store = profile_store(invocation)?;
+    let wanted = invocation
+        .positionals
+        .iter()
+        .map(|s| s.trim().to_owned())
+        .collect::<Vec<_>>();
+    let mut docs = Vec::new();
+    let mut per_gpu = Vec::new();
+    for target in &filtered {
+        let (_, identity) = profile_live_identity(target)?;
+        let listed = store.list_profiles(&identity)?;
+        let mut names = Vec::new();
+        for entry in listed {
+            let doc = entry.map_err(CliError::new)?;
+            if wanted.is_empty() || wanted.iter().any(|n| n.eq_ignore_ascii_case(&doc.name)) {
+                names.push(doc.name.clone());
+                docs.push(doc);
+            }
+        }
+        per_gpu.push(json!({
+            "gpu_id": target.id.0,
+            "uuid": identity.uuid,
+            "profiles": names,
+        }));
+    }
+    for name in &wanted {
+        if !docs.iter().any(|doc| doc.name.eq_ignore_ascii_case(name)) {
+            return Err(CliError::new(format!("profile {name:?} not found")));
+        }
+    }
+    if docs.is_empty() {
+        return Err(CliError::new(
+            "no profiles to export (save one with profile-save first)",
+        ));
+    }
+    let source_host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok();
+    let package = export_package(
+        docs,
+        source_host,
+        option_one(invocation, "purpose").map(str::to_owned),
+        profile_now_utc()?,
+    )?;
+    let out = option_one(invocation, "out").unwrap_or("nvoc-profiles.nvocprofile.json");
+    let out_path = std::path::Path::new(out);
+    write_package(out_path, &package)?;
+    Ok(Execution {
+        function: command.name(),
+        command,
+        backend: adapter.label().to_string(),
+        warnings: Vec::new(),
+        results: vec![TargetResult {
+            gpu_id: None,
+            backend: adapter.label(),
+            ok: true,
+            output: Some(json!({
+                "exported": out_path.display().to_string(),
+                "profiles": package.profiles.iter().map(|doc| doc.name.clone()).collect::<Vec<_>>(),
+                "per_gpu": per_gpu,
+            })),
+            error: None,
+        }],
     })
 }
 
@@ -3121,9 +3457,36 @@ fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSe
         (Command::GetStatus, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLockViaMemRange, BackendAdapter::Nvapi) => BackendSet::Both,
+        // Profile binding keys on the NVML UUID and verifies power via NVML,
+        // so discovery must include the NVML inventory even on the NVAPI path
+        // (degrades gracefully to fingerprint-only when NVML is absent).
+        (_, BackendAdapter::Nvapi) if is_profile_command(command) => BackendSet::Both,
         (_, BackendAdapter::Nvapi) => BackendSet::Nvapi,
         (_, BackendAdapter::Nvml) => BackendSet::Nvml,
     }
+}
+
+/// Profile commands touch the per-GPU slot directories and need the NVML
+/// inventory even on the NVAPI path (see `discovery_backend_set`: profile
+/// binding keys on the NVML UUID). Multi-GPU scaling is classified by
+/// [`multi_gpu_mode`]; the default fan-out is safe because each GPU only
+/// ever reads and writes its own identity-keyed directory.
+fn is_profile_command(command: Command) -> bool {
+    matches!(
+        command,
+        Command::ProfileApply
+            | Command::ProfileCaptureStock
+            | Command::ProfileCopy
+            | Command::ProfileDelete
+            | Command::ProfileDiff
+            | Command::ProfileExport
+            | Command::ProfileImport
+            | Command::ProfileList
+            | Command::ProfileRename
+            | Command::ProfileRestoreLast
+            | Command::ProfileSave
+            | Command::ProfileShow
+    )
 }
 
 fn gpu_selector(invocation: &Invocation) -> GpuSelector {
@@ -3154,6 +3517,307 @@ fn execute_target(
         Command::GetGpuList => unreachable!("get-gpu-list is handled before target execution"),
         Command::List => unreachable!("list is handled in run_invocation"),
         Command::Doctor => unreachable!("doctor is handled in run_invocation"),
+        Command::ProfileCaptureStock => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            let mut backup = capture_backup_now(target, &identity, profile_now_utc()?)?;
+            backup.note = option_one(invocation, "note").map(str::to_owned);
+            let path = store.save_stock(&identity, &backup)?;
+            Ok(json!({
+                "stock": path.display().to_string(),
+                "captured_utc": backup.captured_utc,
+                "power_watts": backup.power_watts,
+                "fan_curves": backup.fan_curves.len(),
+            }))
+        }
+        Command::ProfileSave => {
+            let name = invocation.positionals[0].trim().to_owned();
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            let domains_wanted = parse_domain_selection(invocation)?;
+            let settings = run(target, QueryGpuSettings)?.output;
+            let context = profile_capture_context(target, identity);
+            let domains = capture_domains(&settings, &context, &domains_wanted);
+            if domains.present().is_empty() {
+                return Err(CliError::new(
+                    "nothing captured: the driver reported no values for the requested domains \
+                     (capturing an empty profile would wipe those planes on apply)",
+                ));
+            }
+            let baseline = capture_baseline(&settings, context.power.as_ref());
+            let mut doc = new_profile_doc(
+                name.clone(),
+                option_one(invocation, "note").map(str::to_owned),
+                &context,
+                domains,
+                Some(baseline),
+                profile_now_utc()?,
+            );
+            if store.exists(&context.identity, &name) {
+                let existing = store.load_profile(&context.identity, &name)?;
+                doc.created_utc = existing.created_utc;
+            }
+            let path = store.save_profile(&context.identity, &doc)?;
+            Ok(json!({
+                "saved": path.display().to_string(),
+                "name": doc.name,
+                "domains": doc.domains.present().iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                "uuid": context.identity.uuid,
+                "degraded": context.identity.uuid.is_none(),
+            }))
+        }
+        Command::ProfileList => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            let listed = store.list_profiles(&identity)?;
+            let active = store.active_name(&identity)?;
+            let mut slots = Vec::new();
+            for entry in listed {
+                match entry {
+                    Ok(doc) => slots.push(json!({
+                        "name": doc.name,
+                        "domains": doc.domains.present().iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                        "created_utc": doc.created_utc,
+                        "updated_utc": doc.updated_utc,
+                        "note": doc.note,
+                        "active": active.as_deref() == Some(doc.name.as_str()),
+                    })),
+                    Err(reason) => slots.push(json!({"error": reason})),
+                }
+            }
+            Ok(json!({
+                "uuid": identity.uuid,
+                "store": store.gpu_dir(&identity).display().to_string(),
+                "stock_present": store.load_stock(&identity)?.is_some(),
+                "backup_last_present": store.load_backup_last(&identity)?.is_some(),
+                "active": active,
+                "slots": slots,
+            }))
+        }
+        Command::ProfileShow => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            let doc = store.load_profile(&identity, invocation.positionals[0].trim())?;
+            serde_json::to_value(&doc)
+                .map_err(|e| CliError::new(format!("profile render failed: {e}")))
+        }
+        Command::ProfileDiff => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            let doc = store.load_profile(&identity, invocation.positionals[0].trim())?;
+            let settings = run(target, QueryGpuSettings)?.output;
+            let toprels = run(target, QueryTopRelsRelations)
+                .map(|r| r.output)
+                .unwrap_or_default();
+            let clk_domains = run(target, QueryNvapiClkDomains)
+                .ok()
+                .and_then(|r| r.output);
+            let vf_points = run(target, QueryNvapiClkVfPoints { include_raw: false })
+                .ok()
+                .and_then(|r| r.output);
+            Ok(profile_diff_value(
+                &doc,
+                &settings,
+                &toprels,
+                clk_domains.as_ref(),
+                vf_points.as_ref(),
+            ))
+        }
+        Command::ProfileApply => {
+            let store = profile_store(invocation)?;
+            let (info, identity) = profile_live_identity(target)?;
+            let doc = store.load_profile(&identity, invocation.positionals[0].trim())?;
+            let gpu_type = fetch_gpu_type(&info).map_err(|e| CliError::new(e.to_string()))?;
+            let options = PlanOptions {
+                rebase: option_bool(invocation, "rebase", false)?,
+            };
+            let plan = build_plan(&doc, &identity, gpu_type, &options);
+            if let Some(refusal) = plan.refusal() {
+                return Err(CliError::new(format!(
+                    "profile-apply refused: {refusal}\n(re-run with --rebase to re-bind after a VBIOS flash / hardware change)"
+                )));
+            }
+            let dry_run = option_bool(invocation, "dry-run", false)?;
+            let verify =
+                !option_bool(invocation, "no-verify", false)? || plan.identity.requires_verify();
+            let rollback = !option_bool(invocation, "no-rollback", false)?;
+            if dry_run {
+                return Ok(json!({
+                    "dry_run": true,
+                    "profile": doc.name,
+                    "plan": plan_json(&plan),
+                }));
+            }
+            let backup = capture_backup_now(target, &identity, profile_now_utc()?)?;
+            store.save_backup_last(&identity, &backup)?;
+            let report = execute_profile(
+                target,
+                &doc,
+                &plan,
+                &backup,
+                ApplyOptions {
+                    verify,
+                    rollback_on_failure: rollback,
+                },
+            );
+            if report.is_success() {
+                store.set_active(&identity, Some(doc.name.as_str()))?;
+            }
+            Ok(json!({
+                "profile": doc.name,
+                "active_marker": report.is_success(),
+                "rolled_back": report.rolled_back,
+                "warnings": plan.warnings,
+                "domains": report.outcomes.iter().map(|(domain, outcome)| {
+                    json!({"domain": domain.as_str(), "outcome": outcome_json(outcome)})
+                }).collect::<Vec<_>>(),
+                "backup_last": store.gpu_dir(&identity)
+                    .join(nvoc_core::profile::BACKUP_LAST_FILE).display().to_string(),
+            }))
+        }
+        Command::ProfileRestoreLast => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            let backup = store.load_backup_last(&identity)?.ok_or_else(|| {
+                CliError::new(
+                    "no backup-last.json for this GPU: nothing to restore (apply a profile first)",
+                )
+            })?;
+            let domains = nvoc_core::profile::backup_domains(&backup);
+            if domains.is_empty() {
+                return Err(CliError::new(
+                    "backup-last.json carries no restorable domains",
+                ));
+            }
+            let notes = restore_backup(target, &backup, &domains)
+                .map_err(|e| CliError::new(e.to_string()))?;
+            Ok(json!({
+                "restored": domains.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                "captured_utc": backup.captured_utc,
+                "notes": notes.iter()
+                    .map(|(d, m)| json!({"domain": d.as_str(), "note": m}))
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        Command::ProfileRename => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            store.rename_profile(
+                &identity,
+                invocation.positionals[0].trim(),
+                invocation.positionals[1].trim(),
+            )?;
+            Ok(json!({"renamed": [invocation.positionals[0], invocation.positionals[1]]}))
+        }
+        Command::ProfileCopy => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            let mut doc = store.load_profile(&identity, invocation.positionals[0].trim())?;
+            let new_name = invocation.positionals[1].trim().to_owned();
+            if store.exists(&identity, &new_name) {
+                return Err(CliError::new(format!(
+                    "profile {new_name:?} already exists"
+                )));
+            }
+            doc.name = new_name.clone();
+            doc.created_utc = profile_now_utc()?;
+            doc.updated_utc = doc.created_utc.clone();
+            let path = store.save_profile(&identity, &doc)?;
+            Ok(json!({"copied": path.display().to_string(), "name": new_name}))
+        }
+        Command::ProfileDelete => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            store.delete_profile(&identity, invocation.positionals[0].trim())?;
+            Ok(json!({"deleted": invocation.positionals[0]}))
+        }
+        Command::ProfileExport => {
+            let store = profile_store(invocation)?;
+            let (_, identity) = profile_live_identity(target)?;
+            let listed = store.list_profiles(&identity)?;
+            let wanted = invocation
+                .positionals
+                .iter()
+                .map(|s| s.trim().to_owned())
+                .collect::<Vec<_>>();
+            let mut docs = Vec::new();
+            for entry in listed {
+                let doc = match entry {
+                    Ok(doc) => doc,
+                    Err(reason) => return Err(CliError::new(reason)),
+                };
+                if wanted.is_empty() || wanted.iter().any(|n| n.eq_ignore_ascii_case(&doc.name)) {
+                    docs.push(doc);
+                }
+            }
+            for name in &wanted {
+                if !docs.iter().any(|doc| doc.name.eq_ignore_ascii_case(name)) {
+                    return Err(CliError::new(format!("profile {name:?} not found")));
+                }
+            }
+            if docs.is_empty() {
+                return Err(CliError::new(
+                    "no profiles to export (save one with profile-save first)",
+                ));
+            }
+            let source_host = std::env::var("COMPUTERNAME")
+                .or_else(|_| std::env::var("HOSTNAME"))
+                .ok();
+            let package = export_package(
+                docs,
+                source_host,
+                option_one(invocation, "purpose").map(str::to_owned),
+                profile_now_utc()?,
+            )?;
+            let out = option_one(invocation, "out").unwrap_or("nvoc-profiles.nvocprofile.json");
+            let out_path = std::path::Path::new(out);
+            write_package(out_path, &package)?;
+            Ok(json!({
+                "exported": out_path.display().to_string(),
+                "profiles": package.profiles.iter().map(|doc| doc.name.clone()).collect::<Vec<_>>(),
+            }))
+        }
+        Command::ProfileImport => {
+            let store = profile_store(invocation)?;
+            let package = read_package_file(std::path::Path::new(invocation.positionals[0].trim()))
+                .map_err(|e| CliError::new(e.to_string()))?;
+            let policy = match option_one(invocation, "on-conflict").unwrap_or("skip") {
+                "skip" => ImportPolicy::Skip,
+                "overwrite" => ImportPolicy::Overwrite,
+                "rename" => ImportPolicy::Rename,
+                other => {
+                    return Err(CliError::new(format!(
+                        "invalid --on-conflict {other:?} (expected skip, overwrite or rename)"
+                    )));
+                }
+            };
+            let planned = package
+                .profiles
+                .iter()
+                .map(|doc| {
+                    json!({
+                        "name": doc.name,
+                        "uuid": doc.gpu.uuid,
+                        "exists_in_store": store.exists(&doc.gpu, &doc.name),
+                        "domains": doc.domains.present().iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            if option_bool(invocation, "dry-run", false)? {
+                return Ok(json!({
+                    "dry_run": true,
+                    "profiles": planned,
+                    "on_conflict": option_one(invocation, "on-conflict").unwrap_or("skip"),
+                }));
+            }
+            let import = import_package(&store, &package, policy)?;
+            Ok(json!({
+                "imported": import.imported,
+                "skipped_identical": import.skipped_identical,
+                "conflicts": import.conflicts,
+                "package_profiles": planned,
+            }))
+        }
         Command::GetDisplayList => {
             let all = option_bool(invocation, "all", false)?;
             let displays = run(target, QueryDisplays { all })?.output;
@@ -7549,76 +8213,91 @@ fn execute_set_power_command_kmd(
     }
     #[cfg(windows)]
     {
-        let Some(raw) = option_one(invocation, "pmxdrvpath") else {
-            return Err(CliError::new(
-                "--kmd requires --pmxdrvpath <pmxdrv.sys> (the Intel2019 signed driver binary)",
-            ));
-        };
-        let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
-        // kmd 语义:目标墙(租约单位 mW;墙下限 50 W 由 core 门把守)
-        let wall_mw = value_raw;
-        let outcome = nvoc_core::kmd::power::set_power_wall_kmd(wall_mw, std::path::Path::new(raw))
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = invocation;
+            let _ = command;
+            // pmxdrv.sys 只有 x64 构建;WoA 内核无 x64 模拟,任何路径都装载
+            // 不上 —— fail-fast,不等到 StartService 报坏 exe 格式(193)。
+            Err(CliError::new(
+                "--kmd requires an x64 kernel driver; Windows ARM64 cannot load x64 drivers (no kernel-mode emulation)",
+            ))
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            let value_raw = parse_power_channel_value(&invocation.positionals[0])?;
+            // kmd 语义:目标墙(租约单位 mW;墙下限 50 W 由 core 门把守)
+            let wall_mw = value_raw;
+            // --pmxdrvpath 缺省用内嵌载荷;显式路径仍走手动副本(向后兼容)
+            let outcome = match option_one(invocation, "pmxdrvpath") {
+                Some(raw) => {
+                    nvoc_core::kmd::power::set_power_wall_kmd(wall_mw, std::path::Path::new(raw))
+                }
+                None => nvoc_core::kmd::power::set_power_wall_kmd_embedded(wall_mw),
+            }
             .map_err(|e| CliError::new(format!("kmd wall raise failed: {e}")))?;
-        let steps = outcome
-            .steps
-            .iter()
-            .map(|s| format!("  {s}"))
-            .collect::<Vec<_>>();
-        let mut value = json!({
-            "kmd": true,
-            "arm": outcome.arm.as_str(),
-            "wall_before_mw": outcome.wall_before_mw,
-            "wall_after_mw": outcome.wall_after_mw,
-            "tgp_written_w": outcome.tgp_written_w,
-            "tgp_note": outcome.tgp_write_note,
-            "lease_written_mw": outcome.lease_written_mw,
-            "lease_note": outcome.lease_note,
-            "layout": outcome.layout_summary,
-            "service": outcome.service,
-            "steps": steps,
-            "note": "wall field write is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
-        });
-        if let Some(root) = &outcome.root {
-            value["root_va"] = json!(format!("{:#016X}", root.root_va));
-            value["root_frame"] = json!(format!("{:#X}", root.frame_root));
-            value["upper_frame"] = json!(format!("{:#X}", root.frame_upper));
-        }
-        if let Some(board) = &outcome.board {
-            value["board_page_va"] = json!(format!("{:#016X}", board.page_va));
-            value["board_frame"] = json!(format!("{:#X}", board.frame));
-            value["window_offsets"] = json!({
-                "kind": board.row_kind,
-                "max": board.max_off,
-                "max_all": board.max_offs,
-                "cur": board.cur_off,
-                "def": board.def_off,
-                "min": board.min_off,
+            let steps = outcome
+                .steps
+                .iter()
+                .map(|s| format!("  {s}"))
+                .collect::<Vec<_>>();
+            let mut value = json!({
+                "kmd": true,
+                "arm": outcome.arm.as_str(),
+                "wall_before_mw": outcome.wall_before_mw,
+                "wall_after_mw": outcome.wall_after_mw,
+                "tgp_written_w": outcome.tgp_written_w,
+                "tgp_note": outcome.tgp_write_note,
+                "lease_written_mw": outcome.lease_written_mw,
+                "lease_note": outcome.lease_note,
+                "layout": outcome.layout_summary,
+                "service": outcome.service,
+                "steps": steps,
+                "note": "wall field write is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
             });
-            value["live_window"] = json!({
-                "current_mw": board.live_current_mw,
-                "default_mw": board.live_default_mw,
-                "max_mw": board.live_max_mw,
-                "min_mw": board.live_min_mw,
-            });
-            value["window_followed"] = json!(board.window_followed);
-            value["followers"] = json!(board.followers);
-            value["percent_written"] = json!(board.percent_written);
-            value["current_readback_mw"] = json!(board.current_readback_mw);
-            value["candidates_seen"] = json!(board.candidates_seen);
+            if let Some(root) = &outcome.root {
+                value["root_va"] = json!(format!("{:#016X}", root.root_va));
+                value["root_frame"] = json!(format!("{:#X}", root.frame_root));
+                value["upper_frame"] = json!(format!("{:#X}", root.frame_upper));
+            }
+            if let Some(board) = &outcome.board {
+                value["board_page_va"] = json!(format!("{:#016X}", board.page_va));
+                value["board_frame"] = json!(format!("{:#X}", board.frame));
+                value["window_offsets"] = json!({
+                    "kind": board.row_kind,
+                    "max": board.max_off,
+                    "max_all": board.max_offs,
+                    "cur": board.cur_off,
+                    "def": board.def_off,
+                    "min": board.min_off,
+                });
+                value["live_window"] = json!({
+                    "current_mw": board.live_current_mw,
+                    "default_mw": board.live_default_mw,
+                    "max_mw": board.live_max_mw,
+                    "min_mw": board.live_min_mw,
+                });
+                value["window_followed"] = json!(board.window_followed);
+                value["followers"] = json!(board.followers);
+                value["percent_written"] = json!(board.percent_written);
+                value["current_readback_mw"] = json!(board.current_readback_mw);
+                value["candidates_seen"] = json!(board.candidates_seen);
+            }
+            Ok(Execution {
+                function: command.name(),
+                command,
+                backend: "kmd".to_string(),
+                warnings: Vec::new(),
+                results: vec![TargetResult {
+                    gpu_id: None,
+                    backend: "kmd",
+                    ok: true,
+                    output: Some(value),
+                    error: None,
+                }],
+            })
         }
-        Ok(Execution {
-            function: command.name(),
-            command,
-            backend: "kmd".to_string(),
-            warnings: Vec::new(),
-            results: vec![TargetResult {
-                gpu_id: None,
-                backend: "kmd",
-                ok: true,
-                output: Some(value),
-                error: None,
-            }],
-        })
     }
 }
 
@@ -9623,6 +10302,194 @@ fn volt_rails_p0_rails_json(rails: &nvoc_core::VoltRails) -> Value {
     )
 }
 
+// ---------------------------------------------------------------------------
+// Profile commands (profile-*) helpers
+// ---------------------------------------------------------------------------
+
+fn profile_now_utc() -> CliResult<String> {
+    OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|e| CliError::new(format!("timestamp format failed: {e}")))
+}
+
+fn profile_store(invocation: &Invocation) -> CliResult<ProfileStore> {
+    match option_one(invocation, "profile-root") {
+        Some(dir) => Ok(ProfileStore::new(dir)),
+        None => ProfileStore::default_root()
+            .map(ProfileStore::new)
+            .map_err(|e| CliError::new(e.to_string())),
+    }
+}
+
+fn profile_live_identity(
+    target: &GpuTarget<'_>,
+) -> CliResult<(nvoc_core::GpuInfo, nvoc_core::profile::GpuIdentity)> {
+    nvoc_core::profile::live_identity(target).map_err(|e| CliError::new(e.to_string()))
+}
+
+fn profile_capture_context(
+    target: &GpuTarget<'_>,
+    identity: nvoc_core::profile::GpuIdentity,
+) -> nvoc_core::profile::CaptureContext {
+    nvoc_core::profile::capture_context(target, identity)
+}
+
+fn parse_domain_selection(invocation: &Invocation) -> CliResult<Vec<DomainKind>> {
+    match option_one(invocation, "domains") {
+        None => Ok(DomainKind::DEFAULT_CAPTURE.to_vec()),
+        Some(raw) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                DomainKind::parse(s).ok_or_else(|| {
+                    CliError::new(format!(
+                        "unknown profile domain {s:?} (expected one of: {})",
+                        DomainKind::ALL
+                            .iter()
+                            .map(|d| d.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                })
+            })
+            .collect(),
+    }
+}
+
+fn plan_json(plan: &ApplyPlan) -> Value {
+    json!({
+        "identity": plan.identity.to_string(),
+        "steps": plan.steps.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+        "not_applicable": plan.not_applicable.iter()
+            .map(|(d, r)| json!({"domain": d.as_str(), "reason": r})).collect::<Vec<_>>(),
+        "unimplemented": plan.unimplemented.iter()
+            .map(|(d, r)| json!({"domain": d.as_str(), "reason": r})).collect::<Vec<_>>(),
+        "warnings": plan.warnings,
+    })
+}
+
+fn outcome_json(outcome: &DomainOutcome) -> Value {
+    match outcome {
+        DomainOutcome::Applied { verified } => json!({"state": "applied", "verified": verified}),
+        DomainOutcome::Failed { error, rolled_back } => json!({
+            "state": "failed",
+            "error": error,
+            "rolled_back": rolled_back,
+        }),
+        DomainOutcome::Unavailable { error } => json!({"state": "unavailable", "error": error}),
+    }
+}
+
+/// Per-domain comparison of a profile against the live driver state.
+fn profile_diff_value(
+    doc: &ProfileDoc,
+    settings: &nvoc_core::GpuSettings,
+    toprels: &[nvoc_core::TopRelsRelationRow],
+    clk_domains: Option<&nvoc_core::ClockDomainControl>,
+    vf_points: Option<&nvoc_core::ClkVfPointsPrivate>,
+) -> Value {
+    use nvoc_core::profile::ProfileDomains;
+
+    let mut entries = Vec::new();
+    let domains: &ProfileDomains = &doc.domains;
+    for domain in domains.present() {
+        let (in_sync, detail) = match domain {
+            DomainKind::ClockOffsets => (
+                domains.clock_offsets.as_ref() == Some(&settings.pstate_deltas),
+                "pstate delta map",
+            ),
+            DomainKind::PublicVftable => (
+                domains.public_vftable.as_ref() == settings.vfp.as_ref(),
+                "per-point delta map",
+            ),
+            DomainKind::Voltage => {
+                let expected = domains.voltage.as_ref();
+                let live_boost_ok = expected.and_then(|v| v.boost_percent)
+                    == settings.voltage_boost
+                    || expected.and_then(|v| v.boost_percent).is_none();
+                let live_ov_ok = expected
+                    .map(|v| v.overvolt_uv == settings.overvolt)
+                    .unwrap_or(true);
+                (live_boost_ok && live_ov_ok, "boost percent / overvolt")
+            }
+            DomainKind::VoltRails => {
+                let recorded = domains.volt_rails.as_ref().map(|v| v.len()).unwrap_or(0);
+                (recorded == 0, "volt-rail offsets (recorded intent only)")
+            }
+            DomainKind::Power => {
+                // Live watts verification needs NVML; here the diff only
+                // reports the recorded intent — `profile-apply --verify`
+                // does the read-back comparison.
+                (true, "recorded intent (live watts not compared)")
+            }
+            DomainKind::Thermal => (
+                domains.thermal.as_ref() == Some(&settings.sensor_limits),
+                "sensor limit table",
+            ),
+            DomainKind::Fan => {
+                let recorded = domains.fan.as_ref().map(|f| f.curves.len()).unwrap_or(0);
+                (recorded == 0, "fan curves (recorded intent only)")
+            }
+            DomainKind::ClkDomainOffsets => {
+                let all_match = match (domains.clk_domain_offsets.as_ref(), clk_domains) {
+                    (Some(records), Some(live)) => records.iter().all(|record| {
+                        live.entries
+                            .iter()
+                            .find(|e| e.bit == record.bit)
+                            .map(|e| e.values_kHz == record.values)
+                            .unwrap_or(false)
+                    }),
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                (all_match, "ClkDomains control records")
+            }
+            DomainKind::PrivateVfOffsets => {
+                let all_match = match (domains.private_vf_offsets.as_ref(), vf_points) {
+                    (Some(records), Some(live)) => records.iter().all(|record| {
+                        live.points
+                            .iter()
+                            .find(|p| p.bank == record.bank && p.index == record.index)
+                            .map(|p| {
+                                ((p.freq_current_mhz as i64 - p.freq_default_mhz as i64) * 1000)
+                                    as i32
+                                    == record.offset_khz
+                            })
+                            .unwrap_or(false)
+                    }),
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                (all_match, "private V/F point offsets")
+            }
+            DomainKind::TopRelsRatios => {
+                let all_match = match domains.toprels_ratios.as_ref() {
+                    Some(records) => records.iter().all(|record| {
+                        toprels
+                            .iter()
+                            .find(|(index, ..)| index == &record.index)
+                            .map(|entry| entry.5 == Some(record.ratio_raw))
+                            .unwrap_or(false)
+                    }),
+                    None => true,
+                };
+                (all_match, "TopRels slot ratios")
+            }
+            DomainKind::LockedClocks | DomainKind::VfpLocks => (true, "recorded intent only in v1"),
+        };
+        entries.push(json!({
+            "domain": domain.as_str(),
+            "status": if in_sync { "in-sync" } else { "drift" },
+            "detail": detail,
+        }));
+    }
+    json!({
+        "profile": doc.name,
+        "domains": entries,
+    })
+}
+
 fn option_bool(invocation: &Invocation, name: &str, default: bool) -> CliResult<bool> {
     option_one(invocation, name).map_or(Ok(default), parse_bool)
 }
@@ -10681,6 +11548,33 @@ mod tests {
         assert!(parse_power_channel_value("inf").is_err());
     }
 
+    /// Profile commands fan out per GPU (the store is keyed per GPU
+    /// identity); only the package commands deviate — import runs once,
+    /// export aggregates into one file.
+    #[test]
+    fn profile_multi_gpu_modes() {
+        for command in [
+            Command::ProfileSave,
+            Command::ProfileApply,
+            Command::ProfileList,
+            Command::ProfileShow,
+            Command::ProfileDiff,
+            Command::ProfileDelete,
+            Command::ProfileRename,
+            Command::ProfileCopy,
+            Command::ProfileCaptureStock,
+            Command::ProfileRestoreLast,
+        ] {
+            assert_eq!(multi_gpu_mode(command), MultiGpuMode::PerGpu);
+        }
+        assert_eq!(multi_gpu_mode(Command::ProfileImport), MultiGpuMode::Once);
+        assert_eq!(
+            multi_gpu_mode(Command::ProfileExport),
+            MultiGpuMode::Aggregate
+        );
+        assert_eq!(multi_gpu_mode(Command::GetStatus), MultiGpuMode::PerGpu);
+    }
+
     /// Mode-0 control VALUE is signed (i32 kHz, stored two's complement):
     /// -100000 kHz ×2 Pascal axis must render -100.0 MHz, not the
     /// u32/2000 = +2147383.648 wrap seen in the 2026-09-30 P100 incident.
@@ -10951,7 +11845,19 @@ mod tests {
             | Command::ResetLegacyGpcRailOvervoltLimit
             | Command::ResetPstateGlobalFreqOffset
             | Command::GetVbios
-            | Command::ResetPublicGpcRailVoltBoost => {}
+            | Command::ResetPublicGpcRailVoltBoost
+            | Command::ProfileCaptureStock
+            | Command::ProfileSave
+            | Command::ProfileList
+            | Command::ProfileShow
+            | Command::ProfileDiff
+            | Command::ProfileApply
+            | Command::ProfileRestoreLast
+            | Command::ProfileRename
+            | Command::ProfileCopy
+            | Command::ProfileDelete
+            | Command::ProfileExport
+            | Command::ProfileImport => {}
         }
     }
 

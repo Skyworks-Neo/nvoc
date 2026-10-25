@@ -328,7 +328,13 @@ pub(super) fn format_power_command(output: &Value) -> Vec<String> {
 /// Human output for `set-power-command` — the post-write readback nvapi-rs
 /// verified is what the formatter prints, with the envelope facts and the
 /// echo-layer warning (the lease does NOT move load-time enforcement).
+/// The `--kmd` shape (`"kmd": true`) renders the kernel patch cycle instead:
+/// there the enforced wall WAS patched in driver memory via pmxdrv, so the
+/// echo-layer warning would be wrong.
 pub(super) fn format_set_power_command(output: &Value) -> Vec<String> {
+    if output.get("kmd").and_then(Value::as_bool) == Some(true) {
+        return format_set_power_command_kmd(output);
+    }
     let channel = output.get("channel").and_then(Value::as_u64).unwrap_or(0);
     let command = output.get("command").and_then(Value::as_str).unwrap_or("?");
     let value = output.get("value").and_then(Value::as_u64).unwrap_or(0);
@@ -365,6 +371,51 @@ pub(super) fn format_set_power_command(output: &Value) -> Vec<String> {
         "    ECHO LAYER ONLY: GET/NVML/nvidia-smi read this value; load-time enforcement stays at the legal slider window (set-pwr-cur-limit)".to_string(),
     );
     lines
+}
+
+/// Human output for `set-power-command --kmd`: leads with the verified wall
+/// transition, replays the kernel cycle log (service register → chain walk →
+/// arm write with readback → lease → recheck) so the user can see the patch
+/// actually happened in driver memory, and closes with the kernel-patch fact
+/// plus the volatility caveat — never the echo-layer warning.
+fn format_set_power_command_kmd(output: &Value) -> Vec<String> {
+    let arm = output.get("arm").and_then(Value::as_str).unwrap_or("?");
+    let before = output
+        .get("wall_before_mw")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut lines = match output.get("wall_after_mw").and_then(Value::as_u64) {
+        Some(after) => vec![format!(
+            "  Kernel wall patched via pmxdrv ({arm} arm): {before} mW → {after} mW ({:.1} W)",
+            after as f64 / 1000.0
+        )],
+        None => vec![format!("  Kernel wall patched via pmxdrv ({arm} arm)")],
+    };
+    if let Some(layout) = output.get("layout").and_then(Value::as_str) {
+        lines.push(format!("    layout: {layout}"));
+    }
+    // tgp/lease notes are already appended to `steps` by core — replaying the
+    // step log is the whole verbose block, no per-note summary on top.
+    for step in output
+        .get("steps")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(step) = step.as_str() {
+            lines.push(format!("    {}", step.trim()));
+        }
+    }
+    lines.push(
+        "    KERNEL PATCH APPLIED: the enforced wall in driver memory was rewritten through the pmxdrv kernel driver — load-time enforcement follows the new wall; this is NOT the echo-layer-only lease write (set-pwr-cur-limit still moves the legal slider)".to_string(),
+    );
+    if let Some(note) = output.get("note").and_then(Value::as_str) {
+        lines.push(format!("    note: {note}"));
+    }
+    lines
+        .into_iter()
+        .map(|line| nvoc_cli_common::color::stylize_kmd_step(&line))
+        .collect()
 }
 
 pub(super) fn format_power_mode(output: &Value) -> Vec<String> {
@@ -4934,6 +4985,65 @@ mod tests {
         );
         assert!(
             lines.iter().any(|l| l.contains("ECHO LAYER ONLY")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn set_power_command_kmd_renders_patch_cycle_without_echo_warning() {
+        let value = serde_json::json!({
+            "kmd": true,
+            "arm": "root",
+            "wall_before_mw": 115_000,
+            "wall_after_mw": 190_000,
+            "tgp_written_w": 190,
+            "tgp_note": "root arm: tgp write 190 W ✓ readback match",
+            "lease_written_mw": 190_000,
+            "lease_note": "lease channel0 = 190000 mW ✓ (checked write)",
+            "layout": "slot=0x1234 table+0x5678 root_init=0x9abc",
+            "service": "PMXDRV_KMD",
+            "steps": [
+                "service PMXDRV_KMD registered+started ✓",
+                "UPPER 115000 → 190000 ✓ readback match",
+                "lease channel0 = 190000 mW ✓ (checked write)",
+                "recheck wall field=190000 ✓",
+                "service PMXDRV_KMD stopped+deleted ✓",
+            ],
+            "note": "wall field write is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
+        });
+        let lines = super::format_set_power_command(&value);
+        assert!(
+            lines[0].contains(
+                "Kernel wall patched via pmxdrv (root arm): 115000 mW → 190000 mW (190.0 W)"
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("UPPER 115000 → 190000 ✓ readback match")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("recheck wall field=190000 ✓")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("KERNEL PATCH APPLIED") && l.contains("pmxdrv kernel driver")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("volatile (resets on reboot)")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("ECHO LAYER ONLY")),
             "{lines:?}"
         );
     }
