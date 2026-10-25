@@ -80,6 +80,16 @@ pub struct RomImage {
     pub kind: ImageKind,
     /// PCIR/NPDS 头的绝对偏移。
     pub header: usize,
+    /// PCIR 结构版本（2=2.2、3=3.0；NPDS 镜像为 0）。
+    pub pcir_rev: u8,
+    /// EFI 镜像（code type 3）头 +2 的 init 区长度（×512B 后为字节）。
+    pub init_blocks: u16,
+    /// EFI 头 +8 subsystem（EFI_APPLICATION=3 等）。
+    pub efi_subsystem: Option<u16>,
+    /// EFI 头 +0xA 机器类型（0x014C=IA32、0x8664=x64、0xAA64=ARM64）。
+    pub efi_machine: Option<u16>,
+    /// EFI 头 +0xC 压缩类型（0=未压缩；GOP 镜像常为 1=LZMA 自定义容器）。
+    pub efi_compression: Option<u16>,
 }
 
 impl RomImage {
@@ -180,6 +190,27 @@ pub fn scan_images(data: &[u8]) -> (Vec<RomImage>, Vec<RomImage>, Vec<ImageIssue
             last: data[header + 0x15] & 0x80 != 0,
             kind,
             header,
+            pcir_rev: if kind == ImageKind::Pcir {
+                data[header + 0x0C]
+            } else {
+                0
+            },
+            init_blocks: u16_at(data, start + 2).unwrap_or(0),
+            efi_subsystem: if kind == ImageKind::Pcir && data[header + 0x14] == 3 {
+                u16_at(data, start + 0x08).ok()
+            } else {
+                None
+            },
+            efi_machine: if kind == ImageKind::Pcir && data[header + 0x14] == 3 {
+                u16_at(data, start + 0x0A).ok()
+            } else {
+                None
+            },
+            efi_compression: if kind == ImageKind::Pcir && data[header + 0x14] == 3 {
+                u16_at(data, start + 0x0C).ok()
+            } else {
+                None
+            },
         };
         if kind == ImageKind::Pcir {
             pci.push(entry);

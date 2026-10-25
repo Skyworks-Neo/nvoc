@@ -2193,6 +2193,215 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
             )));
         }
     }
+    // DCB 指针子表族（envytools nvbios 移植）：I2C 端口/GPIO 命名线/
+    // EXTDEV 外设/CONN。
+    if let Some(ext) = output.get("dcb_ext") {
+        if let Some(i2c) = ext.get("i2c") {
+            let ports: Vec<String> = i2c
+                .get("ports")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter(|p| p.get("kind").and_then(Value::as_str) != Some("UNUSED"))
+                        .map(|p| {
+                            let idx = p.get("index").and_then(Value::as_u64).unwrap_or(0);
+                            let kind = p.get("kind").and_then(Value::as_str).unwrap_or("?");
+                            match p.get("kind").and_then(Value::as_str) {
+                                Some("PMGR") => {
+                                    let drive = p.get("drive").and_then(Value::as_u64);
+                                    let aux = p.get("auxch").and_then(Value::as_u64);
+                                    let d =
+                                        drive.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+                                    let x =
+                                        aux.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+                                    format!("p{idx}:PMGR(drv {d},aux {x})")
+                                }
+                                _ => format!("p{idx}:{kind}"),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !ports.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dcb i2c ports: {}", ports.join(", ")),
+                    false,
+                ));
+            }
+        }
+        if let Some(gpio) = ext.get("gpio")
+            && let Some(gpio_lines) = gpio.get("lines").and_then(Value::as_array)
+        {
+            let named: Vec<String> = gpio_lines
+                .iter()
+                .filter(|l| {
+                    !matches!(
+                        l.get("name").and_then(Value::as_str),
+                        Some("UNUSED") | Some("UNKNOWN")
+                    )
+                })
+                .map(|l| {
+                    format!(
+                        "{}:{}",
+                        l.get("line").and_then(Value::as_u64).unwrap_or(0),
+                        l.get("name").and_then(Value::as_str).unwrap_or("?")
+                    )
+                })
+                .collect();
+            if !named.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dcb gpio: {}", named.join(", ")),
+                    false,
+                ));
+            }
+        }
+        if let Some(extdev) = ext.get("extdev")
+            && let Some(devs) = extdev.get("devices").and_then(Value::as_array)
+            && !devs.is_empty()
+        {
+            let items: Vec<String> = devs
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}@{}",
+                        d.get("name").and_then(Value::as_str).unwrap_or("?"),
+                        d.get("address").and_then(Value::as_str).unwrap_or("?")
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    dcb extdev: {}", items.join(", ")),
+                false,
+            ));
+        }
+        if let Some(conn) = ext.get("conn")
+            && let Some(entries) = conn.get("entries").and_then(Value::as_array)
+            && !entries.is_empty()
+        {
+            let items: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    let hpd = e
+                        .get("hpd")
+                        .and_then(Value::as_u64)
+                        .map(|v| format!("/HPD{v}"))
+                        .unwrap_or_default();
+                    format!(
+                        "{}{}",
+                        e.get("type").and_then(Value::as_str).unwrap_or("?"),
+                        hpd
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    dcb conn: {}", items.join(", ")),
+                false,
+            ));
+        }
+    }
+    // BIT 'P' v2 功率子表：cap 条目即 nvidia-smi 三元组。
+    if let Some(p2) = output.get("power_v2")
+        && let Some(budget) = p2.get("budget")
+        && let Some(cap) = budget.get("cap_entry_power")
+    {
+        let fmt = |k: &str| {
+            cap.get(k)
+                .and_then(Value::as_u64)
+                .map(|v| v / 1000)
+                .unwrap_or(0)
+        };
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    power budget (P+0x2C v{}): cap entry {} = min {} W / avg {} W / peak {} W",
+                budget
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .trim_start_matches("0x"),
+                budget.get("cap_entry").and_then(Value::as_u64).unwrap_or(0),
+                fmt("min_mw"),
+                fmt("avg_mw"),
+                fmt("peak_mw")
+            ),
+            false,
+        ));
+    }
+    // BIT token 级子表：目录 + 'M' 内存类型 + NVINIT 脚本指针。
+    if let Some(bt) = output.get("bit_tokens") {
+        if let Some(dir) = bt.get("directory").and_then(Value::as_array)
+            && !dir.is_empty()
+        {
+            let items: Vec<String> = dir
+                .iter()
+                .map(|t| {
+                    format!(
+                        "{}{}({:#04x})",
+                        t.get("id").and_then(Value::as_str).unwrap_or("?"),
+                        t.get("ver").and_then(Value::as_u64).unwrap_or(0),
+                        t.get("len").and_then(Value::as_u64).unwrap_or(0)
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    bit tokens: {}", items.join(" ")),
+                false,
+            ));
+        }
+        if let Some(mem) = bt.get("mem")
+            && let Some(tt) = mem.get("type_table")
+        {
+            let mut counts: Vec<(String, usize)> = Vec::new();
+            for e in tt
+                .get("entries")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let name = e
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string();
+                match counts.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, c)) => *c += 1,
+                    None => counts.push((name, 1)),
+                }
+            }
+            let items: Vec<String> = counts
+                .into_iter()
+                .map(|(n, c)| format!("{n}x{c}"))
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    bit 'M': groups {}, ramcfg types {}",
+                    mem.get("group_count").and_then(Value::as_u64).unwrap_or(0),
+                    items.join(", ")
+                ),
+                false,
+            ));
+        }
+        if let Some(nvinit) = bt.get("nvinit")
+            && let Some(slots) = nvinit.get("slots").and_then(Value::as_array)
+        {
+            let items: Vec<String> = slots
+                .iter()
+                .filter(|s| s.get("ptr").and_then(Value::as_u64).unwrap_or(0) != 0)
+                .map(|s| {
+                    format!(
+                        "{}={:#06x}",
+                        s.get("slot").and_then(Value::as_str).unwrap_or("?"),
+                        s.get("ptr").and_then(Value::as_u64).unwrap_or(0)
+                    )
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    nvinit (BIT 'I' u16 ptrs): {}", items.join(", ")),
+                    false,
+                ));
+            }
+        }
+    }
 }
 
 /// Per-segment table header for the private V/F dump. Units are declared

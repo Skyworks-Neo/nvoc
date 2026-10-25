@@ -828,7 +828,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     options: Box::leak(Box::new(["out", "dump", "verbose", "input"])),
                     formatter: Some(output::format_maxwell_vftable_output),
-                    ..CommandSpec::new("get-vbios", Group::Info, "Read and decode a VBIOS image. -i/--input <file> parses a local ROM dump OFFLINE (no GPU/NvAPI needed — works on Linux); without it the live image is read via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F, Windows-only). Live: --out <file> writes the raw image; --dump prints the full BIT token table + Fermi-model raw blocks. Both modes: --verbose runs the full detail decoder — Pascal+ Virtual P-State ladder + profiles + footers, Maxwell/Kepler GPU Boost 2.0 ladder (BIT 'P'+0x34), power/thermal/fan tables, DCB display map, memory tables, falcon ucode inventory, board identity, plus the structural layer (PCI/NPDS image chain, per-family power policy/channels, rail/VFE voltage limits, clock ranges, fan tables; GB20x SHA384 object-directory integrity and override profiles). --verbose merges the retired --enable-detail-parser / --maxwell-vftable-decode")
+                    ..CommandSpec::new("get-vbios", Group::Info, "Read and decode a VBIOS image. -i/--input <file> parses a local ROM dump OFFLINE (no GPU/NvAPI needed — works on Linux); without it the live image is read via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F, Windows-only). Live: --out <file> writes the raw image; --dump prints the full BIT token table + Fermi-model raw blocks. Both modes: --verbose runs the full detail decoder — Pascal+ Virtual P-State ladder + profiles + footers, Maxwell/Kepler GPU Boost 2.0 ladder (BIT 'P'+0x34), power/thermal/fan tables, DCB display map + pointer subtables (I2C PMGR ports/GPIO named lines/EXTDEV devices/CONN), BIT 'P' v2 power budget/sense/base-clock, BIT token directory with 'M'/'I'/'C'/'d' tables, memory tables, falcon ucode inventory + FWSEC DMEM interface/FRTS mapper, board identity, plus the structural layer (PCIR/EFI header details) (PCI/NPDS image chain, per-family power policy/channels, rail/VFE voltage limits, clock ranges, fan tables; GB20x SHA384 object-directory integrity and override profiles). --verbose merges the retired --enable-detail-parser / --maxwell-vftable-decode")
                 },
             ),
             (
@@ -7880,6 +7880,17 @@ fn structural_sections_json(image: &[u8]) -> Value {
             "device": format!("{:04x}", p.device),
             "type": format!("{:#04x}", p.image_type),
             "last": p.last,
+            // PCIR 版本（2=2.2、3=3.0）与 EFI 头细节（subsystem/机器类型/
+            // 压缩类型；GOP 镜像的压缩类型是 envytools bios.c 的 EFI 头
+            // +0xC 字段，1 = NVIDIA 自定义压缩容器）。
+            "pcir_rev": if p.kind == nvoc_core::vbios::image_chain::ImageKind::Pcir {
+                json!(p.pcir_rev)
+            } else {
+                Value::Null
+            },
+            "efi_subsystem": p.efi_subsystem,
+            "efi_machine": p.efi_machine.map(|m| format!("{m:#06x}")),
+            "efi_compression": p.efi_compression,
         })
     };
     let mut chain = json!({
@@ -8331,6 +8342,296 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "pads": pads,
         })
     });
+    // DCB v3/v4 头指针子表族（envytools nvbios 移植）：I2C 端口（4.1+
+    // PMGR 语义）、GPIO 线（tag 全名表）、EXTDEV 外设（INA3221 等功率计
+    // ——get-i2c 扫描的 VBIOS 侧对照面）、CONN、MUX。
+    let dcb_ext = nvoc_core::vbios::dcb_ext::parse_all(image)
+        .map(|ext| {
+            json!({
+                "dcb_offset": ext.dcb_offset,
+                "header_ptrs": {
+                    "i2c": ext.header_ptrs.i2c,
+                    "gpio": ext.header_ptrs.gpio,
+                    "inputdev": ext.header_ptrs.inputdev,
+                    "cinema": ext.header_ptrs.cinema,
+                    "spreadspectrum": ext.header_ptrs.spreadspectrum,
+                    "extdev": ext.header_ptrs.extdev,
+                    "conn": ext.header_ptrs.conn,
+                    "hdtvtt": ext.header_ptrs.hdtvtt,
+                    "mux": ext.header_ptrs.mux,
+                },
+                "i2c": ext.i2c.map(|t| json!({
+                    "offset": t.offset,
+                    "version": format!("{:#04x}", t.version),
+                    "default_ports": t.default_ports,
+                    "ports": t.ports.iter().map(|p| json!({
+                        "index": p.index,
+                        "kind": p.kind.name(),
+                        "drive": match p.kind { nvoc_core::vbios::dcb_ext::I2cPortKind::Pmgr { drive, .. } => drive, _ => None },
+                        "auxch": match p.kind { nvoc_core::vbios::dcb_ext::I2cPortKind::Pmgr { auxch, .. } => auxch, _ => None },
+                        "write_index": p.write_index,
+                        "read_index": p.read_index,
+                        "loc": p.loc,
+                        "address": p.address,
+                        "shared": p.shared,
+                        "shared_id": p.shared_id,
+                    })).collect::<Vec<_>>(),
+                })),
+                "gpio": ext.gpio.map(|t| json!({
+                    "offset": t.offset,
+                    "version": format!("{:#04x}", t.version),
+                    "lines": t.entries.iter().map(|l| json!({
+                        "index": l.index,
+                        "line": l.line,
+                        "tag": format!("{:#04x}", l.tag),
+                        "name": l.tag_name,
+                        "log": l.log,
+                        "param": l.param,
+                        "default": l.default_val,
+                        "spec_out": l.spec_out,
+                        "spec_in": l.spec_in,
+                        "lockpin": l.lockpin,
+                    })).collect::<Vec<_>>(),
+                    "xpio_tables": t.xpio_tables.iter().map(|x| json!({
+                        "offset": x.offset,
+                        "version": format!("{:#04x}", x.version),
+                        "extender_type": format!("{:#04x}", x.extender_type),
+                        "address": x.address,
+                        "bus": x.bus,
+                        "entries": x.entries,
+                    })).collect::<Vec<_>>(),
+                })),
+                "extdev": ext.extdev.map(|t| json!({
+                    "offset": t.offset,
+                    "version": format!("{:#04x}", t.version),
+                    "devices": t.entries.iter().filter(|e| e.type_code != 0xFF).map(|e| json!({
+                        "index": e.index,
+                        "type": format!("{:#04x}", e.type_code),
+                        "name": e.type_name,
+                        "address": format!("{:#04x}", e.address),
+                        "bus": e.bus,
+                    })).collect::<Vec<_>>(),
+                    "unused_entries": t.entries.iter().filter(|e| e.type_code == 0xFF).count(),
+                })),
+                "conn": ext.conn.map(|t| json!({
+                    "offset": t.offset,
+                    "version": format!("{:#04x}", t.version),
+                    "entries": t.entries.iter().filter(|e| e.type_code != 0xFF).map(|e| json!({
+                        "index": e.index,
+                        "type": e.type_name,
+                        "tag": e.tag,
+                        "hpd": e.hpd,
+                        "dp_ext": e.dp_ext,
+                    })).collect::<Vec<_>>(),
+                })),
+                "mux": ext.mux.map(|t| json!({
+                    "offset": t.offset,
+                    "version": format!("{:#04x}", t.version),
+                    "entries": t.entries.iter().map(|e| json!({
+                        "index": e.index,
+                        "dcb_index": e.dcb_index,
+                        "lanes": e.lanes.iter().map(|(loc, line, val)| json!({
+                            "loc": loc, "line": line, "val": val,
+                        })).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                })),
+            })
+        })
+        .unwrap_or(Value::Null);
+    // BIT 'P' v2 功率子表（envytools power.c 移植）：PowerBudget 的
+    // cap_entry 条目即 nvidia-smi 功率墙三元组（TU106 实测 105/175/219
+    // W）、PowerSense 功率计配置、PowerBaseClock per-Pstate 基准。
+    let power_v2 = {
+        let budget = nvoc_core::vbios::power_p2::find_power_budget(image)
+            .ok()
+            .flatten();
+        let sense = nvoc_core::vbios::power_p2::find_power_sense(image)
+            .ok()
+            .flatten();
+        let base_clock = nvoc_core::vbios::power_p2::find_power_base_clock(image)
+            .ok()
+            .flatten();
+        let voltage = nvoc_core::vbios::power_p2::find_voltage(image)
+            .ok()
+            .flatten();
+        let volt_map = nvoc_core::vbios::power_p2::find_volt_map(image)
+            .ok()
+            .flatten();
+        let therm_devices = nvoc_core::vbios::power_p2::find_thermal_devices(image)
+            .ok()
+            .flatten();
+        let therm_coolers = nvoc_core::vbios::power_p2::find_thermal_coolers(image)
+            .ok()
+            .flatten();
+        json!({
+            "budget": budget.map(|b| json!({
+                "offset": b.offset,
+                "version": format!("{:#04x}", b.version),
+                "cap_entry": b.cap_entry,
+                "cap_entry_power": b.cap_entry.and_then(|i| b.entries.get(usize::from(i))).map(|e| json!({
+                    "min_mw": e.min_mw,
+                    "avg_mw": e.avg_mw,
+                    "peak_mw": e.peak_mw,
+                })),
+                "entries": b.entries.iter().filter(|e| e.avg_mw.unwrap_or(0) > 0 || e.min_mw.unwrap_or(0) > 0).map(|e| json!({
+                    "index": e.index,
+                    "tag": format!("{:#04x}", e.tag),
+                    "min_mw": e.min_mw,
+                    "avg_mw": e.avg_mw,
+                    "peak_mw": e.peak_mw,
+                })).collect::<Vec<_>>(),
+            })),
+            "sense": sense.map(|s| json!({
+                "offset": s.offset,
+                "version": format!("{:#04x}", s.version),
+                "entries": s.entries.iter().map(|e| json!({
+                    "index": e.index,
+                    "mode": e.mode,
+                    "extdev_id": e.extdev_id,
+                    "raw_hex": e.raw_hex,
+                })).collect::<Vec<_>>(),
+            })),
+            "base_clock": base_clock.map(|b| json!({
+                "offset": b.offset,
+                "version": format!("{:#04x}", b.version),
+                "secount": b.secount,
+                "selen": b.selen,
+                "roles": {
+                    "boost": b.roles.boost,
+                    "turbo_boost": b.roles.turbo_boost,
+                    "rated_tdp": b.roles.rated_tdp,
+                    "vrhot": b.roles.vrhot,
+                    "max_batt": b.roles.max_batt,
+                },
+                "entries": b.entries.iter().map(|e| json!({
+                    "pstate": nvoc_core::vbios::legacy::pstate_display_name(e.pstate_code),
+                    "pstate_code": format!("{:#04x}", e.pstate_code),
+                    "req_power_mw": e.req_power_mw,
+                    "req_slowdown_power_mw": e.req_slowdown_power_mw,
+                    "subentries_hex": e.subentries_hex,
+                })).collect::<Vec<_>>(),
+            })),
+            "voltage": voltage.map(|v| json!({
+                "offset": v.offset,
+                "version": format!("{:#04x}", v.version),
+                "gpio_mask": v.gpio_mask,
+                "volt_uv": v.volt_uv,
+                "step_uv": v.step_uv,
+                "max_uv_used": v.max_uv_used,
+                "flags": v.flags,
+                "entry_count": v.entry_count,
+            })),
+            "volt_map": volt_map.map(|v| json!({
+                "offset": v.offset,
+                "version": format!("{:#04x}", v.version),
+                "entries": v.entries.iter().map(|e| json!({
+                    "index": e.index,
+                    "mode": e.mode,
+                    "min_uv": e.min_uv,
+                    "max_uv": e.max_uv,
+                })).collect::<Vec<_>>(),
+            })),
+            "thermal_devices": therm_devices.map(|t| json!({
+                "offset": t.offset,
+                "version": format!("{:#04x}", t.version),
+                "entries": t.entries.iter().map(|e| json!({
+                    "class_id": e.class_id,
+                    "i2c_device": e.i2c_device,
+                    "flags": e.flags,
+                })).collect::<Vec<_>>(),
+            })),
+            "thermal_coolers": therm_coolers.map(|t| json!({
+                "offset": t.offset,
+                "version": format!("{:#04x}", t.version),
+                "entries": t.entries.iter().map(|e| json!({
+                    "enable": e.enable,
+                    "mode_high": e.mode_high,
+                    "mode_low": e.mode_low,
+                    "pwm_freq": e.pwm_freq,
+                    "duty_max": e.duty_max,
+                    "duty_offset": e.duty_offset,
+                })).collect::<Vec<_>>(),
+            })),
+        })
+    };
+    // BIT token 级子表（目录 + 'M'/'I'/'C'/'d'/'2' + 无布局 token 的 u16 槽）。
+    let bit_tokens = {
+        let dir = nvoc_core::vbios::bitsubs::directory(image)
+            .ok()
+            .unwrap_or_default();
+        let mem = nvoc_core::vbios::bitsubs::find_mem_table(image)
+            .ok()
+            .flatten();
+        let nvinit = nvoc_core::vbios::bitsubs::find_nvinit(image).ok().flatten();
+        let pll = nvoc_core::vbios::bitsubs::find_pll_limits(image)
+            .ok()
+            .flatten();
+        let dp = nvoc_core::vbios::bitsubs::find_dp_info(image)
+            .ok()
+            .flatten();
+        let i2c_script = nvoc_core::vbios::bitsubs::find_i2c_script(image)
+            .ok()
+            .flatten();
+        json!({
+            "directory": dir.iter().map(|t| json!({
+                "id": t.id_char.map(|c| c.to_string()).unwrap_or_else(|| format!("{:#04x}", t.id)),
+                "ver": t.ver,
+                "len": t.len,
+                "offset": t.offset,
+            })).collect::<Vec<_>>(),
+            "mem": mem.map(|m| json!({
+                "offset": m.offset,
+                "version": m.version,
+                "group_count": m.group_count,
+                "ptrs": {
+                    "restrict": m.ptrs.restrict,
+                    "ram_type": m.ptrs.ram_type,
+                    "train": m.ptrs.train,
+                    "train_pattern": m.ptrs.train_pattern,
+                    "unk0d": m.ptrs.unk0d,
+                },
+                "type_table": m.type_table.map(|tt| json!({
+                    "offset": tt.offset,
+                    "entries": tt.entries.iter().map(|e| json!({
+                        "strap": e.index,
+                        "ram_type": e.ram_type,
+                        "name": e.ram_type_name,
+                    })).collect::<Vec<_>>(),
+                })),
+                "train_header": m.train_header,
+            })),
+            "nvinit": nvinit.map(|n| json!({
+                "offset": n.offset,
+                "slots": n.slots.iter().zip(n.slots_abs.iter()).enumerate().map(|(i, ((_, v), abs))| json!({
+                    "slot": nvoc_core::vbios::bitsubs::NVINIT_SLOT_NAMES.get(i).copied().unwrap_or("unnamed"),
+                    "ptr": v,
+                    "abs": abs,
+                })).collect::<Vec<_>>(),
+            })),
+            "pll_limits": pll.map(|c| json!({
+                "target": c.target,
+                "abs": c.target_abs,
+                "version": c.version,
+                "header": c.header,
+            })),
+            "dp_info": dp.map(|d| json!({
+                "offset": d.offset,
+                "version": format!("{:#04x}", d.version),
+                "target_size": d.target_size,
+                "level_entry_tables": d.level_entry_tables,
+                "level_entry_size": d.level_entry_size,
+                "level_entry_count": d.level_entry_count,
+                "flags": d.flags,
+                "regular_vswing": d.regular_vswing,
+                "low_vswing": d.low_vswing,
+            })),
+            "i2c_script": i2c_script,
+            // envytools 无布局细节的 token：u16 槽如实携带。
+            "tmds": nvoc_core::vbios::bitsubs::find_token_words(image, b'T').ok().flatten(),
+            "display_script": nvoc_core::vbios::bitsubs::find_token_words(image, b'U').ok().flatten(),
+            "virtual_strap": nvoc_core::vbios::bitsubs::find_token_words(image, b'V').ok().flatten(),
+        })
+    };
     let identity = match nvoc_core::vbios::legacy::find_bios_identity(image) {
         Ok(id) => json!({
             "version": id.version,
@@ -8601,6 +8902,7 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
                 "application_id": e.application_id,
                 "target": e.target,
                 "target_id": e.target_id,
+                "desc_offset": e.desc_offset,
                 "desc": e.desc.as_ref().map(|d| json!({
                     "has_version_crypt": d.has_version_crypt,
                     "version": d.version,
@@ -8619,6 +8921,24 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
                     "dmem_load_size": d.dmem_load_size,
                     "signature_count": d.signature_count,
                     "signature_versions": d.signature_versions,
+                })),
+                // FWSEC DMEM 侧结构（gpu-unlock vbios_610.c 同源）：RM
+                // interface 表 + type=4 的 FRTS mapper。命令块在 ROM 内通
+                // 常全零——页号/页数由驱动运行时填充。
+                "dmem": e.dmem.as_ref().map(|m| json!({
+                    "interface_offset": m.interface_offset,
+                    "interface_version": m.interface_version,
+                    "entries": m.entries.iter().map(|(kind, dest)| json!({
+                        "kind": kind, "dest": dest,
+                    })).collect::<Vec<_>>(),
+                    "mapper_offset": m.mapper_offset,
+                    "mapper_magic": m.mapper_magic.map(|mg| String::from_utf8_lossy(&mg).to_string()),
+                    "mapper_version": m.mapper_version,
+                    "mapper_size": m.mapper_size,
+                    "mapper_cmd_offset": m.mapper_cmd_offset,
+                    "mapper_cmd_size": m.mapper_cmd_size,
+                    "mapper_marker": m.mapper_marker,
+                    "command_hex": m.command_hex,
                 })),
             })).collect::<Vec<_>>(),
         }),
@@ -8669,6 +8989,9 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             "power": power,
             "thermal_fan": thermal,
             "dcb": dcb,
+            "dcb_ext": dcb_ext,
+            "power_v2": power_v2,
+            "bit_tokens": bit_tokens,
             "perf_pointers": perf_pointers,
             "memory": memory,
             "identity": identity,
@@ -8707,6 +9030,9 @@ fn decode_vbios_detail(image: &[u8]) -> CliResult<Value> {
             base["power"] = json!(power);
             base["thermal_fan"] = thermal;
             base["dcb"] = json!(dcb);
+            base["dcb_ext"] = json!(dcb_ext);
+            base["power_v2"] = json!(power_v2);
+            base["bit_tokens"] = json!(bit_tokens);
             base["perf_pointers"] = perf_pointers;
             base["memory"] = memory;
             base["identity"] = identity;

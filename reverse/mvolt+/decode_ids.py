@@ -23,16 +23,17 @@ IMAGE_BASE = 0x140000000
 
 # ---- PE section table (manual, no deps) ------------------------------------
 
+
 def sections(data):
     pe_off = struct.unpack_from("<I", data, 0x3C)[0]
-    assert data[pe_off:pe_off + 4] == b"PE\x00\x00"
+    assert data[pe_off : pe_off + 4] == b"PE\x00\x00"
     nsec = struct.unpack_from("<H", data, pe_off + 6)[0]
     opt_size = struct.unpack_from("<H", data, pe_off + 20)[0]
     table = pe_off + 24 + opt_size
     out = []
     for i in range(nsec):
         e = table + 40 * i
-        name = data[e:e + 8].rstrip(b"\x00").decode()
+        name = data[e : e + 8].rstrip(b"\x00").decode()
         vsize, va, rsize, roff = struct.unpack_from("<IIII", data, e + 8)
         out.append((name, va, vsize, roff, rsize))
     return out
@@ -84,17 +85,21 @@ def vm_run(prog, key):
                 imm |= (prog[pos + k] ^ ks_byte(seed, pos + k + 1)) << (8 * k)
             pos += 4
             if op == 0x09:
-                acc = imm; log.append(f"acc={imm:#x}")
+                acc = imm
+                log.append(f"acc={imm:#x}")
             elif op == 0x93:
-                acc = (acc + imm) & 0xFFFFFFFF; log.append(f"acc+={imm:#x}")
+                acc = (acc + imm) & 0xFFFFFFFF
+                log.append(f"acc+={imm:#x}")
             else:
-                acc ^= imm; log.append(f"acc^{imm:#x}")
+                acc ^= imm
+                log.append(f"acc^{imm:#x}")
         elif op == 0x58:
             if pos >= len(prog):
                 return None, "rot overrun"
             amt = prog[pos] ^ ks_byte(seed, pos + 1)
             pos += 1
-            acc = rol32(acc, amt); log.append(f"rol {amt}")
+            acc = rol32(acc, amt)
+            log.append(f"rol {amt}")
         elif op == 0xCF:
             log.append("end")
             return acc, "; ".join(log)
@@ -114,12 +119,12 @@ def main():
     # ---- obfuscated VM region: keys @ 0x1402EE460, programs @ 0x1402EE6E0 ---
     key_base = va_to_off(secs, 0x1402EE460)
     prog_base = va_to_off(secs, 0x1402EE6E0)
-    keys = data[key_base:key_base + 4 * 0x23]
-    progs = data[prog_base:prog_base + 18 * 0x23]
+    keys = data[key_base : key_base + 4 * 0x23]
+    progs = data[prog_base : prog_base + 18 * 0x23]
 
     # ---- name/access string tables -----------------------------------------
-    names_off = va_to_off(secs, 0x1402C4860)   # obfuscated table (35 entries)
-    plain_off = va_to_off(secs, 0x1402C4BB8)   # plain table (7 entries)
+    names_off = va_to_off(secs, 0x1402C4860)  # obfuscated table (35 entries)
+    plain_off = va_to_off(secs, 0x1402C4BB8)  # plain table (7 entries)
     acc_a = rd_cstr(data, va_to_off(secs, 0x1402C3BC8))
     acc_b = rd_cstr(data, va_to_off(secs, 0x1402C3C90))
 
@@ -143,7 +148,7 @@ def main():
         e = names_off + 24 * k
         name_p, idx = struct.unpack_from("<qB", data, e)
         acc_p = struct.unpack_from("<q", data, e + 16)[0]
-        prog = progs[18 * idx:18 * idx + 18]
+        prog = progs[18 * idx : 18 * idx + 18]
         key = struct.unpack_from("<I", keys, 4 * idx)[0]
         ident, trace = vm_run(prog, key)
         name = rd_cstr(data, va_to_off(secs, name_p))
@@ -158,7 +163,7 @@ def main():
     # sanity: dump the VM programs of the first and last entries for the report
     print("\n=== sample programs ===")
     for idx in (0, 1, 0x22):
-        prog = progs[18 * idx:18 * idx + 18]
+        prog = progs[18 * idx : 18 * idx + 18]
         key = struct.unpack_from("<I", keys, 4 * idx)[0]
         print(f"  idx {idx:02d}: prog={prog.hex()} key={key:#010x}")
 

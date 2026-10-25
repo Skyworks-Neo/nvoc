@@ -284,9 +284,26 @@ fn parse_outputs_near(data: &[u8], conn_off: usize) -> Vec<DcbOutput> {
 }
 
 impl DcbBlock {
-    /// 主块选择：双镜像取第一份（CPR primary_block 语义）。
+    /// 主块选择：优先 legacy 镜像 +0x36 处 u16 指针锚定的 DCB（envytools
+    /// dcb.c 语义，唯一权威）。启发式扫描在 TU106 上有两个问题：紧跟 DCB
+    /// 条目的 I2C 表形状通不过 connector 行检查（真块被漏掉），而 EXTDEV
+    /// 表 ver/hlen/cnt/rlen 与 DCB 同形、其后的 CONN 表恰巧通过检查（伪
+    /// 块被选中）。锚定块不在扫描结果中时按 v2/v3+ 头签名直读。
     pub fn primary(data: &[u8]) -> Option<DcbBlock> {
-        find_dcb_blocks(data).into_iter().next()
+        let blocks = find_dcb_blocks(data);
+        let first = blocks.first()?;
+        if let Some(img) = crate::vbios::legacy::find_image_base(data)
+            && let Some([lo, hi]) = data.get(img + 0x36..img + 0x38)
+        {
+            let anchored = img + (usize::from(*lo) | usize::from(*hi) << 8);
+            if let Some(blk) = blocks.iter().find(|blk| blk.offset == anchored) {
+                return Some(blk.clone());
+            }
+            if let Some(blk) = parse_anchored_dcb(data, anchored) {
+                return Some(blk);
+            }
+        }
+        Some(first.clone())
     }
 
     /// pad 聚合角色图（CPR build_display_map：connector 表为准，outputs
@@ -347,6 +364,33 @@ fn pad_index(index: u8) -> Option<usize> {
         0x10..=0x17 | 0x20..=0x27 => Some(usize::from(index & 0x0F)),
         _ => None,
     }
+}
+
+/// 0x36 锚定 DCB 直读（find_dcb_blocks 漏检时的权威兜底）：v3+ 验
+/// +6 处 0x4EDCBDCB 签名、v2.x 验 +4 处同签名，其余形状门同启发式。
+fn parse_anchored_dcb(data: &[u8], off: usize) -> Option<DcbBlock> {
+    let ver = *data.get(off)?;
+    if !(0x20..=0x50).contains(&ver) {
+        return None;
+    }
+    let hdr_len = usize::from(*data.get(off + 1)?);
+    let entry_count = usize::from(*data.get(off + 2)?);
+    let entry_len = usize::from(*data.get(off + 3)?);
+    if !(5..=0x30).contains(&hdr_len)
+        || !(1..=0x40).contains(&entry_count)
+        || !matches!(entry_len, 4 | 8)
+    {
+        return None;
+    }
+    let sig_at = if ver >= 0x30 { off + 6 } else { off + 4 };
+    let sig = u32::from(*data.get(sig_at)?)
+        | u32::from(*data.get(sig_at + 1)?) << 8
+        | u32::from(*data.get(sig_at + 2)?) << 16
+        | u32::from(*data.get(sig_at + 3)?) << 24;
+    if sig != 0x4EDCBDCB {
+        return None;
+    }
+    Some(parse_block(data, off))
 }
 
 #[cfg(test)]

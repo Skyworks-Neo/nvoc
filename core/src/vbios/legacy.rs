@@ -238,6 +238,19 @@ pub fn find_bit_signature(data: &[u8], base: usize) -> Option<usize> {
         .map(|p| base + p)
 }
 
+/// 镜像内指针 → 文件偏移（含 EFI 间隙重定位）：目标越过 PC 镜像末尾时
+/// 加 EFI 镜像长度（与 falcon/perf-ptr 槽同规则）。供 BIT token 级子表
+/// 解析共用。
+pub(crate) fn relocate_ptr(data: &[u8], img: usize, target: u32) -> Option<usize> {
+    let raw = img.checked_add(usize::try_from(target).ok()?)?;
+    let (pc_end, gap) = efi_gap_after_pc(data, img);
+    if raw > pc_end.saturating_sub(1) {
+        raw.checked_add(gap)
+    } else {
+        Some(raw)
+    }
+}
+
 /// BIT 目录条目。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitEntry {
@@ -1286,6 +1299,33 @@ pub struct FalconUcodeDesc {
     pub signature_versions: u16,
 }
 
+/// FWSEC DMEM 内的 RM interface 表 + FRTS mapper（gpu-unlock vbios_610.c
+/// `gpu_unlock_fwsec_patch_frts` 的结构面）。interface 表：`[ver=1, hdr=4,
+/// stride=8, count]` + count×(u32 type, u32 dest)；type=4 → mapper
+/// （magic "DMAP"、V3：cmd_offset/cmd_size @+8/+12、+44 处 0x15 标记由
+/// 驱动运行时写入——ROM 内通常为 0）。FRTS 命令块 44B 在 ROM 内通常全零
+/// （驱动填页号/页数后执行）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FwsecDmem {
+    /// interface 表的 DMEM 内偏移（= 描述符 InterfaceOffset）。
+    pub interface_offset: u32,
+    /// interface 表版本（应为 1）。
+    pub interface_version: u8,
+    pub entries: Vec<(u32, u32)>,
+    /// type=4 条目指向的 mapper（DMEM 内偏移）。
+    pub mapper_offset: Option<u32>,
+    /// mapper 头 magic（"DMAP"）。
+    pub mapper_magic: Option<[u8; 4]>,
+    pub mapper_version: Option<u16>,
+    pub mapper_size: Option<u16>,
+    pub mapper_cmd_offset: Option<u32>,
+    pub mapper_cmd_size: Option<u32>,
+    /// mapper+44 的标记 dword（ROM 内 0 = 驱动运行时写 0x15）。
+    pub mapper_marker: Option<u32>,
+    /// FRTS 命令块原始字节（≤64B 截取）。
+    pub command_hex: Option<String>,
+}
+
 /// Falcon ucode 表一条目（`FALCON_UCODE_TABLE_ENTRY_V1`，6B）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FalconUcodeEntry {
@@ -1297,6 +1337,10 @@ pub struct FalconUcodeEntry {
     pub desc_ptr: u32,
     /// DescPtr 非零时的描述符头。
     pub desc: Option<FalconUcodeDesc>,
+    /// 描述符绝对偏移（重定位后；FWSEC DMEM 解析锚点）。
+    pub desc_offset: usize,
+    /// V2/V3 有 InterfaceOffset 时解析出的 DMEM interface + mapper。
+    pub dmem: Option<FwsecDmem>,
 }
 
 /// Falcon ucode 表（PMU/devinit/安全许可证固件清单）。
@@ -1380,6 +1424,8 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
         let target_id = r.u8(e + 1)?;
         let desc_ptr = r.u32(e + 2)?;
         let mut desc = None;
+        let mut dmem = None;
+        let mut desc_offset = 0usize;
         if desc_ptr != 0 {
             // DescPtr 为表内相对（hexpat: @parent + DescPtr - falcon_table_ptr）。
             let Ok(rel_ptr) = usize::try_from(ptr) else {
@@ -1389,6 +1435,7 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
                 continue;
             };
             let d = table_offset + rel_desc - rel_ptr;
+            desc_offset = d;
             if d + 4 <= data.len() {
                 let rd = |a: usize| {
                     u32::from(data[a])
@@ -1476,6 +1523,14 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
                         signature_count,
                         signature_versions,
                     });
+                    // 镜像 = 描述符全长之后；DMEM 段在 IMEM 载入后（
+                    // data_off = imem_load_size，gpu-unlock fw.image_off
+                    // = off + size 同式）。InterfaceOffset 为 DMEM 内偏移。
+                    let desc_len = usize::from((vdesc >> 16) as u16);
+                    if version >= 2 && interface_offset != 0 && desc_len > 0 && dmem_load_size > 0 {
+                        let dmem_abs = d + desc_len + imem_load_size as usize;
+                        dmem = parse_fwsec_dmem(data, dmem_abs, interface_offset);
+                    }
                 }
             }
         }
@@ -1486,6 +1541,8 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
             target: falcon_target_name(target_id),
             desc_ptr,
             desc,
+            desc_offset,
+            dmem,
         });
     }
     Ok(Some(FalconTable {
@@ -1497,8 +1554,88 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
     }))
 }
 
-// ── NVGI 头（程序员 dump 专有；GP104.rom 实测校准）───────────────────────
+/// 解析 FWSEC DMEM 内的 RM interface 表与 FRTS mapper（仅结构读取；
+/// 命令块在 ROM 内通常全零——页号/页数由驱动运行时填充）。
+fn parse_fwsec_dmem(data: &[u8], dmem_abs: usize, interface_offset: u32) -> Option<FwsecDmem> {
+    let iface = dmem_abs.checked_add(usize::try_from(interface_offset).ok()?)?;
+    if iface + 4 > data.len() {
+        return None;
+    }
+    let (ver, hdr, stride, count) = (
+        data[iface],
+        data[iface + 1],
+        data[iface + 2],
+        usize::from(data[iface + 3]),
+    );
+    if ver != 1 || hdr != 4 || stride != 8 || count == 0 || count > 16 {
+        return None;
+    }
+    let mut entries = Vec::new();
+    let mut mapper_offset = None;
+    for i in 0..count {
+        let e = iface + 4 + i * 8;
+        if e + 8 > data.len() {
+            break;
+        }
+        let kind = u32::from(data[e])
+            | u32::from(data[e + 1]) << 8
+            | u32::from(data[e + 2]) << 16
+            | u32::from(data[e + 3]) << 24;
+        let dest = u32::from(data[e + 4])
+            | u32::from(data[e + 5]) << 8
+            | u32::from(data[e + 6]) << 16
+            | u32::from(data[e + 7]) << 24;
+        if kind == 4 && mapper_offset.is_none() {
+            mapper_offset = Some(dest);
+        }
+        entries.push((kind, dest));
+    }
+    let mut dmem = FwsecDmem {
+        interface_offset,
+        interface_version: ver,
+        entries,
+        mapper_offset,
+        mapper_magic: None,
+        mapper_version: None,
+        mapper_size: None,
+        mapper_cmd_offset: None,
+        mapper_cmd_size: None,
+        mapper_marker: None,
+        command_hex: None,
+    };
+    if let Some(mo) = mapper_offset {
+        let m = dmem_abs.checked_add(usize::try_from(mo).ok()?)?;
+        if m + 48 <= data.len() {
+            let rd32 = |a: usize| {
+                u32::from(data[a])
+                    | u32::from(data[a + 1]) << 8
+                    | u32::from(data[a + 2]) << 16
+                    | u32::from(data[a + 3]) << 24
+            };
+            dmem.mapper_magic = Some([data[m], data[m + 1], data[m + 2], data[m + 3]]);
+            dmem.mapper_version = Some(u16::from(data[m + 4]) | u16::from(data[m + 5]) << 8);
+            dmem.mapper_size = Some(u16::from(data[m + 6]) | u16::from(data[m + 7]) << 8);
+            dmem.mapper_cmd_offset = Some(rd32(m + 8));
+            dmem.mapper_cmd_size = Some(rd32(m + 12));
+            dmem.mapper_marker = Some(rd32(m + 44));
+            if let (Some(co), Some(cs)) = (dmem.mapper_cmd_offset, dmem.mapper_cmd_size) {
+                let cb = dmem_abs.checked_add(usize::try_from(co).ok()?)?;
+                let n = usize::try_from(cs).unwrap_or(0).min(64);
+                if cb + n <= data.len() {
+                    dmem.command_hex = Some(
+                        data[cb..cb + n]
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect(),
+                    );
+                }
+            }
+        }
+    }
+    Some(dmem)
+}
 
+// ── NVGI 头（程序员 dump 专有；GP104.rom 实测校准）───────────────────────
 /// NVGI 根头（完整 flash dump 开头；NvAPI 镜像直接以 PC boot sector 开头
 /// 无此头）。
 ///
@@ -4617,7 +4754,36 @@ mod tests {
             assert_eq!(prod.imem_sec_size, 0x9300);
             assert_eq!(prod.imem_sec_base + prod.imem_sec_size, prod.imem_load_size);
             assert_eq!(prod.signature_count, 0); // V2 无 V3 式 PKC 签名区
+
+            // FWSEC DMEM 侧（gpu-unlock vbios_610.c patch_frts 同源）：
+            // interface v1/hdr4/stride8 双条目，type=4 → "DMAP" mapper
+            // V3（cmd 64B @DMEM 0x3D0）；命令块 ROM 内全零（驱动填页号）。
+            let dmem = prod_dmem(&f);
+            let d = dmem.expect("fwsec prod dmem");
+            assert_eq!(d.interface_offset, 0xDC);
+            assert_eq!(d.interface_version, 1);
+            assert_eq!(d.entries, vec![(4, 0x380), (5, 0x364)]);
+            assert_eq!(d.mapper_offset, Some(0x380));
+            assert_eq!(d.mapper_magic, Some(*b"DMAP"));
+            assert_eq!(d.mapper_version, Some(3));
+            assert_eq!(d.mapper_size, Some(64));
+            assert_eq!(d.mapper_cmd_offset, Some(0x3D0));
+            assert_eq!(d.mapper_cmd_size, Some(64));
+            assert_eq!(d.mapper_marker, Some(0));
+            assert!(
+                d.command_hex
+                    .as_deref()
+                    .is_some_and(|h| h.bytes().all(|b| b == b'0'))
+            );
         }
+    }
+
+    /// 0x85（FWSEC_PROD）条目的 DMEM 结构（测试辅助）。
+    fn prod_dmem(f: &FalconTable) -> Option<&FwsecDmem> {
+        f.entries
+            .iter()
+            .find(|e| e.application_id == 0x85)
+            .and_then(|e| e.dmem.as_ref())
     }
 
     /// GM200（Maxwell）对照：P+0x10 指向 ver 0x24 表（传感器条目 +
