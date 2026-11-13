@@ -87,7 +87,7 @@ fn check_submodule(args: &SetupArgs, root: &Path) -> usize {
                 println!("  [FAIL] could not initialize the nvapi-rs submodule ({error})");
                 util::hint("forks need a submodule URL override (see CONTRIBUTING.md):");
                 util::hint(
-                    "git config submodule.nvapi-rs.url git@github.com:<your-org>/nvapi-rs.git",
+                    "git config submodule.nvapi-rs.url https://github.com/<your-account>/nvapi-rs.git",
                 );
                 1
             }
