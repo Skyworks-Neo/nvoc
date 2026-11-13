@@ -12,7 +12,7 @@ use ::nvapi::hi::{
     CoolerSettings, FanCoolerId, Gpu, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta,
     PState, Percentage, PerfLimitId, PffCurve, VfpPoint,
 };
-use ::nvapi::{DisplayIdsFlags, VoltageDomain};
+use ::nvapi::{ClockLockMode, DisplayIdsFlags, VoltageDomain};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter;
@@ -583,13 +583,17 @@ pub fn set_vfp_frequency_lock(
                 .set_vfp_locks([
                     ClockLockEntry {
                         limit: upper_limit,
-                        clock: domain,
+                        mode: ClockLockMode::None,
                         lock_value: Some(ClockLockValue::Frequency(upper)),
+                        select_pstate: None,
+                        clock: domain,
                     },
                     ClockLockEntry {
                         limit: lower_limit,
-                        clock: domain,
+                        mode: ClockLockMode::None,
                         lock_value: Some(ClockLockValue::Frequency(lower)),
+                        select_pstate: None,
+                        clock: domain,
                     },
                 ])
                 .map_err(Error::from)?;
@@ -615,13 +619,17 @@ pub fn reset_vfp_frequency_lock(gpu: &Gpu, domain: ClockDomain) -> Result<(), Er
         .set_vfp_locks([
             ClockLockEntry {
                 limit: upper_limit,
-                clock: domain,
+                mode: ClockLockMode::None,
                 lock_value: None,
+                select_pstate: None,
+                clock: domain,
             },
             ClockLockEntry {
                 limit: lower_limit,
-                clock: domain,
+                mode: ClockLockMode::None,
                 lock_value: None,
+                select_pstate: None,
+                clock: domain,
             },
         ])
         .map_err(Error::from)?;

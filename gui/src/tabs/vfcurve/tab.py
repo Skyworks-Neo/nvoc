@@ -57,6 +57,11 @@ _CURVE_COLORS = {
     # axis authority only, and applies go through the paired-write call.
     "gpc_pre_oc": {"current": "#00ccff", "default": "#1f4e79"},
     "gpc_oc": {"current": "#00CC66", "default": "#004D25"},
+    # Blackwell (RTX PRO 6000, 580.173.02): SYS owns a main curve (bank0
+    # 383..509, operator-pinned 2026-10-12) — golden hue matches the SYS
+    # ext-slot overlay. PWR/UPROC (510..636): identity A/B pending, pink.
+    "sys": {"current": "#FFD24D", "default": "#7A6420"},
+    "pwr_uproc": {"current": "#FF4D94", "default": "#7A0F3D"},
 }
 # Display label + private-domain class for the raw-converted prior.
 # The third curve's attribution moved twice — HOST → SYS (voltage-lock)
@@ -85,6 +90,14 @@ _CURVE_META = {
     # through the paired-write call, not the raw-converted prior.
     "gpc_pre_oc": {"label": "GPC PRE-OC", "class": "graphics", "domain_bit": None},
     "gpc_oc": {"label": "GPC OC", "class": "graphics", "domain_bit": None},
+    # Blackwell unpacks two more main curves: SYS (bank0 383..509,
+    # operator-pinned A/B 2026-10-12) and the PWR or UPROC curve
+    # (510..636 — range confirmed, identity A/B pending). SYS's MEASURE
+    # channel is bit 2 on the older generations, but the MSD lesson (bit 2
+    # co-moves in the uncore band at a DIFFERENT value) applies — no
+    # verified Blackwell crosshair yet, so domain_bit stays None.
+    "sys": {"label": "SYS", "class": "fabric", "domain_bit": None},
+    "pwr_uproc": {"label": "PWR/UPROC", "class": "graphics", "domain_bit": None},
 }
 
 # ── Unknown-curve support ──
@@ -115,7 +128,7 @@ def _curve_meta_for(cid: str) -> dict:
 # The dual-plane GPC OC plane has NO known domain-global WRITE bit (the
 # old "mem"→bit2 attribution belonged to the pre-rename mislabel) — no
 # global reset is attempted for it.
-_CURVE_WRITE_BIT = {"gpc": 0, "xbar": 1, "msd": 5, "mem": 2}
+_CURVE_WRITE_BIT = {"gpc": 0, "xbar": 1, "sys": 3, "msd": 5, "mem": 2}
 
 # Reverse of _CURVE_WRITE_BIT for offset normalization (bit -> curve id).
 _WRITE_BIT_TO_CURVE = {bit: cid for cid, bit in _CURVE_WRITE_BIT.items()}
@@ -698,6 +711,24 @@ class VFCurveTab:
         # inaxes=None (it's outside the axes), so they never reach the
         # point-select logic — zero interference with curve editing.
         self._wall_handle = None  # animated Polygon patch (blit overlay)
+
+        # ── P0 bind handles (melonVolt payload slots 1..3) ──
+        # Ceiling triangle (top margin, dark red) writes slots 1+2 so the
+        # VBIOS wall and VRM wall both move to the dragged value — that min
+        # IS the P0 ceiling. Floor triangle (bottom margin, dark red) writes
+        # slot 3 (VMIN/min-hold), clamped to >= 450 mV like the max side.
+        # Pending values are mV; offsets derive from the per-rail baselines
+        # (status wall − control offset) captured at p0-bounds load.
+        self._pending_ceiling_mv: Optional[float] = None
+        self._pending_floor_mv: Optional[float] = None
+        self._dragging_ceiling: bool = False
+        self._dragging_floor: bool = False
+        self._ceiling_handle = None  # static Polygon (figure margin)
+        self._floor_handle = None  # static Polygon (figure margin)
+        self._p0_ceiling_vline = None  # solid indicator; follows the drag
+        self._p0_floor_vline = None  # solid indicator; follows the drag
+        self._volt_slots_by_rail: Dict[int, tuple] = {}
+        self._volt_walls_by_rail: Dict[int, tuple] = {}
 
         # ── Top: chart area (controls row + plot) ──
         self._chart_area = tk.Frame(self.frame, bg=_PANEL_BG)
@@ -1927,16 +1958,20 @@ class VFCurveTab:
     # ────────────────────────────────────────────
     # P0 voltage-boundary lines (deep red walls + light red effective)
     # ────────────────────────────────────────────
-    def ensure_p0_bounds(self, gpu: str) -> None:
-        """Query P0 voltage bounds once per GPU (hardware walls don't move).
+    def ensure_p0_bounds(self, gpu: str, force: bool = False) -> None:
+        """Query P0 voltage bounds once per GPU (walls were assumed static).
 
         Called the first time the VF curve loads for a given GPU. The full
         ``p0`` dict is cached and the effective-wall line seeded; subsequent
         refreshes short-circuit on the gpu key (no per-second NVAPI read).
         The overclock panel's post-apply path calls
         :meth:`update_p0_effective_wall` to move just the light-red line.
+
+        ``force=True`` re-queries on the SAME gpu — required after a
+        ceiling/floor bind write, because those payload slots MOVE the
+        walls (the once-static assumption no longer holds).
         """
-        if self._p0_bounds_gpu == gpu and self._p0_bounds is not None:
+        if not force and self._p0_bounds_gpu == gpu and self._p0_bounds is not None:
             return
         # GPU changed (or first load): clear any stale line so the old GPU's
         # effective wall isn't briefly shown over the new curve.
@@ -1947,6 +1982,10 @@ class VFCurveTab:
             self._p0_effective_by_rail = {}
             self._p0_effective_wall_mv = None
             self._pending_wall_mv = None
+            self._pending_ceiling_mv = None
+            self._pending_floor_mv = None
+            self._volt_slots_by_rail = {}
+            self._volt_walls_by_rail = {}
             # Stale crosshair rail voltage from the previous GPU.
             self._rail_volt_mv = None
         self._p0_bounds_gpu = gpu
@@ -2163,6 +2202,38 @@ class VFCurveTab:
             else None
             for bit, b in by_rail.items()
         }
+        # melonVolt payload slots for offset math (R610.74 marshal): control
+        # offsets 1/2/3 = VBIOS wall / VRM wall / VMIN min-hold; status walls
+        # 2/3/5 = the same walls' live values.
+        new_slots: Dict[int, tuple] = {}
+        new_walls: Dict[int, tuple] = {}
+        for entry in vr.get("control", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                bit = int(entry.get("rail_bit"))
+                vals = [int(v) for v in (entry.get("values_uV") or [])]
+            except (TypeError, ValueError):
+                continue
+            if len(vals) >= 4:
+                new_slots[bit] = (vals[1], vals[2], vals[3])
+        for entry in vr.get("status", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                bit = int(entry.get("rail_bit"))
+                vals = [int(v) for v in (entry.get("values_uV") or [])]
+            except (TypeError, ValueError):
+                continue
+            if len(vals) >= 6:
+                new_walls[bit] = (vals[2], vals[3], vals[5])
+        # A backend that hides the payloads (older pynvoc / CLI path) yields
+        # empty maps — keep the previous snapshot so the bind handles and
+        # offset baselines survive the refresh instead of blinking out.
+        if new_walls:
+            self._volt_walls_by_rail = new_walls
+        if new_slots:
+            self._volt_slots_by_rail = new_slots
         self._sync_active_p0_view()
         self._redraw()
 
@@ -2173,6 +2244,11 @@ class VFCurveTab:
         self._p0_effective_by_rail = {}
         self._p0_effective_wall_mv = None
         self._pending_wall_mv = None
+        self._pending_ceiling_mv = None
+        self._pending_floor_mv = None
+        self._volt_slots_by_rail = {}
+        self._volt_walls_by_rail = {}
+        self._hide_bind_handles()
 
     # ── Active-curve rail resolution (gpc/msd → primary, xbar/mem → 2nd) ──
 
@@ -2643,6 +2719,8 @@ class VFCurveTab:
         # stale references so the _draw_*_handle calls below recreate them.
         self._pending_wall_line = None
         self._wall_handle = None
+        self._ceiling_handle = None
+        self._floor_handle = None
         active_colors = _curve_colors_for(self._active_curve)
         active_label = self._curve_label(self._active_curve)
 
@@ -3075,9 +3153,11 @@ class VFCurveTab:
                     lw=0,
                     zorder=1.5,
                 )
+            self._p0_floor_vline = None
+            self._p0_ceiling_vline = None
             if floor_uv > 0:
                 floor_mv = floor_uv / 1000.0
-                ax.axvline(
+                self._p0_floor_vline = ax.axvline(
                     x=floor_mv,
                     color="#8b0000",
                     linewidth=1.2,
@@ -3102,7 +3182,7 @@ class VFCurveTab:
             walls = [w for w in (vbios_uv, vrm_uv) if w > 0]
             if walls:
                 ceil_mv = min(walls) / 1000.0
-                ax.axvline(
+                self._p0_ceiling_vline = ax.axvline(
                     x=ceil_mv,
                     color="#8b0000",
                     linewidth=1.2,
@@ -3157,7 +3237,152 @@ class VFCurveTab:
         self._draw_live_point(call_draw_idle=False)
         self._draw_pending_wall(call_draw_idle=False)
         self._draw_wall_handle(call_draw_idle=False)
+        self._draw_bind_handles(call_draw_idle=False)
         self.canvas.draw_idle()
+
+    # ── P0 bind handles (ceiling = slots 1+2, floor = slot 3) ──
+
+    def _bind_walls_mv(self) -> tuple:
+        """(ceiling_mv, floor_mv) currently applied on the ACTIVE rail.
+
+        Ceiling = min(VBIOS wall, VRM wall>0); floor = min hold. Falls back
+        to the p0 payload when the raw slot snapshot is missing.
+        """
+        bit = self._active_p0_rail_bit()
+        walls = self._volt_walls_by_rail.get(bit)
+        if walls is None or walls == (0, 0, 0):
+            # Fresh snapshot not landed yet (post-apply ensure_p0_bounds is
+            # async) — fall back to the p0 payload the indicators were drawn
+            # from so the handles never blink out.
+            p0 = self._active_p0_bounds()
+            if not isinstance(p0, dict):
+                return None, None
+            vbios = int(p0.get("vbios_wall_uV", 0) or 0)
+            vrm = int(p0.get("vrm_max_wall_uV", 0) or 0)
+            mh = int(p0.get("min_hold_uV", 0) or 0)
+            walls = (vbios, vrm, mh)
+        vbios_uv, vrm_uv, mh_uv = walls
+        upper = [w for w in (vbios_uv, vrm_uv) if w > 0]
+        ceiling_mv = (min(upper) / 1000.0) if upper else None
+        floor_mv = (mh_uv / 1000.0) if mh_uv > 0 else None
+        return ceiling_mv, floor_mv
+
+    def _bind_current_mv(self) -> tuple:
+        """(ceiling_mv, floor_mv) including pending drags."""
+        ceiling, floor = self._bind_walls_mv()
+        if self._pending_ceiling_mv is not None:
+            ceiling = self._pending_ceiling_mv
+        if self._pending_floor_mv is not None:
+            floor = self._pending_floor_mv
+        return ceiling, floor
+
+    def _hide_bind_handles(self) -> None:
+        for patch in (self._ceiling_handle, self._floor_handle):
+            if patch is not None:
+                try:
+                    patch.set_visible(False)
+                except Exception:
+                    pass
+
+    def _draw_bind_handles(self, call_draw_idle: bool = True):
+        """Draw the ceiling/floor bind triangles.
+
+        Ceiling and floor triangles BOTH hang below the voltage axis
+        (apex just under the bottom spine, tip pointing UP at the wall —
+        opposite of the top-margin effective-wall handle). Both track
+        pending drags when active, else the applied walls.
+        """
+        if self.ax is None or self.fig is None:
+            return
+        import matplotlib.patches as mpatches
+        from matplotlib.transforms import blended_transform_factory
+
+        pos = self.ax.get_position()
+        y_bot = pos.y0
+        if self._voltages and len(self._voltages) >= 2:
+            span = self._voltages[-1] - self._voltages[0]
+            hw = max(4.0, span * 0.006)
+        else:
+            hw = 8.0
+
+        ceiling_mv, floor_mv = self._bind_current_mv()
+        trans = blended_transform_factory(self.ax.transData, self.fig.transFigure)
+
+        def _triangle(verts, face, alpha, existing):
+            if existing is not None:
+                existing.set_xy(verts)
+                existing.set_facecolor(face)
+                existing.set_alpha(alpha)
+                existing.set_visible(True)
+                return existing
+            patch = mpatches.Polygon(
+                verts,
+                closed=True,
+                transform=trans,
+                facecolor=face,
+                edgecolor="white",
+                linewidth=0.8,
+                alpha=alpha,
+                zorder=15,
+            )
+            patch.set_clip_on(False)
+            self.ax.add_patch(patch)
+            return patch
+
+        # Both bind triangles live BELOW the voltage axis, tip UP (opposite
+        # of the top-margin effective-wall handle): apex just under the
+        # bottom spine pointing at the wall, base below the tick labels.
+        if ceiling_mv is None and floor_mv is None:
+            self._hide_bind_handles()
+        else:
+            if ceiling_mv is not None:
+                face = "#cc0000" if self._pending_ceiling_mv is None else "#ff2200"
+                self._ceiling_handle = _triangle(
+                    [
+                        (ceiling_mv, y_bot - 0.006),
+                        (ceiling_mv - hw, y_bot - 0.075),
+                        (ceiling_mv + hw, y_bot - 0.075),
+                    ],
+                    face,
+                    0.92,
+                    self._ceiling_handle,
+                )
+            elif self._ceiling_handle is not None:
+                self._ceiling_handle.set_visible(False)
+            if floor_mv is not None:
+                face = "#cc0000" if self._pending_floor_mv is None else "#ff2200"
+                self._floor_handle = _triangle(
+                    [
+                        (floor_mv, y_bot - 0.006),
+                        (floor_mv - hw, y_bot - 0.075),
+                        (floor_mv + hw, y_bot - 0.075),
+                    ],
+                    face,
+                    0.92,
+                    self._floor_handle,
+                )
+            elif self._floor_handle is not None:
+                self._floor_handle.set_visible(False)
+        if call_draw_idle:
+            self.canvas.draw_idle()
+
+    def _hit_bind_handle(self, event) -> Optional[str]:
+        """'ceiling' / 'floor' when a click lands on a bind triangle."""
+        if event.x is None or event.y is None:
+            return None
+        for kind, patch in (
+            ("ceiling", self._ceiling_handle),
+            ("floor", self._floor_handle),
+        ):
+            if patch is None:
+                continue
+            try:
+                bbox = patch.get_window_extent()
+            except Exception:
+                continue
+            if bbox is not None and bbox.width > 0 and bbox.contains(event.x, event.y):
+                return kind
+        return None
 
     def _draw_pending_wall(self, call_draw_idle: bool = True):
         """Draw (or hide) the pending wall — the dashed light-red vline a
@@ -3335,6 +3560,30 @@ class VFCurveTab:
         return lo, hi
 
     def _on_mouse_press(self, event):
+        # Bind handles (ceiling/floor) hit-tested before the wall handle.
+        if event.button == 1:
+            bind = self._hit_bind_handle(event)
+            if bind is not None:
+                if self._wall_drag_disabled():
+                    label = self._curve_label(self._active_curve)
+                    self.app.console.append(
+                        f"[GUI] {bind.capitalize()} handle disabled on {label}: "
+                        f"this part has a single (GPC) voltage rail — switch to "
+                        f"GPC to drag it.\n"
+                    )
+                    return
+                if bind == "ceiling":
+                    self._dragging_ceiling = True
+                    if self._pending_ceiling_mv is None:
+                        ceiling, _ = self._bind_current_mv()
+                        self._pending_ceiling_mv = ceiling
+                else:
+                    self._dragging_floor = True
+                    if self._pending_floor_mv is None:
+                        _, floor = self._bind_current_mv()
+                        self._pending_floor_mv = floor
+                self._draw_bind_handles()
+                return
         # Wall-drag handle lives ABOVE the axes (in the top figure margin),
         # so a click on it has inaxes=None. Handle it before the inaxes guard
         # below so the point-select logic is never entered for a handle grab.
@@ -3401,6 +3650,11 @@ class VFCurveTab:
 
     def _on_mouse_release(self, event):
         if event.button == 1:
+            if self._dragging_ceiling or self._dragging_floor:
+                self._dragging_ceiling = False
+                self._dragging_floor = False
+                self._draw_bind_handles()
+                return
             if self._mouse_pressed:
                 self._mouse_pressed = False
                 # Apply any live-point update deferred during the interaction
@@ -3437,6 +3691,33 @@ class VFCurveTab:
 
     def _on_mouse_move(self, event):
         if not self._voltages:
+            return
+
+        if (self._dragging_ceiling or self._dragging_floor) and event.x is not None:
+            try:
+                mv = float(self.ax.transData.inverted().transform((event.x, 0.0))[0])
+            except Exception:
+                return
+            mv = self._snap_wall_mv(mv)
+            ceiling, floor = self._bind_current_mv()
+            # Cross-clamps: the floor never crosses the ceiling and never
+            # dips below 450 mV (same hard floor as the max side); the
+            # ceiling never crosses the floor either.
+            if self._dragging_ceiling:
+                lo = max(450.0, (floor + self._WALL_STEP_MV) if floor else 450.0)
+                ceiling = max(lo, mv)
+                self._pending_ceiling_mv = ceiling
+                if self._p0_ceiling_vline is not None:
+                    self._p0_ceiling_vline.set_xdata([ceiling, ceiling])
+            else:
+                hi = (ceiling - self._WALL_STEP_MV) if ceiling else mv
+                floor = min(450.0 if hi < 450.0 else hi, max(450.0, mv))
+                floor = min(floor, hi)
+                self._pending_floor_mv = max(450.0, floor)
+                if self._p0_floor_vline is not None:
+                    self._p0_floor_vline.set_xdata([floor, floor])
+            self._draw_bind_handles()
+            self.canvas.draw_idle()
             return
 
         if self._dragging_wall and event.x is not None:
@@ -4692,9 +4973,15 @@ class VFCurveTab:
         # prepended to the VFP apply lambda so both write in one action.
         pending_wall = self._pending_wall_mv
         self._pending_wall_mv = None
-        wall_only = pending_wall is not None and target_delta_mhz == 0
-        if wall_only:
-            self._apply_wall_target(pending_wall)
+        pending_ceiling = self._pending_ceiling_mv
+        self._pending_ceiling_mv = None
+        pending_floor = self._pending_floor_mv
+        self._pending_floor_mv = None
+        any_pending = any(
+            v is not None for v in (pending_wall, pending_ceiling, pending_floor)
+        )
+        if any_pending and target_delta_mhz == 0:
+            self._apply_wall_and_binds(pending_wall, pending_ceiling, pending_floor)
             self._redraw()
             return
 
@@ -4766,9 +5053,16 @@ class VFCurveTab:
             pub_pts=pub_pts,
             priv_pts=priv_pts,
             pending_wall=pending_wall,
+            pending_ceiling=pending_ceiling,
+            pending_floor=pending_floor,
             rail_bit=self._active_p0_rail_bit(),
         ) -> str:
             messages = []
+            messages.extend(
+                self._apply_binds_inline(
+                    native, gpu, rail_bit, pending_ceiling, pending_floor
+                )
+            )
             if pending_wall is not None:
                 messages.append(
                     self._apply_wall_inline(native, gpu, pending_wall, rail_bit)
@@ -4874,13 +5168,19 @@ class VFCurveTab:
                 a_base=a_base,
                 deltas_khz=deltas_khz,
                 pending_wall=pending_wall,
+                pending_ceiling=pending_ceiling,
+                pending_floor=pending_floor,
                 rail_bit=self._active_p0_rail_bit(),
             ) -> str:
+                bind_msgs = self._apply_binds_inline(
+                    native, gpu, rail_bit, pending_ceiling, pending_floor
+                )
                 wall_msg = (
                     self._apply_wall_inline(native, gpu, pending_wall, rail_bit) + "\n"
                     if pending_wall is not None
                     else ""
                 )
+                wall_msg = "\n".join(bind_msgs + ([wall_msg] if wall_msg else []))
                 for offset, dkz in enumerate(deltas_khz):
                     r = native.set_vfp_pair_offset(gpu, a_base + offset, 1, dkz)
                     if isinstance(r, dict) and r.get("supported") is False:
@@ -4899,6 +5199,7 @@ class VFCurveTab:
                 on_finished=lambda _rc: self.app.after(0, self._refresh_curve),
             )
             return
+
         self.app.run_native_action(
             "apply VFP point deltas",
             apply_routed,
@@ -4963,6 +5264,128 @@ class VFCurveTab:
 
         self.app.console.append(f"[GUI] Applying P0 wall target {target_mv:g} mV…\n")
         self.app.run_native_action("apply P0 volt-rail target", apply_wall)
+
+    def _apply_wall_and_binds(
+        self,
+        wall_mv: Optional[float],
+        ceiling_mv: Optional[float],
+        floor_mv: Optional[float],
+    ) -> None:
+        """Apply pending P0 writes in dependency order: ceiling (slots 1+2)
+        first, then the floor (slot 3), then the effective wall (slot 0
+        target) — raising the walls before the wall that clamps to them.
+
+        Offset conversion (melonVolt payload = baseline + offset, stock =
+        all-zero): the per-slot baseline is the live wall MINUS the offset
+        already held in that slot (captured at p0-bounds load), so
+        offset = target_abs − baseline. Min Hold honors the 450 mV hard
+        floor like the max side.
+        """
+        gpu = self.app.selected_gpu_target()
+        if gpu is None:
+            self.app.console.append("[GUI] No GPU selected.\n")
+            return
+        rail_bit = self._active_p0_rail_bit()
+
+        def apply_all(native, gpu=gpu, rail_bit=rail_bit) -> str:
+            messages = []
+            messages.extend(
+                self._apply_binds_inline(native, gpu, rail_bit, ceiling_mv, floor_mv)
+            )
+            if wall_mv is not None:
+                messages.append(self._apply_wall_inline(native, gpu, wall_mv, rail_bit))
+            return "\n".join(m for m in messages if m)
+
+        parts = []
+        if ceiling_mv is not None:
+            parts.append(f"ceiling {ceiling_mv:g} mV")
+        if floor_mv is not None:
+            parts.append(f"floor {floor_mv:g} mV")
+        if wall_mv is not None:
+            parts.append(f"wall {wall_mv:g} mV")
+        self.app.console.append("[GUI] Applying P0 " + " / ".join(parts) + "…\n")
+        self.app.run_native_action("apply P0 volt-rail limits", apply_all)
+
+    def _apply_binds_inline(
+        self,
+        native,
+        gpu: str,
+        rail_bit: int,
+        ceiling_mv: Optional[float],
+        floor_mv: Optional[float],
+    ) -> list:
+        """Write pending ceiling (slots 1+2) and floor (slot 3) offsets.
+
+        Baselines come from the p0-load snapshot (status wall − control
+        offset per slot). Returns console messages; failures are logged,
+        not raised.
+        """
+        messages: list = []
+        if ceiling_mv is None and floor_mv is None:
+            return messages
+        slots = self._volt_slots_by_rail.get(rail_bit)
+        walls = self._volt_walls_by_rail.get(rail_bit)
+        if slots is None or walls is None:
+            messages.append(
+                "Warning: P0 bind offsets skipped — no VoltRails slot snapshot "
+                "for this rail (re-read get-volt-rail-info)."
+            )
+            return messages
+        vbios_off, vrm_off, min_off = slots
+        vbios_wall, vrm_wall, min_wall = walls
+
+        if ceiling_mv is not None:
+            target_uV = int(round(ceiling_mv * 1000))
+            for slot, base_wall, name in (
+                (1, vbios_wall - vbios_off, "VBIOS wall"),
+                (2, vrm_wall - vrm_off, "VRM wall"),
+            ):
+                # Baseline wall = 0 → the driver does not expose this wall on
+                # the rail (mobile vbios wall is the common case). Writing an
+                # offset against a nonexistent wall is undefined — leave that
+                # slot untouched and the ceiling rides the other wall.
+                if base_wall <= 0:
+                    messages.append(
+                        f"P0 ceiling: {name} not exposed on this rail "
+                        f"(baseline 0) — slot {slot} left uncontrolled."
+                    )
+                    continue
+                offset = target_uV - base_wall
+                try:
+                    r = native.set_volt_rail_slot_offset(
+                        gpu, rail_bit, slot, offset, None
+                    )
+                except Exception as exc:
+                    messages.append(f"Warning: slot {slot} ({name}) failed: {exc}")
+                    continue
+                applied = int(r.get("applied_value", offset) or offset)
+                messages.append(
+                    f"P0 ceiling → {name} offset {applied} µV (wall = {ceiling_mv:g} mV)."
+                )
+        if floor_mv is not None:
+            if min_wall <= 0:
+                messages.append(
+                    "P0 floor: VMIN min-hold not exposed on this rail "
+                    "(baseline 0) — slot 3 left uncontrolled."
+                )
+                return messages
+            floor_mv = max(450.0, floor_mv)
+            target_uV = int(round(floor_mv * 1000))
+            base_min = min_wall - min_off
+            offset = target_uV - base_min
+            try:
+                r = native.set_volt_rail_slot_offset(gpu, rail_bit, 3, offset, None)
+            except Exception as exc:
+                messages.append(f"Warning: VMIN floor failed: {exc}")
+            else:
+                applied = int(r.get("applied_value", offset) or offset)
+                messages.append(
+                    f"P0 floor → VMIN offset {applied} µV (min hold = {floor_mv:g} mV)."
+                )
+        # Refresh the p0 snapshot so handles/indicators/baselines track the
+        # new walls (forced: the walls themselves moved).
+        self.app.after(0, lambda: self.ensure_p0_bounds(gpu, force=True))
+        return messages
 
     def _on_wall_applied(self, eff_mv: float, rail_bit: Optional[int] = None) -> None:
         """Update the solid effective line after a wall SET lands.

@@ -251,6 +251,80 @@ pub fn fetch_gpu_type(info: &GpuInfo) -> Result<GpuType, Error> {
     Ok(detect_gpu_type(&info.name, &info.codename))
 }
 
+/// 补全 Linux libnvidia-api 不实现的身份查询，消灭 get-info 的 "Unknown"。
+///
+/// 依据（RTX PRO 6000 Blackwell Server / 580.173.02 活体探针，
+/// nvapi-rs tests/blackwell_pro6000_identity_live.rs + 审计
+/// docs/reverse-engineering/nvapi/blackwell-pro6000-580-173-02-audit.md）：
+/// - `NvAPI_GPU_GetGPUType` rc=-3（NoImplementation）
+/// - `NvAPI_GPU_GetSystemType` rc=-3
+/// - `NvAPI_GPU_GetFoundry` rc=-104（NotSupported）
+/// - `NvAPI_GPU_GetRamType` 正常返回（GDDR7=16，枚举已补）
+///
+/// 推导规则（只填确有依据的，宁缺毋滥）：
+/// - **gpu_type**：nvoc 只枚举 PCIe 独立卡（PhysicalGpu 句柄），Unknown →
+///   Discrete 是安全推导。
+/// - **foundry**：GB/GH/AD/GA/TU1/GP/GV 系全部为 TSMC 代工（2016 起
+///   NVIDIA 大芯片公开事实；GB202 = TSMC 4N 级）。其他 codename 不猜。
+/// - **system_type**：NVAPI 词表只有 Laptop/Desktop（1/2），没有 server 值
+///   ——Windows 上服务器卡也落这两档。名称含 Laptop/Notebook → Laptop，
+///   否则 → Desktop（机箱级语义；"Server Edition" 属桌面型机箱家族）。
+pub fn fill_identity_gaps(info: &mut GpuInfo) {
+    let (gpu_type, foundry, system_type) = derive_identity_gaps(
+        &info.name,
+        &info.codename,
+        info.gpu_type,
+        info.foundry,
+        info.system_type,
+    );
+    info.gpu_type = gpu_type;
+    info.foundry = foundry;
+    info.system_type = system_type;
+}
+
+/// [`fill_identity_gaps`] 的纯推导核（对原始字段运算，便于单测）。
+fn derive_identity_gaps(
+    name: &str,
+    codename: &str,
+    gpu_type: ::nvapi::GpuType,
+    foundry: ::nvapi::Foundry,
+    system_type: ::nvapi::SystemType,
+) -> (::nvapi::GpuType, ::nvapi::Foundry, ::nvapi::SystemType) {
+    use ::nvapi::{Foundry, GpuType as NvGpuType, SystemType};
+
+    let gpu_type = if gpu_type == NvGpuType::Unknown {
+        NvGpuType::Discrete
+    } else {
+        gpu_type
+    };
+
+    let foundry = if foundry == Foundry::Unknown && tsmc_codename(codename) {
+        Foundry::TSMC
+    } else {
+        foundry
+    };
+
+    let system_type = if system_type == SystemType::Unknown {
+        let combined = format!("{name}{codename}");
+        if combined.contains("Laptop") || combined.contains("Notebook") {
+            SystemType::Laptop
+        } else {
+            SystemType::Desktop
+        }
+    } else {
+        system_type
+    };
+
+    (gpu_type, foundry, system_type)
+}
+
+/// TSMC 代工的芯片 codename 前缀（公开工艺归属，非逆向值）。
+fn tsmc_codename(codename: &str) -> bool {
+    ["GB", "GH", "AD", "GA", "TU1", "GP", "GV"]
+        .iter()
+        .any(|p| codename.starts_with(p))
+}
+
 // ─────────────────────── GpuOcParams: OC 扫描参数 ────────────────────────────
 
 /// GPU 世代专属的超频扫描固定参数
@@ -668,6 +742,46 @@ impl GpuType {
         )
     }
 
+    /// 是否为 Ampere（30 系）之前的世代：消费 20/16/10/9 系 + Kepler/Fermi、
+    /// Turing/Pascal 工作站、Volta/Pascal/TuringTesla/Kepler/Fermi 服务器。
+    /// Unknown 一并归入（保守拒绝）。
+    ///
+    /// 0xAFFC2279 毒族 power-channel SET（ClientTgpWattSetStatus / compact
+    /// 写核心）在这些世代上触发驱动故障：nvlddmkm 事件 14/153 错误波，
+    /// 值先落地随后整张控制表回默认（2026-10-07 四机抓包 + 事件日志对齐：
+    /// TU106 r610 桌面、GP100 r582 TCC 均复现；Ampere GA106 r590 返回 Ok
+    /// 零故障）。set-pwr-cur-limit 的 NVAPI 路径默认按此拒绝，--force 放行
+    /// 调试。本判定按名字/codename 推导；持有 nvapi-rs `Architecture` 的
+    /// 调用方可用更权威的 `Architecture::is_pre_ampere`（按 GetArchInfo
+    /// 架构 ID 判定）。
+    pub fn is_pre_ampere(&self) -> bool {
+        matches!(
+            self,
+            GpuType::Mobile20Series
+                | GpuType::Desktop20Series
+                | GpuType::Mobile16Series
+                | GpuType::Desktop16Series
+                | GpuType::Mobile10Series
+                | GpuType::Desktop10Series
+                | GpuType::Mobile9Series
+                | GpuType::Desktop9Series
+                | GpuType::MobileKepler
+                | GpuType::DesktopKepler
+                | GpuType::MobileFermi
+                | GpuType::DesktopFermi
+                | GpuType::WorkstationTuring
+                | GpuType::WorkstationPascal
+                | GpuType::WorkstationKepler
+                | GpuType::WorkstationFermi
+                | GpuType::ServerVolta
+                | GpuType::ServerPascal
+                | GpuType::ServerTuringTesla
+                | GpuType::ServerKepler
+                | GpuType::ServerFermi
+                | GpuType::Unknown
+        )
+    }
+
     /// 是否为 Ada Lovelace 世代（消费 40 系 / 工作站）。
     ///
     /// 注意：本判定**不再**参与任何 fabric 补偿或命名——谁随谁动由驱动
@@ -941,6 +1055,99 @@ mod tests {
         assert!(!GpuType::WorkstationPascal.is_legacy_voltage());
         assert!(!GpuType::Desktop10Series.is_legacy_voltage());
     }
+
+    /// set-pwr-cur-limit 的 pre-Ampere 拒绝门（2026-10-07 定案：0xAFFC2279
+    /// SET 在 30 系之前触发 nvlddmkm 14/153 故障波、值先落地后整表回默认；
+    /// Ampere+ 返回 Ok 零故障）。四台实测机各占一行；Unknown 保守拒绝。
+    #[test]
+    fn pre_ampere_refusal_classification() {
+        // 实测故障机：Turing 桌面（TU106）+ Pascal TCC（GP100）
+        assert!(detect_gpu_type("NVIDIA GeForce RTX 2070", "TU106").is_pre_ampere());
+        assert!(detect_gpu_type("Tesla P100-PCIE-16GB", "GP100").is_pre_ampere());
+        // Ampere+ 对照：GA106 3060、AD107 4060 Laptop 不拒
+        assert!(!detect_gpu_type("NVIDIA GeForce RTX 3060", "GA106").is_pre_ampere());
+        assert!(!detect_gpu_type("NVIDIA GeForce RTX 4060 Laptop GPU", "AD107").is_pre_ampere());
+        // 代际覆盖：20/16/10/9 系拒，30/40/50 系不拒；Unknown 保守拒
+        assert!(GpuType::Desktop20Series.is_pre_ampere());
+        assert!(GpuType::Mobile16Series.is_pre_ampere());
+        assert!(GpuType::Mobile9Series.is_pre_ampere());
+        assert!(GpuType::WorkstationTuring.is_pre_ampere());
+        assert!(GpuType::ServerVolta.is_pre_ampere());
+        assert!(!GpuType::Desktop30Series.is_pre_ampere());
+        assert!(!GpuType::Mobile40Series.is_pre_ampere());
+        assert!(!GpuType::Desktop50Series.is_pre_ampere());
+        assert!(!GpuType::WorkstationAmpere.is_pre_ampere());
+        assert!(!GpuType::ServerHopper.is_pre_ampere());
+        assert!(GpuType::Unknown.is_pre_ampere());
+    }
+
+    /// GB202 同芯片跨产品线识别：消费 5090 与工作站 PRO 6000 共用 codename，
+    /// 分类必须走产品名称关键词而非芯片代号（真机约束：两张 RTX PRO 6000
+    /// Blackwell Server / 580.173.02 与消费 5090 同为 GB202）。
+    #[test]
+    fn detect_gb202_splits_by_product_name_not_codename() {
+        // 消费 5090：GeForce 关键词排除 professional → Desktop50Series
+        assert_eq!(
+            detect_gpu_type("NVIDIA GeForce RTX 5090", "GB202"),
+            GpuType::Desktop50Series
+        );
+        // 工作站 PRO 6000：RTX + 6000 且无 GeForce → WorkstationBlackwell
+        assert_eq!(
+            detect_gpu_type(
+                "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+                "GB202GL-A"
+            ),
+            GpuType::WorkstationBlackwell
+        );
+        // 本机真机名（live codename 是 GB202GL-A，带 GL 后缀）
+        assert_eq!(
+            detect_gpu_type("NVIDIA RTX PRO 6000 Blackwell Server Edition", "GB202GL-A"),
+            GpuType::WorkstationBlackwell
+        );
+        // codename 缺失时（探测面异常）5090 仍不得误入工作站分支
+        assert_eq!(
+            detect_gpu_type("NVIDIA GeForce RTX 5090", ""),
+            GpuType::Unknown
+        );
+    }
+
+    /// fill_identity_gaps：Linux libnvidia-api 未实现的三个身份字段按证据
+    /// 推导（活体依据见函数 doc）。
+    #[test]
+    fn fill_identity_gaps_derives_unimplemented_fields() {
+        use ::nvapi::{Foundry, GpuType as NvGpuType, SystemType};
+        let (gt, fd, st) = derive_identity_gaps(
+            "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "GB202GL-A",
+            NvGpuType::Unknown,
+            Foundry::Unknown,
+            SystemType::Unknown,
+        );
+        assert_eq!(gt, NvGpuType::Discrete);
+        assert_eq!(fd, Foundry::TSMC);
+        // NVAPI 词表无 server 档 → 机箱级归 Desktop（函数 doc 的取舍）
+        assert_eq!(st, SystemType::Desktop);
+
+        // codename 不在 TSMC 表 → foundry 保持 Unknown（宁缺毋滥）
+        let (_, fd, _) = derive_identity_gaps(
+            "Some Card",
+            "ZZ99",
+            NvGpuType::Unknown,
+            Foundry::Unknown,
+            SystemType::Unknown,
+        );
+        assert_eq!(fd, Foundry::Unknown);
+
+        // Laptop 名 → Laptop 档
+        let (_, _, st) = derive_identity_gaps(
+            "NVIDIA GeForce RTX 5090 Laptop GPU",
+            "GB202",
+            NvGpuType::Unknown,
+            Foundry::Unknown,
+            SystemType::Unknown,
+        );
+        assert_eq!(st, SystemType::Laptop);
+    }
 }
 
 // ────────────────────── Fabric 域附着关系与净值求解 ──────────────────────
@@ -1063,12 +1270,16 @@ impl FabricDomain {
 
     /// Map a `vf_curve` segment's empirical domain hint into this space.
     /// `Gpc`, the Pascal server dual-plane pair (`GpcPreOc`/`GpcOc` — both
-    /// are GPC-physical planes of one curve), `Mem`/`Disp`/`Unknown` have
-    /// no fabric WRITE bit of their own.
+    /// are GPC-physical planes of one curve), `Mem`/`Disp`/`PwrUproc`/
+    /// `Unknown` have no fabric WRITE bit of their own.
     pub fn from_hint(hint: ClkVfDomainHint) -> Option<Self> {
         match hint {
             ClkVfDomainHint::Xbar => Some(FabricDomain::Xbar),
             ClkVfDomainHint::Msd => Some(FabricDomain::Msd),
+            // Blackwell promotes SYS to its own main curve (bank0 383..509)
+            // — exactly MSD's Ada move, so it leaves the ext roster the
+            // same way
+            ClkVfDomainHint::Sys => Some(FabricDomain::Sys),
             _ => None,
         }
     }

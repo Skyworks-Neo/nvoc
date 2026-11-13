@@ -116,6 +116,16 @@ def _make_tab(p0: dict | None = _sample_p0(), gpu: str = "GPU0") -> VFCurveTab:
     tab._live_text = None
     tab._live_volt = None
     tab._live_freq = None
+    tab._volt_slots_by_rail = {}  # __init__ 的 per-rail 电压状态(__new__ 绕过时需手摆)
+    tab._volt_walls_by_rail = {}
+    tab._pending_ceiling_mv = None
+    tab._pending_floor_mv = None
+    tab._dragging_ceiling = False
+    tab._dragging_floor = False
+    tab._ceiling_handle = None
+    tab._floor_handle = None
+    tab._p0_ceiling_vline = None
+    tab._p0_floor_vline = None
     # Real figure so _redraw actually creates axvline artists.
     tab.fig, tab.ax = plt.subplots()
     tab.fig.patch.set_facecolor("#2b2b2b")

@@ -6,7 +6,7 @@
 
 This matrix is the canonical compatibility reference for NVOC backend commands exposed by `nvoc-cli`. Autoscan-specific rows describe the `auto-optimizer` flows that depend on the same NVAPI/NVML backend capabilities.
 
-Note: Testing on Linux NV proprietary drivers shows that NVAPI on Linux is essentially a compatibility layer for /lib/x86_64-linux-gnu/libnvidia-api.so.1, directly leading to /lib/x86_64-linux-gnu/libnvidia-ml.so.1. In other words, on Linux, only the NVML interface actually exists. However, due to NVAPI's "translation" of NVML, for professional cards (such as P100, V100, etc.)—since NVOC's primary GPU ID index uses the NVAPI interface—support on Linux may be better than on Windows.
+Note: Testing on Linux NV proprietary drivers shows that NVAPI and NVML are **not** layered on each other — libnvidia-api.so.1 and libnvidia-ml.so.1 are two parallel, independent user-mode RM clients, each issuing `NV_ESC_RM_CONTROL` (ioctl `0xC020462A`) to `/dev/nvidiactl` directly with no shared layer in between (see `docs/reverse-engineering/nvml/binding-strategy-evaluation.md`). On Linux both control surfaces therefore reach the same kernel ABI, so for professional cards (such as P100, V100, etc.)—since NVOC's primary GPU ID index uses the NVAPI interface—support on Linux may be better than on Windows.
 Additionally, the core frequency range lock of NVML is actually a voltage range lock at the bottom. We have verified through dynamic adjustment—after adjusting the frequency offset, the frequency range lock still takes effect within the working point of the voltage range corresponding to the frequency range at the time of setting, rather than the original frequency range.
 
 ### **NVAPI Interface + Desktop Consumer GPUs:**

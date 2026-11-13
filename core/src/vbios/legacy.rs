@@ -62,7 +62,7 @@
 //! RE 过程：MBT 为 .NET+Babel 混淆程序集，ILSpy 反编译见
 //! `~/ida-scratch/mbt-decomp/`（2026-09-07）。
 
-use super::error::Error;
+use crate::error::Error;
 
 /// perf v0x40 子条目域序（与 MBT Clock States 页、nvoc 域命名一致）。
 pub const PERF_DOMAINS: [&str; 9] = [
@@ -236,6 +236,19 @@ pub fn find_bit_signature(data: &[u8], base: usize) -> Option<usize> {
         .windows(BIT_SIG.len())
         .position(|w| w == BIT_SIG)
         .map(|p| base + p)
+}
+
+/// 镜像内指针 → 文件偏移（含 EFI 间隙重定位）：目标越过 PC 镜像末尾时
+/// 加 EFI 镜像长度（与 falcon/perf-ptr 槽同规则）。供 BIT token 级子表
+/// 解析共用。
+pub(crate) fn relocate_ptr(data: &[u8], img: usize, target: u32) -> Option<usize> {
+    let raw = img.checked_add(usize::try_from(target).ok()?)?;
+    let (pc_end, gap) = efi_gap_after_pc(data, img);
+    if raw > pc_end.saturating_sub(1) {
+        raw.checked_add(gap)
+    } else {
+        Some(raw)
+    }
 }
 
 /// BIT 目录条目。
@@ -1214,7 +1227,10 @@ pub fn find_perf_ptr_map(data: &[u8]) -> Result<PerfPtrMap, Error> {
 
 // ── Falcon ucode 表（BIT 'p' v2/len4；kepler-ada hexpat 完整布局）────────
 
-/// Falcon ucode 应用 ID（hexpat `UCodeApplicationID`）。
+/// Falcon ucode 应用 ID（hexpat `UCodeApplicationID`；FWSEC 双轨见
+/// open-gpu-kernel-modules kernel_gsp_fwsec.c：
+/// `FALCON_UCODE_ENTRY_APPID_FWSEC_DBG 0x45 / _FWSEC_PROD 0x85`，驱动按
+/// debug 模式二选一加载，TU106 实测两者描述符几何逐位相同）。
 pub fn falcon_app_name(app: u8) -> Option<&'static str> {
     Some(match app {
         0x01 => "PRE_OS",
@@ -1226,6 +1242,8 @@ pub fn falcon_app_name(app: u8) -> Option<&'static str> {
         0x09 => "HULK",
         0x13 => "DEVINIT_FMC",
         0x14 => "POSTLTSSM",
+        0x45 => "FWSEC_DBG",
+        0x85 => "FWSEC_PROD",
         _ => return None,
     })
 }
@@ -1240,22 +1258,72 @@ pub fn falcon_target_name(target: u8) -> Option<&'static str> {
     })
 }
 
-/// Falcon ucode 描述符（`FALCON_UCODE_DESC_V1` 头部字段；IMEM/DMEM blob
-/// 不提取——那是加密/压缩载荷，RE 属 falcon 工具链范畴）。
+/// Falcon ucode 描述符（`FALCON_UCODE_DESC_V1/V2/V3` 三版布局，字段
+/// 语义以 open-gpu-kernel-modules kernel_gsp_fwsec.c 为准；IMEM/DMEM
+/// blob 本体不提取——那是加密/压缩载荷，RE 属 falcon 工具链范畴）。
+///
+/// vDesc 头（bit0=版本存在、bit2=加密、[15:8]=版本、[31:16]=描述符长）：
+/// V1（Fermi-Pascal，无头时字段直接从 0 起）；
+/// V2（Turing；TU106 1.rom 实测 FWSEC_PROD：InterfaceOffset@16 插在
+/// IMEM 字段前、IMEMSecBase@32/SecSize@36 是 IMEM 内安全代码区，
+/// 0x300+0x9300=0x9600=IMEMLoadSize 自洽）；
+/// V3（GA10x+，gpu-unlock vbios_610.c 44B：PKCDataOffset@8 替代
+/// UncompressedSize、签名区跟在描述符后，每条 384B RSA3K）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FalconUcodeDesc {
     /// 首字节 bit0：是否带 4 字节 version/crypt 头。
     pub has_version_crypt: bool,
     /// version/crypt 头里的版本（无头时 0）。
     pub version: u8,
+    /// vDesc[31:16]：描述符全长（V1=40、V2=60、V3=44）。
+    pub desc_size: u16,
+    /// vDesc bit2：载荷加密位。
+    pub encrypted: bool,
     pub stored_size: u32,
     pub uncompressed_size: u32,
     /// 代码入口点。
     pub virtual_entry: u32,
     pub imem_phys_base: u32,
     pub imem_load_size: u32,
+    /// V2/V3；V1 为 0。
+    pub imem_virt_base: u32,
+    /// V2：IMEM 内安全代码区（V3 并入整段 HS 加载，为 0）。
+    pub imem_sec_base: u32,
+    pub imem_sec_size: u32,
     pub dmem_phys_base: u32,
     pub dmem_load_size: u32,
+    /// V2/V3：DMEM 内 RM 接口块偏移；V1 为 0。
+    pub interface_offset: u32,
+    /// V3：描述符后 384B/条的 PKC 签名条数与版本位图（V2 为 0）。
+    pub signature_count: u8,
+    pub signature_versions: u16,
+}
+
+/// FWSEC DMEM 内的 RM interface 表 + FRTS mapper（gpu-unlock vbios_610.c
+/// `gpu_unlock_fwsec_patch_frts` 的结构面）。interface 表：`[ver=1, hdr=4,
+/// stride=8, count]` + count×(u32 type, u32 dest)；type=4 → mapper
+/// （magic "DMAP"、V3：cmd_offset/cmd_size @+8/+12、+44 处 0x15 标记由
+/// 驱动运行时写入——ROM 内通常为 0）。FRTS 命令块 44B 在 ROM 内通常全零
+/// （驱动填页号/页数后执行）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FwsecDmem {
+    /// interface 表的 DMEM 内偏移（= 描述符 InterfaceOffset）。
+    pub interface_offset: u32,
+    /// interface 表版本（应为 1）。
+    pub interface_version: u8,
+    pub entries: Vec<(u32, u32)>,
+    /// type=4 条目指向的 mapper（DMEM 内偏移）。
+    pub mapper_offset: Option<u32>,
+    /// mapper 头 magic（"DMAP"）。
+    pub mapper_magic: Option<[u8; 4]>,
+    pub mapper_version: Option<u16>,
+    pub mapper_size: Option<u16>,
+    pub mapper_cmd_offset: Option<u32>,
+    pub mapper_cmd_size: Option<u32>,
+    /// mapper+44 的标记 dword（ROM 内 0 = 驱动运行时写 0x15）。
+    pub mapper_marker: Option<u32>,
+    /// FRTS 命令块原始字节（≤64B 截取）。
+    pub command_hex: Option<String>,
 }
 
 /// Falcon ucode 表一条目（`FALCON_UCODE_TABLE_ENTRY_V1`，6B）。
@@ -1269,6 +1337,10 @@ pub struct FalconUcodeEntry {
     pub desc_ptr: u32,
     /// DescPtr 非零时的描述符头。
     pub desc: Option<FalconUcodeDesc>,
+    /// 描述符绝对偏移（重定位后；FWSEC DMEM 解析锚点）。
+    pub desc_offset: usize,
+    /// V2/V3 有 InterfaceOffset 时解析出的 DMEM interface + mapper。
+    pub dmem: Option<FwsecDmem>,
 }
 
 /// Falcon ucode 表（PMU/devinit/安全许可证固件清单）。
@@ -1352,6 +1424,8 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
         let target_id = r.u8(e + 1)?;
         let desc_ptr = r.u32(e + 2)?;
         let mut desc = None;
+        let mut dmem = None;
+        let mut desc_offset = 0usize;
         if desc_ptr != 0 {
             // DescPtr 为表内相对（hexpat: @parent + DescPtr - falcon_table_ptr）。
             let Ok(rel_ptr) = usize::try_from(ptr) else {
@@ -1361,27 +1435,103 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
                 continue;
             };
             let d = table_offset + rel_desc - rel_ptr;
-            // 字段最多用到 version/crypt 头(4) + 11 个 u32 的前 10 个(40)。
-            let has_version_crypt = data.get(d).copied().unwrap_or(0) & 1 != 0;
-            let field_base = d + if has_version_crypt { 4 } else { 0 };
-            if field_base + 40 <= data.len() {
+            desc_offset = d;
+            if d + 4 <= data.len() {
                 let rd = |a: usize| {
                     u32::from(data[a])
                         | u32::from(data[a + 1]) << 8
                         | u32::from(data[a + 2]) << 16
                         | u32::from(data[a + 3]) << 24
                 };
-                desc = Some(FalconUcodeDesc {
-                    has_version_crypt,
-                    version: if has_version_crypt { data[d + 1] } else { 0 },
-                    stored_size: rd(field_base),
-                    uncompressed_size: rd(field_base + 4),
-                    virtual_entry: rd(field_base + 8),
-                    imem_phys_base: rd(field_base + 12),
-                    imem_load_size: rd(field_base + 16),
-                    dmem_phys_base: rd(field_base + 32),
-                    dmem_load_size: rd(field_base + 36),
-                });
+                // vDesc 头：bit0=版本存在、bit2=加密、[15:8]=版本、[31:16]=长。
+                let vdesc = rd(d);
+                let has_version_crypt = vdesc & 1 != 0;
+                let version = if has_version_crypt {
+                    ((vdesc >> 8) & 0xff) as u8
+                } else {
+                    0
+                };
+                // 无 vDesc 头时字段从描述符 0 起读（Pascal PRE_OS 实测），
+                // 有头则跳过 4B；V1 与 V2/V3 的字段序在此处分叉。
+                let f = d + usize::from(has_version_crypt) * 4;
+                if f + 40 <= data.len() {
+                    let (
+                        interface_offset,
+                        imem_phys_base,
+                        imem_load_size,
+                        imem_virt_base,
+                        imem_sec_base,
+                        imem_sec_size,
+                        dmem_phys_base,
+                        dmem_load_size,
+                    ) = if version >= 3 {
+                        // V3 (GA10x+)：PKC@8、Interface@12、IMEMPhys@16、
+                        // IMEMLoad@20、Virt@24、DMEMPhys@28、DMEMLoad@32、
+                        // 签名区跟在描述符后（384B RSA3K/条）。
+                        (
+                            rd(f + 8),
+                            rd(f + 12),
+                            rd(f + 16),
+                            rd(f + 20),
+                            0,
+                            0,
+                            rd(f + 24),
+                            rd(f + 28),
+                        )
+                    } else if version == 2 {
+                        // V2 (Turing)：Interface@16、IMEMPhys@20、IMEMLoad@24、
+                        // Virt@28、SecBase@32、SecSize@36（TU106 实测自洽）。
+                        (
+                            rd(f + 12),
+                            rd(f + 16),
+                            rd(f + 20),
+                            rd(f + 24),
+                            rd(f + 28),
+                            rd(f + 32),
+                            if f + 48 <= data.len() { rd(f + 40) } else { 0 },
+                            if f + 52 <= data.len() { rd(f + 44) } else { 0 },
+                        )
+                    } else {
+                        // V1：IMEMPhys@12、IMEMLoad@16、DMEMPhys@32、DMEMLoad@36。
+                        (0, rd(f + 12), rd(f + 16), 0, 0, 0, rd(f + 32), rd(f + 36))
+                    };
+                    let (signature_count, signature_versions) =
+                        if version >= 3 && f + 42 <= data.len() {
+                            (
+                                data[f + 35],
+                                u16::from(data[f + 36]) | u16::from(data[f + 37]) << 8,
+                            )
+                        } else {
+                            (0, 0)
+                        };
+                    desc = Some(FalconUcodeDesc {
+                        has_version_crypt,
+                        version,
+                        desc_size: (vdesc >> 16) as u16,
+                        encrypted: vdesc & 4 != 0,
+                        stored_size: rd(f),
+                        uncompressed_size: rd(f + 4),
+                        virtual_entry: rd(f + 8),
+                        imem_phys_base,
+                        imem_load_size,
+                        imem_virt_base,
+                        imem_sec_base,
+                        imem_sec_size,
+                        dmem_phys_base,
+                        dmem_load_size,
+                        interface_offset,
+                        signature_count,
+                        signature_versions,
+                    });
+                    // 镜像 = 描述符全长之后；DMEM 段在 IMEM 载入后（
+                    // data_off = imem_load_size，gpu-unlock fw.image_off
+                    // = off + size 同式）。InterfaceOffset 为 DMEM 内偏移。
+                    let desc_len = usize::from((vdesc >> 16) as u16);
+                    if version >= 2 && interface_offset != 0 && desc_len > 0 && dmem_load_size > 0 {
+                        let dmem_abs = d + desc_len + imem_load_size as usize;
+                        dmem = parse_fwsec_dmem(data, dmem_abs, interface_offset);
+                    }
+                }
             }
         }
         out.push(FalconUcodeEntry {
@@ -1391,6 +1541,8 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
             target: falcon_target_name(target_id),
             desc_ptr,
             desc,
+            desc_offset,
+            dmem,
         });
     }
     Ok(Some(FalconTable {
@@ -1402,8 +1554,88 @@ pub fn find_falcon_table(data: &[u8]) -> Result<Option<FalconTable>, Error> {
     }))
 }
 
-// ── NVGI 头（程序员 dump 专有；GP104.rom 实测校准）───────────────────────
+/// 解析 FWSEC DMEM 内的 RM interface 表与 FRTS mapper（仅结构读取；
+/// 命令块在 ROM 内通常全零——页号/页数由驱动运行时填充）。
+fn parse_fwsec_dmem(data: &[u8], dmem_abs: usize, interface_offset: u32) -> Option<FwsecDmem> {
+    let iface = dmem_abs.checked_add(usize::try_from(interface_offset).ok()?)?;
+    if iface + 4 > data.len() {
+        return None;
+    }
+    let (ver, hdr, stride, count) = (
+        data[iface],
+        data[iface + 1],
+        data[iface + 2],
+        usize::from(data[iface + 3]),
+    );
+    if ver != 1 || hdr != 4 || stride != 8 || count == 0 || count > 16 {
+        return None;
+    }
+    let mut entries = Vec::new();
+    let mut mapper_offset = None;
+    for i in 0..count {
+        let e = iface + 4 + i * 8;
+        if e + 8 > data.len() {
+            break;
+        }
+        let kind = u32::from(data[e])
+            | u32::from(data[e + 1]) << 8
+            | u32::from(data[e + 2]) << 16
+            | u32::from(data[e + 3]) << 24;
+        let dest = u32::from(data[e + 4])
+            | u32::from(data[e + 5]) << 8
+            | u32::from(data[e + 6]) << 16
+            | u32::from(data[e + 7]) << 24;
+        if kind == 4 && mapper_offset.is_none() {
+            mapper_offset = Some(dest);
+        }
+        entries.push((kind, dest));
+    }
+    let mut dmem = FwsecDmem {
+        interface_offset,
+        interface_version: ver,
+        entries,
+        mapper_offset,
+        mapper_magic: None,
+        mapper_version: None,
+        mapper_size: None,
+        mapper_cmd_offset: None,
+        mapper_cmd_size: None,
+        mapper_marker: None,
+        command_hex: None,
+    };
+    if let Some(mo) = mapper_offset {
+        let m = dmem_abs.checked_add(usize::try_from(mo).ok()?)?;
+        if m + 48 <= data.len() {
+            let rd32 = |a: usize| {
+                u32::from(data[a])
+                    | u32::from(data[a + 1]) << 8
+                    | u32::from(data[a + 2]) << 16
+                    | u32::from(data[a + 3]) << 24
+            };
+            dmem.mapper_magic = Some([data[m], data[m + 1], data[m + 2], data[m + 3]]);
+            dmem.mapper_version = Some(u16::from(data[m + 4]) | u16::from(data[m + 5]) << 8);
+            dmem.mapper_size = Some(u16::from(data[m + 6]) | u16::from(data[m + 7]) << 8);
+            dmem.mapper_cmd_offset = Some(rd32(m + 8));
+            dmem.mapper_cmd_size = Some(rd32(m + 12));
+            dmem.mapper_marker = Some(rd32(m + 44));
+            if let (Some(co), Some(cs)) = (dmem.mapper_cmd_offset, dmem.mapper_cmd_size) {
+                let cb = dmem_abs.checked_add(usize::try_from(co).ok()?)?;
+                let n = usize::try_from(cs).unwrap_or(0).min(64);
+                if cb + n <= data.len() {
+                    dmem.command_hex = Some(
+                        data[cb..cb + n]
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect(),
+                    );
+                }
+            }
+        }
+    }
+    Some(dmem)
+}
 
+// ── NVGI 头（程序员 dump 专有；GP104.rom 实测校准）───────────────────────
 /// NVGI 根头（完整 flash dump 开头；NvAPI 镜像直接以 PC boot sector 开头
 /// 无此头）。
 ///
@@ -1813,8 +2045,35 @@ pub struct MemoryClockEntry {
     pub flags1: u8,
     /// MPLL SS 频率增量（0.01% 单位，最大 2.55%）。
     pub ref_mplls_freq_delta: u8,
-    /// 每 strap 一份的副本（`MEMORY_CLOCK_STRAP_ENTRY_11`；>12B 截断）。
-    pub straps: Vec<[u8; 12]>,
+    /// 每 strap 一份的时序/训练寄存器副本（命名见 [`MemoryClockStrap`]）。
+    pub straps: Vec<MemoryClockStrap>,
+}
+
+/// 一份 strap 副本（hexpat `MEMORY_CLOCK_STRAP_ENTRY_11` 的命名寄存器）。
+/// byte 0 是全表关联键：指向 MemTweak 表的条目（0xFF = 无时序集）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryClockStrap {
+    /// Memory Tweak Index → [`MemoryTweakTable::entries`] 下标（0xFF = None）。
+    pub tweak_timings_index: u8,
+    pub flags0: u8,
+    pub flags1: u8,
+    pub flags2: u8,
+    /// CMOS Clock Delay。
+    pub cmos_clock_delay: u8,
+    /// 非 write-training 时使用的写桶形移位器。
+    pub write_barrel_shift: u8,
+    /// 内部 VREFD 偏移控制（GDDR5 专属）。
+    pub vrefd_offsets: u8,
+    pub flags3: u8,
+    pub flags4: u8,
+    /// QUSE DDLL Trimmer（Bug 876127）。
+    pub quse_ddll: u8,
+    /// Flags5（strap 条目 ≥ 12B 时存在）。
+    pub flags5: Option<u8>,
+    /// Micron GDDR5X 内部核心电压偏移（Bug 200266342；≥ 12B）。
+    pub mrs14_micron_offset: Option<u8>,
+    /// 原始字节（表内 StrapEntrySize 截断到 ≤16B 携带）。
+    pub raw: Vec<u8>,
 }
 
 /// 内存时钟频段表（P+0x04；GPU Boost 前的显存频率档位 + 每 strap 训练/
@@ -1863,10 +2122,23 @@ pub fn find_memory_clock_table(data: &[u8]) -> Result<Option<MemoryClockTable>, 
             if sp + sesz > data.len() {
                 break;
             }
-            let mut row = [0u8; 12];
-            let n = sesz.min(12);
-            row[..n].copy_from_slice(&data[sp..sp + n]);
-            straps.push(row);
+            let raw = data[sp..sp + sesz.min(16)].to_vec();
+            let b = |i: usize| raw.get(i).copied().unwrap_or(0);
+            straps.push(MemoryClockStrap {
+                tweak_timings_index: b(0),
+                flags0: b(1),
+                flags1: b(2),
+                flags2: b(3),
+                cmos_clock_delay: b(4),
+                write_barrel_shift: b(5),
+                vrefd_offsets: b(6),
+                flags3: b(7),
+                flags4: b(8),
+                quse_ddll: b(9),
+                flags5: if sesz >= 12 { Some(b(10)) } else { None },
+                mrs14_micron_offset: if sesz >= 12 { Some(b(11)) } else { None },
+                raw,
+            });
         }
         entries.push(MemoryClockEntry {
             freq_min_raw: r.u16(e)?,
@@ -1902,6 +2174,133 @@ pub struct MemoryTweakTable {
     pub extended_entry_count: u8,
     /// 每组 = BaseEntrySize 字节 + ExtEntryCount×ExtEntrySize 寄存器。
     pub entries: Vec<Vec<u8>>,
+    /// v0x20 表的每组位段解码（NVRM 617.42 内嵌 RM `sub_1C67060` 读取路径
+    /// 逆向，MODS 4060 语料；v0x10 为空）。
+    pub decoded: Vec<MemoryTweakTiming>,
+}
+
+/// v0x20 base entry 位段解码。命名来源两档：
+/// - 硬件证据：`cl_*`（RAM 类型决定位段位置，RM 按 `ramtype==2` 切换）、
+///   `ccdl`/`ccds`（NVRM 字符串 "CCDL Value read from Config3"，写
+///   `NV_PFB_FBPA_GENERIC_MRS6_tCCD_L`；合法域按 RAM 类型 4..8 或 0）。
+/// - 结构证据：`paramN`（NVRM 输出结构 +N 偏移编号），语义未命名。
+///
+/// 布局：Config0..10 = 11×u32 @0x00..0x2B（BaseEntrySize ≥ 0x44 再加
+/// Config11..14 尾 dword，0x4A/0x4C/0x50 等更新代际走此分支）；word @0x2C；
+/// 6 bytes @0x2E..0x33。0x33 形状（`11d1w5b`）无 byte6（param49/54 缺）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryTweakTiming {
+    /// Config0..10（@0x00..0x2B）。
+    pub configs: [u32; 11],
+    /// @0x2C word 低 6 位。
+    pub param44: u8,
+    /// @0x2C word 位 6..12。
+    pub param45: u8,
+    /// @0x2E 位 0..2。
+    pub param36: u8,
+    /// @0x2E 位 6..7（RAM 类型表值 == 2 时作为 CL；3090/4090/2070 实测
+    /// 均随紧松单调）。
+    pub cl_ramtype2: u8,
+    /// @0x2E 位 4..5（其余 RAM 类型的 CL 候选）。
+    pub cl_otherram: u8,
+    /// @0x2F 位 0..1。
+    pub param35: u8,
+    /// @0x2F 位 2..4（RM 在特定旗标下同时送 param38/39）。
+    pub param114: u8,
+    /// @0x2F 位 5..7。
+    pub param115: u8,
+    /// @0x30 位 0..2。
+    pub param40: u8,
+    /// @0x30 位 3..7。
+    pub param41: u8,
+    /// @0x31 位 0..2。
+    pub param46: u8,
+    /// @0x31 位 3。
+    pub param50: u8,
+    /// @0x31 位 7。
+    pub param51: u8,
+    /// @0x32 位 0..2。
+    pub param47: u8,
+    /// @0x32 位 3。
+    pub param52: u8,
+    /// @0x32 位 4..6。
+    pub param48: u8,
+    /// @0x32 位 7。
+    pub param53: u8,
+    /// @0x33 位 4..6（BaseEntrySize < 0x34 时为 0）。
+    pub param49: u8,
+    /// @0x33 位 0..3（同上）。
+    pub param54: u8,
+    /// Config3 byte3 低 nibble（@0x0F）——CCDL/tCCD_L。
+    pub ccdl: u8,
+    /// Config3 byte3 高 nibble（@0x0F）——CCDS（NVRM `HIBYTE(Config3)&0xF`）。
+    pub ccds: u8,
+    /// 扩展段寄存器覆盖 (addr 低 24 位, value)。
+    pub reg_overrides: Vec<(u32, u32)>,
+}
+
+/// 解码一组 v0x20 base entry（`entry` 为该组完整字节，前缀即 base 段）。
+/// 位段提取与 NVRM 617.42 `sub_1C67060`（MODS 4060 内嵌 RM @0x1c67060）
+/// 逐一对照；Config3 的 CCDL/CCDS 见 `sub_23DCAE0`（MRS6 tCCD_L 写入）。
+pub fn decode_memtweak_timing(entry: &[u8], ext_entry_size: u8) -> Option<MemoryTweakTiming> {
+    if entry.len() < 0x34 {
+        return None;
+    }
+    let u32_at = |o: usize| -> u32 {
+        u32::from_le_bytes(entry[o..o + 4].try_into().expect("bounds checked"))
+    };
+    let mut configs = [0u32; 11];
+    for (i, c) in configs.iter_mut().enumerate() {
+        *c = u32_at(i * 4);
+    }
+    let word = u16::from_le_bytes(entry[0x2C..0x2E].try_into().expect("bounds checked"));
+    let b2e = entry[0x2E];
+    let b2f = entry[0x2F];
+    let b30 = entry[0x30];
+    let b31 = entry[0x31];
+    let b32 = entry[0x32];
+    let b33 = entry.get(0x33).copied().unwrap_or(0);
+    let cfg3 = u32_at(0x0C);
+    let reg_overrides = if ext_entry_size >= 12 {
+        entry[0x34..]
+            .chunks_exact(12)
+            .map(|c| {
+                (
+                    u32::from_le_bytes(c[0..4].try_into().expect("12B chunk")) & 0x00FF_FFFF,
+                    u32::from_le_bytes(c[4..8].try_into().expect("12B chunk")),
+                )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some(MemoryTweakTiming {
+        configs,
+        param44: (word & 0x3F) as u8,
+        param45: ((word >> 6) & 0x7F) as u8,
+        param36: b2e & 7,
+        cl_ramtype2: b2e >> 6,
+        cl_otherram: (b2e >> 4) & 3,
+        param35: b2f & 3,
+        param114: (b2f >> 2) & 7,
+        param115: b2f >> 5,
+        param40: b30 & 7,
+        param41: b30 >> 3,
+        param46: b31 & 7,
+        param50: (b31 >> 3) & 1,
+        param51: b31 >> 7,
+        param47: b32 & 7,
+        param52: (b32 >> 3) & 1,
+        param48: (b32 >> 4) & 7,
+        param53: b32 >> 7,
+        param49: (b33 >> 4) & 7,
+        param54: b33 & 0xF,
+        // RM sub_23DCAE0：CCDL = Config3 byte3 低 nibble、CCDS = 其高 nibble
+        //（`*(BYTE*)(a3+271)&0xF` / `HIBYTE(*(DWORD*)(a3+268))&0xF`）。
+        ccdl: ((cfg3 >> 24) & 0xF) as u8,
+        ccds: ((cfg3 >> 28) & 0xF) as u8,
+        reg_overrides,
+    })
 }
 
 /// 定位并解析内存时序表（BIT 'P' +0x08）。
@@ -1928,6 +2327,14 @@ pub fn find_memory_tweak_table(data: &[u8]) -> Result<Option<MemoryTweakTable>, 
         }
         entries.push(data[e..e + stride].to_vec());
     }
+    let decoded = if ver == 0x20 {
+        entries
+            .iter()
+            .filter_map(|e| decode_memtweak_timing(e, ees as u8))
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(Some(MemoryTweakTable {
         table_offset: t,
         ver,
@@ -1935,6 +2342,7 @@ pub fn find_memory_tweak_table(data: &[u8]) -> Result<Option<MemoryTweakTable>, 
         extended_entry_size: r.u8(t + 3)?,
         extended_entry_count: r.u8(t + 4)?,
         entries,
+        decoded,
     }))
 }
 
@@ -4245,8 +4653,13 @@ mod tests {
         assert!(
             mc.entries
                 .iter()
-                .any(|e| e.straps.iter().any(|s| s[0] == 0xFF))
+                .any(|e| e.straps.iter().any(|s| s.tweak_timings_index == 0xFF))
         );
+        // 命名 strap 寄存器：首频段 strap 0 的字段拆解与原始字节一致。
+        let s0 = &mc.entries[0].straps[0];
+        assert_eq!(s0.raw[0], s0.tweak_timings_index);
+        assert_eq!(s0.raw[4], s0.cmos_clock_delay);
+        assert_eq!(s0.raw[9], s0.quse_ddll);
 
         let mt = find_memory_tweak_table(&d)
             .expect("bit ok")
@@ -4306,6 +4719,71 @@ mod tests {
                 vec!["PRE_OS", "PRIMARY_DEVINIT_ENGINE", "FIRMWARE_SEC_LIC"]
             );
         }
+    }
+
+    /// Turing FWSEC 双轨对照：TU106 1.rom（RTX 2070, 90.06.18）。
+    /// kernel_gsp_fwsec.c 的 `APPID_FWSEC_DBG 0x45 / _FWSEC_PROD 0x85`，
+    /// V2 描述符几何两者逐位相同：IMEMLoad 0x9600、SecBase 0x300 +
+    /// SecSize 0x9300（=IMEMLoad，自洽）、Interface 0xdc；0x89
+    /// （target 0x05）是驱动侧未命名的第三条 FWSEC 族条目。
+    #[test]
+    fn falcon_turing_fwsec_when_present() {
+        if let Ok(d) = std::fs::read("../1.rom") {
+            let f = find_falcon_table(&d).expect("bit ok").expect("falcon");
+            let named: Vec<(u8, &str)> = f
+                .entries
+                .iter()
+                .filter_map(|e| e.application.map(|a| (e.application_id, a)))
+                .collect();
+            assert!(named.contains(&(0x01, "PRE_OS")));
+            assert!(named.contains(&(0x08, "LS_UDE")));
+            assert!(named.contains(&(0x45, "FWSEC_DBG")));
+            assert!(named.contains(&(0x85, "FWSEC_PROD")));
+            let prod = f
+                .entries
+                .iter()
+                .find(|e| e.application_id == 0x85)
+                .and_then(|e| e.desc.as_ref())
+                .expect("fwsec prod desc");
+            assert_eq!(prod.version, 2);
+            assert_eq!(prod.desc_size, 0x3c);
+            assert_eq!(prod.stored_size, 0x9a10);
+            assert_eq!(prod.interface_offset, 0xdc);
+            assert_eq!(prod.imem_load_size, 0x9600);
+            assert_eq!(prod.imem_sec_base, 0x300);
+            assert_eq!(prod.imem_sec_size, 0x9300);
+            assert_eq!(prod.imem_sec_base + prod.imem_sec_size, prod.imem_load_size);
+            assert_eq!(prod.signature_count, 0); // V2 无 V3 式 PKC 签名区
+
+            // FWSEC DMEM 侧（gpu-unlock vbios_610.c patch_frts 同源）：
+            // interface v1/hdr4/stride8 双条目，type=4 → "DMAP" mapper
+            // V3（cmd 64B @DMEM 0x3D0）；命令块 ROM 内全零（驱动填页号）。
+            let dmem = prod_dmem(&f);
+            let d = dmem.expect("fwsec prod dmem");
+            assert_eq!(d.interface_offset, 0xDC);
+            assert_eq!(d.interface_version, 1);
+            assert_eq!(d.entries, vec![(4, 0x380), (5, 0x364)]);
+            assert_eq!(d.mapper_offset, Some(0x380));
+            assert_eq!(d.mapper_magic, Some(*b"DMAP"));
+            assert_eq!(d.mapper_version, Some(3));
+            assert_eq!(d.mapper_size, Some(64));
+            assert_eq!(d.mapper_cmd_offset, Some(0x3D0));
+            assert_eq!(d.mapper_cmd_size, Some(64));
+            assert_eq!(d.mapper_marker, Some(0));
+            assert!(
+                d.command_hex
+                    .as_deref()
+                    .is_some_and(|h| h.bytes().all(|b| b == b'0'))
+            );
+        }
+    }
+
+    /// 0x85（FWSEC_PROD）条目的 DMEM 结构（测试辅助）。
+    fn prod_dmem(f: &FalconTable) -> Option<&FwsecDmem> {
+        f.entries
+            .iter()
+            .find(|e| e.application_id == 0x85)
+            .and_then(|e| e.dmem.as_ref())
     }
 
     /// GM200（Maxwell）对照：P+0x10 指向 ver 0x24 表（传感器条目 +

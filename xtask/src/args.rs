@@ -111,7 +111,9 @@ BUILD OPTIONS:
                          same invocations as release.yml)
 
 SETUP OPTIONS:
-    --install-missing    Install missing tools (uv) instead of only reporting
+    --install-missing    Also install missing tools that need root (uv, the
+                         distro tkinter package); tkinter repairs that are
+                         purely user-space run without this flag
     --dry-run            Print the commands setup would run
 
 TEST OPTIONS:

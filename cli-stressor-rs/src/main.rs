@@ -1044,7 +1044,10 @@ fn apply_file_config_to_args(
     if let (true, Some(v)) = (!cli_set.contains("gpu_uuid"), &parsed.gpu_uuid) {
         args.gpu_uuid = Some(v.clone());
     }
-    if let (true, Some(v)) = (!cli_set.contains("get_cuda_uuid_list"), parsed.get_cuda_uuid_list) {
+    if let (true, Some(v)) = (
+        !cli_set.contains("get_cuda_uuid_list"),
+        parsed.get_cuda_uuid_list,
+    ) {
         args.get_cuda_uuid_list = v;
     }
     Ok(())
@@ -1466,12 +1469,21 @@ fn render_grouped_help() -> String {
             ("--minor-mixture-rate <P>", "small-size op probability"),
             ("--stream-mode <M>", "single/dual/triple CUDA streams"),
             ("--disable-fp8", "skip FP8 precision"),
-            ("--mem-mode <M>", "verify set: auto/resident (L2) / stream (slab)"),
+            (
+                "--mem-mode <M>",
+                "verify set: auto/resident (L2) / stream (slab)",
+            ),
             ("--no-verify", "disable the ride-on-load SDC detectors"),
             ("--verify-continue-on-error", "count faults, don't abort"),
-            ("--verify-resident-interval <S>", "resident-check cadence [2.0]"),
+            (
+                "--verify-resident-interval <S>",
+                "resident-check cadence [2.0]",
+            ),
             ("--verify-slab", "address-walk slab (VRAM beyond L2)"),
-            ("--gemm-full-check-max-size <N>", "full-recompute GEMM edge cap [1024]"),
+            (
+                "--gemm-full-check-max-size <N>",
+                "full-recompute GEMM edge cap [1024]",
+            ),
             ("--skip-self-test", "skip detector injection self-test"),
             ("--gpu-generate", "device-side buffer generation"),
         ],
@@ -1495,7 +1507,10 @@ fn render_grouped_help() -> String {
             ("--pulse-high-hz <HZ>", "sweep ceiling [1000]"),
             ("--pulse-octaves <N>", "log2-octave climb rate [3]"),
             ("--pulse-spin-idle", "spin idle windows (kHz range)"),
-            ("--vulkan-queue-priority-low", "render queue at LOW priority"),
+            (
+                "--vulkan-queue-priority-low",
+                "render queue at LOW priority",
+            ),
         ],
     );
     section(
@@ -1518,7 +1533,10 @@ fn render_grouped_help() -> String {
             ("--gpu-uuid <UUID>", "select GPU by UUID"),
             ("--pci-bus <ADDR>", "select GPU by PCI address"),
             ("--get-cuda-uuid-list", "list CUDA devices (UUID) and exit"),
-            ("--get-vulkan-index", "selected GPU's Vulkan index, then exit"),
+            (
+                "--get-vulkan-index",
+                "selected GPU's Vulkan index, then exit",
+            ),
             ("--json-out <PATH>", "machine-readable verdict JSON"),
             ("--sdc-log <PATH>", "JSONL SDC events + telemetry"),
             ("--config/--profile", "runtime TOML / built-in profile"),
@@ -1543,7 +1561,10 @@ fn handle_get_vulkan_index(args: &Args) -> ! {
         match cli_stressor_rs::vulkan_gfx_stressor::get_vulkan_device_index(selection) {
             Ok(()) => std::process::exit(0),
             Err(err) => {
-                eprintln!("{}", stylize(&format!("get-vulkan-index failed: {err}"), true));
+                eprintln!(
+                    "{}",
+                    stylize(&format!("get-vulkan-index failed: {err}"), true)
+                );
                 std::process::exit(2);
             }
         }
@@ -1551,7 +1572,10 @@ fn handle_get_vulkan_index(args: &Args) -> ! {
     #[cfg(not(feature = "vulkan"))]
     {
         let _ = args;
-        eprintln!("{}", stylize("--get-vulkan-index requires --features vulkan", true));
+        eprintln!(
+            "{}",
+            stylize("--get-vulkan-index requires --features vulkan", true)
+        );
         std::process::exit(2);
     }
 }
@@ -2510,7 +2534,10 @@ pub fn run_from_args() {
     }
     #[cfg(not(feature = "cuda"))]
     if args.get_cuda_uuid_list {
-        eprintln!("{}", stylize("--get-cuda-uuid-list requires --features cuda", true));
+        eprintln!(
+            "{}",
+            stylize("--get-cuda-uuid-list requires --features cuda", true)
+        );
         std::process::exit(2);
     }
 
@@ -2582,7 +2609,10 @@ pub fn run_from_args() {
         handle_get_vulkan_index(&args);
     }
     if args.get_cuda_uuid_list {
-        eprintln!("{}", stylize("--get-cuda-uuid-list requires --features cuda", true));
+        eprintln!(
+            "{}",
+            stylize("--get-cuda-uuid-list requires --features cuda", true)
+        );
         std::process::exit(2);
     }
 

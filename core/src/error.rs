@@ -9,6 +9,7 @@ quick_error! {
         VfpUnsupported {display("VFP unsupported")}
         DeviceNotFound {display("no matching device found")}
         Io(err: io::Error) {from()source(err)display("IO error: {}", err)}
+        Json(err: serde_json::Error) {from()source(err)display("JSON error: {}", err)}
         ParseInt(err: ParseIntError) {from()source(err)display("{}", err)}
         ParseFloat(err: ParseFloatError) {from()source(err)display("{}", err)}
         Str(err: &'static str) {from()display("{}", err)}

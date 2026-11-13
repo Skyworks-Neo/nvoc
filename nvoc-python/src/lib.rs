@@ -7,17 +7,18 @@ use nvoc_core::{
     DisableNvapiThermalSim, FabricTree, FanCurvePointReadout, GetFanCurves, GpuTarget, GpuType,
     NvapiPStateNativeLock, NvapiPerfFreqCap, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost,
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
-    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiClkDomainFreq,
+    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiAdcDevices, QueryNvapiClkDomainFreq,
     QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomains,
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling,
-    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTgpWattRange, QueryNvapiThermalSim,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVbiosImage, QueryVfpPointVoltage, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock,
-    ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl,
-    ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate,
+    QueryNvapiFramerateLimit, QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter,
+    QueryNvapiPowerCeiling, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
+    QueryNvapiTgpWattRange, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage,
+    QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
+    ResetFanCurve, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
     ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
     ResetVfpFrequencyLock, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
     SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanCurve, SetFanPercent,
@@ -27,16 +28,17 @@ use nvoc_core::{
     SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
     SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost, VfPointType, VfpResetDomain,
-    clk_vf_delta_for_target, detect_gpu_type, discover_targets, fetch_gpu_type, nvapi_status_name,
-    nvml_pstate_to_str, parse_nvml_fan_control_policy, run, try_parse_nvml_pstate,
+    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
+    SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
+    VfPointType, VfpResetDomain, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
+    fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
+    try_parse_nvml_pstate,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Number, Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -517,6 +519,30 @@ fn decode_perf_flags(bits: u32) -> Vec<&'static str> {
     }
 }
 
+/// Decode an `NVAPI_GPU_PERF_DECREASE` bitmask (`GetPerfDecreaseInfo`
+/// 0x7F7F4600) into reason names; empty = `["None"]` (running at full speed).
+/// Deliberately excludes the `UNKNOWN = 0x00` alias — it carries no bit.
+fn decode_perf_decrease_flags(bits: u32) -> Vec<&'static str> {
+    use ::nvapi::PerformanceDecreaseReason as Pdr;
+    let named: &[(&'static str, u32)] = &[
+        ("THERMAL_PROTECTION", Pdr::THERMAL_PROTECTION.bits()),
+        ("POWER_CONTROL", Pdr::POWER_CONTROL.bits()),
+        ("AC_BATTERY", Pdr::AC_BATTERY.bits()),
+        ("API_TRIGGERED", Pdr::API_TRIGGERED.bits()),
+        ("INSUFFICIENT_POWER", Pdr::INSUFFICIENT_POWER.bits()),
+    ];
+    let reasons: Vec<&'static str> = named
+        .iter()
+        .filter(|(_, bit)| bits & bit != 0)
+        .map(|(name, _)| *name)
+        .collect();
+    if reasons.is_empty() {
+        vec!["None"]
+    } else {
+        reasons
+    }
+}
+
 /// Build a JSON array of strings from the given reason names.
 fn text_array_value(items: Vec<&str>) -> Value {
     Value::Array(items.into_iter().map(text).collect())
@@ -822,10 +848,34 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     let all_clocks_mhz = if let Some(all) = &status.all_clocks
         && !all.is_empty()
     {
-        let entries = all
+        let mut entries = all
             .iter()
             .map(|(domain, freq)| (domain.to_string(), f64_value(freq.0 as f64 / 1000.0)))
             .collect::<Vec<_>>();
+        // DIRECT-MEASURE FALLBACK for fabric domains GetAllClocks V2 leaves
+        // zero: "driver doesn't populate the slot" ≠ "unmeasurable". Live on
+        // RTX PRO 6000 Blackwell Server (580.173.02): Utils(22) reads a real
+        // fixed 107.9 MHz via 0x527FC458 but its GetAllClocks slot stays 0,
+        // so the TUI FCLK line silently dropped it. Probe the FCLK domain set
+        // that GetAllClocks omitted and fill from the direct measure; refused
+        // domains (-104 / freq 0) are skipped. Cost: only the missing slots,
+        // a handful of small controls per poll.
+        const FABRIC_BITS: [u32; 11] = [0, 1, 2, 21, 3, 5, 25, 6, 7, 20, 22];
+        let populated: std::collections::BTreeSet<i32> =
+            all.keys().map(|domain| domain.repr()).collect();
+        let missing: Vec<u32> = FABRIC_BITS
+            .iter()
+            .copied()
+            .filter(|bit| !populated.contains(&(*bit as i32)))
+            .collect();
+        if !missing.is_empty()
+            && let Ok(Some(freqs)) = run(target, QueryNvapiClkDomainFreqsBatch { domains: missing })
+                .map(|report| report.output)
+        {
+            for f in freqs.into_iter().filter(|f| f.freq_mhz > 0.0) {
+                entries.push((f.domain.to_string(), f64_value(f.freq_mhz)));
+            }
+        }
         Some(value_object(
             entries.iter().map(|(k, v)| (k.as_str(), v.clone())),
         ))
@@ -1023,14 +1073,40 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     // low-frequency info-path read (mirroring the power-limit cache) could
     // restore them if a consumer needs them.
     // (previously: target_nvml_device + pcie_throughput/replay_counter/link_gen)
+    // Entries carry their mode: PstateSelect pins surface as vfp_lock_pstate,
+    // ManualFrequency as vfp_lock_khz, ManualVoltage as vfp_lock_mv (the old
+    // code took the FIRST numeric display, mislabeling a frequency lock as mV).
     map.insert(
         "vfp_locked".into(),
         bool_value(!status.vfp_locks.is_empty()),
     );
     for lock in status.vfp_locks.values() {
-        if let Some(mv) = first_number_in_display(lock) {
-            map.insert("vfp_lock_mv".into(), f64_value(mv));
-            break;
+        match lock.mode {
+            nvoc_core::ClockLockMode::PstateSelect => {
+                if let Some(p) = lock.select_pstate {
+                    let pins = map
+                        .entry("vfp_lock_pins".to_string())
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    if let Value::Array(pin_list) = pins {
+                        pin_list.push(text(format!("P{p}")));
+                    }
+                }
+            }
+            nvoc_core::ClockLockMode::ManualFrequency => {
+                if let Some(v) = lock.lock_value
+                    && let Some(khz) = first_number_in_display(v)
+                {
+                    map.insert("vfp_lock_khz".into(), f64_value(khz));
+                }
+            }
+            nvoc_core::ClockLockMode::ManualVoltage => {
+                if let Some(v) = lock.lock_value
+                    && let Some(mv) = first_number_in_display(v)
+                {
+                    map.insert("vfp_lock_mv".into(), f64_value(mv));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1070,6 +1146,43 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("pcie_lanes".into(), u64_value(lanes as u64));
     }
 
+    // Linux-only poll-time NVML backfill (RTX PRO 6000 Blackwell, 2026-10-11):
+    // the Windows ban above is an nvml.dll D3cold stale-handle failure mode;
+    // Linux server drivers have no such transition path (live-verified by the
+    // audit's NVML sweep, reverse/linux-580.173.02/probe/nvml-sweep2.txt).
+    // Fills the two dashboard rows the Linux shim leaves empty:
+    // - VRAM: NVAPI GetMemoryInfo unimplemented (get-status "Memory: N/A")
+    // - PCIe link gen + replay counter: GpuStatus carries lanes only
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(nvml) = target.nvml() {
+            if status.memory.is_none()
+                && let Some((used_kib, total_kib, free_kib)) =
+                    nvoc_core::nvml::query_nvml_memory_kib(nvml, target.id.0)
+            {
+                map.insert(
+                    "vram".into(),
+                    value_object([
+                        ("total_kib", u64_value(total_kib)),
+                        ("used_kib", u64_value(used_kib)),
+                        ("free_kib", u64_value(free_kib)),
+                    ]),
+                );
+            }
+            let (cur_gen, max_gen) = nvoc_core::nvml::query_nvml_pcie_link_gen(nvml, target.id.0);
+            if let Some(g) = cur_gen {
+                map.insert("pcie_link_gen".into(), u64_value(g as u64));
+            }
+            if let Some(g) = max_gen {
+                map.insert("pcie_max_link_gen".into(), u64_value(g as u64));
+            }
+            if let Some(replay) = nvoc_core::nvml::query_nvml_pcie_replay_counter(nvml, target.id.0)
+            {
+                map.insert("pcie_replay_counter".into(), u64_value(replay as u64));
+            }
+        }
+    }
+
     // NVAPI perf / throttle-limit flags (raw bitset; overlaps NVML throttle
     // reasons). `limits_decoded` is the same mask rendered as reason names so
     // consumers (TUI/CLI) don't each have to re-decode the bits.
@@ -1085,6 +1198,77 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             ),
         ]),
     );
+
+    // NVAPI-side performance-decrease reasons (`GetPerfDecreaseInfo`
+    // 0x7F7F4600 — thermal/power/AC-battery/API/insufficient-power). Raw
+    // bitset plus decoded names, mirroring the `perf` block above; the
+    // dashboard can now show WHY the GPU is below peak, not just that it is.
+    {
+        let bits = status.performance_decrease.bits();
+        map.insert(
+            "perf_decrease".into(),
+            value_object([
+                ("raw", u64_value(bits as u64)),
+                ("flags", text_array_value(decode_perf_decrease_flags(bits))),
+            ]),
+        );
+    }
+
+    // Power topology (`ClientPowerTopologyGetStatus` 0xEDCF624E): per-channel
+    // percentage-of-limit (Total/Normalized power). Percent-of-limit, not
+    // watts — pair with `power_w` for the absolute reading.
+    if !status.power.is_empty() {
+        let entries = status
+            .power
+            .iter()
+            .map(|(channel, share)| (channel.to_string(), percent_value(*share)))
+            .collect::<Vec<_>>();
+        map.insert(
+            "power_topology".into(),
+            value_object(entries.iter().map(|(k, v)| (k.as_str(), v.clone()))),
+        );
+    }
+
+    // PowerMonitor v4 decoded channel table (GetInfo 0xC12EB19E + GetStatus
+    // 0xF40238EF): per-channel rail identity + live raw readings. The
+    // friendly rail name comes from the three-layer merged resolver
+    // (AmpereOC → RTSS → GPU-Z); `raw_status` units are not yet validated —
+    // display-grade watts stay on `power_w` / `power_rails_w`.
+    if let Some(channels) = &status.power_monitor {
+        let entries = channels
+            .iter()
+            .map(|c| {
+                let mut obj = vec![
+                    ("byte_offset", u64_value(c.byte_offset as u64)),
+                    ("channel_type", u64_value(c.channel_type as u64)),
+                    ("pwr_rail", u64_value(c.pwr_rail as u64)),
+                    (
+                        "name",
+                        match c.friendly_name() {
+                            Some(n) => text(n),
+                            None => Value::Null,
+                        },
+                    ),
+                    ("volt_fixed_uv", u64_value(c.volt_fixed_uv as u64)),
+                ];
+                if let Some(s) = &c.raw_status {
+                    obj.push((
+                        "raw_status",
+                        value_object([
+                            ("pwr_avg", u64_value(s.pwr_avg as u64)),
+                            ("pwr_min", u64_value(s.pwr_min as u64)),
+                            ("pwr_max", u64_value(s.pwr_max as u64)),
+                            ("curr", u64_value(s.curr as u64)),
+                            ("volt", u64_value(s.volt as u64)),
+                            ("energy", u64_value(s.energy)),
+                        ]),
+                    ));
+                }
+                value_object(obj)
+            })
+            .collect::<Vec<_>>();
+        map.insert("power_monitor_channels".into(), Value::Array(entries));
+    }
 
     Ok(Value::Object(map))
 }
@@ -1222,7 +1406,12 @@ fn normalize_settings(target: &GpuTarget<'_>) -> PyResultValue {
 
     let mut locks = Map::new();
     for (id, lock) in &settings.vfp_locks {
-        if let Some(value) = lock.lock_value {
+        if lock.mode == nvoc_core::ClockLockMode::PstateSelect {
+            locks.insert(
+                id.to_string(),
+                text(format!("pin P{}", lock.select_pstate.unwrap_or(0))),
+            );
+        } else if let Some(value) = lock.lock_value {
             locks.insert(id.to_string(), text(value));
         }
     }
@@ -1886,7 +2075,7 @@ fn query_public_vftable(
 
 /// vBIOS GPU Boost 2.0 阶梯（Maxwell/Kepler 的 "隐藏" V/F 曲线）。
 ///
-/// 读整片 VBIOS 镜像后用 core 的 legacy_vbios_parser 解码 boost-ladder
+/// 读整片 VBIOS 镜像后用 core 的 vbios::legacy 解码 boost-ladder
 /// v0x10 表（BIT 'P'+0x34）：79×5B 点（u16 半 MHz + vmap 电压索引）+ pstate
 /// 边界标记。`curve_start_index`/`curve_end_index` 从标记推导出实际曲线窗口
 /// （最低速 pstate 边界 .. P0 边界，GM200 = 5..74；两端之外的点是低功耗态
@@ -1908,7 +2097,7 @@ fn query_vbios_vf_curve(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
 /// 阶梯表 → 绘图就绪 payload（GUI/TUI 共用）。表缺失（非 Maxwell/Kepler
 /// 世代镜像）时返回 `{"available": false}` 而非报错，便于上层静默隐藏。
 fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
-    let vb = nvoc_core::legacy_vbios_parser::parse(image)?;
+    let vb = nvoc_core::vbios::legacy::parse(image)?;
     let Some(ladder) = &vb.boost_ladder else {
         return Ok(Value::Object(
             [("available".to_string(), Value::Bool(false))]
@@ -1967,7 +2156,7 @@ fn bios_vf_curve_value(image: &[u8]) -> Result<Value, nvoc_core::Error> {
                 [
                     (
                         "pstate".to_string(),
-                        nvoc_core::legacy_vbios_parser::pstate_display_name(m.pstate_raw)
+                        nvoc_core::vbios::legacy::pstate_display_name(m.pstate_raw)
                             .map(Value::String)
                             .unwrap_or(Value::Null),
                     ),
@@ -2247,6 +2436,7 @@ fn set_tgp_watt(
             SetNvapiTgpWatt {
                 watts,
                 policy_index,
+                force: false,
             },
         )
         .map_err(to_py_err)?;
@@ -2429,6 +2619,22 @@ fn query_target_temp_policies(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> 
 }
 
 #[pyfunction]
+fn query_framerate_limit(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        // DRS is driver-global; the target only anchors the standard pipeline.
+        let fps = run(target, QueryNvapiFramerateLimit)
+            .map_err(to_py_err)?
+            .output;
+        Ok(value_object([
+            ("fps", fps.map(Value::from).unwrap_or(Value::Null)),
+            ("drs_setting_id", Value::from("0x10834FEE")),
+            ("unset", Value::from(fps.is_none())),
+        ]))
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
 fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     let value = with_target(gpu, "nvapi", |target| {
         let rails = run(target, QueryNvapiVoltRails).map_err(to_py_err)?.output;
@@ -2537,6 +2743,82 @@ fn query_volt_rails(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
     py_value(py, &value)
 }
 
+/// ADC sense-device directory + live rail-voltage readings
+/// (`ClockAdcDevicesGetInfo` 0x68789E2A / `GetStatus` 0x43D9B26A) — the only
+/// dynamic per-channel µV rail-voltage stream besides VoltRails; useful as an
+/// independent cross-check of the voltage axis on V/F pages. Returns
+/// `{"supported": false}` when the part exposes no ADC devices. In `status`
+/// entries, `value_uv` holds the rail voltage in µV (live cross-certified:
+/// channels track different rails idle-vs-load); `vf_point_id_a/b` are
+/// VF-table voltage-point index hypotheses, NOT temperatures.
+#[pyfunction]
+fn query_adc_devices(py: Python<'_>, gpu: &str) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let devices = run(target, QueryNvapiAdcDevices).map_err(to_py_err)?.output;
+        Ok(match devices {
+            Some(d) => value_object([
+                ("supported", Value::from(true)),
+                ("info", serde_json::to_value(&d.info).unwrap_or(Value::Null)),
+                (
+                    "status",
+                    match &d.status {
+                        Some(s) => serde_json::to_value(s).unwrap_or(Value::Null),
+                        None => Value::Null,
+                    },
+                ),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// NVAPI interface doctor — resolve the interface IDs nvoc depends on, one
+/// `QueryInterface` null-check each (mVolt+-style self-inventory; see
+/// `docs/reverse-engineering/nvapi/mvolt-plus-nvapi-surface.md`). Safe with
+/// no GPU present and on any driver: resolved handlers are never called.
+/// Primary use is post-driver-bump triage — "which surfaces did this driver
+/// stop exporting" — before running any write path against 617.42-class
+/// drivers.
+#[pyfunction]
+fn nvapi_doctor(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let report = nvoc_core::nvapi_doctor_report();
+    let entries = report
+        .entries
+        .iter()
+        .map(|e| {
+            value_object([
+                ("name", text(e.name)),
+                ("id", text(format!("0x{:08X}", e.id))),
+                ("resolved", Value::from(e.resolved)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let value = value_object([
+        (
+            "interface_version",
+            match &report.interface_version {
+                Some(v) => text(v),
+                None => Value::Null,
+            },
+        ),
+        (
+            "load_error",
+            match &report.load_error {
+                Some(v) => text(v),
+                None => Value::Null,
+            },
+        ),
+        ("all_resolved", Value::from(report.all_resolved())),
+        (
+            "missing",
+            Value::Array(report.missing().into_iter().map(text).collect()),
+        ),
+        ("entries", Value::Array(entries)),
+    ]);
+    py_value(py, &value)
+}
+
 /// Set a volt-rail to an ABSOLUTE target voltage (millivolts, may carry one
 /// decimal — e.g. 1082.5 mV for the 2.5 mV rail step on 10/20-series). The
 /// required µV offset is derived inside the operation from the live control
@@ -2584,6 +2866,97 @@ fn set_volt_rail_target(
                 ("previous_offset_uV", Value::from(a.previous_offset_uV)),
                 ("applied_uV", Value::from(a.applied_uV)),
                 ("effective_wall_uV", Value::from(a.effective_wall_uV)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Write ONE melonVolt payload slot (0..5) of a volt-rail control entry as a
+/// raw µV offset. Slot semantics (P100/582.41-pinned + user A/B): 0 = uV
+/// operating offset, 1 = VBIOS max wall offset, 2 = VRM max wall offset,
+/// 3 = VMIN/min-hold offset; 4/5 honored as-is (no known use; -300 crashed
+/// 4060L/610, -100..-200 observed safe).
+#[pyfunction]
+fn set_volt_rail_slot_offset(
+    py: Python<'_>,
+    gpu: &str,
+    rail_bit: u32,
+    slot: usize,
+    offset_u_v: i32,
+    expect_type: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            SetNvapiVoltRailSlot {
+                rail_bit,
+                slot,
+                value_uV: offset_u_v,
+                expected_type: expect_type,
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(a) => value_object([
+                ("applied", Value::from(true)),
+                ("rail_bit", Value::from(a.rail_bit)),
+                ("slot", Value::from(a.slot)),
+                ("previous", Value::from(a.previous)),
+                ("applied_value", Value::from(a.applied)),
+                ("vrm_max_wall_uV", Value::from(a.vrm_max_wall_uV)),
+                ("min_hold_uV", Value::from(a.min_hold_uV)),
+            ]),
+            None => value_object([("supported", Value::from(false))]),
+        })
+    })?;
+    py_value(py, &value)
+}
+
+/// Zero melonVolt payload slots back to stock. Default (slot = None) resets
+/// the mapped slots 0..3; passing a slot resets only that one (0..5 honored
+/// as-is per user choice).
+#[pyfunction]
+fn reset_volt_rail_limit(
+    py: Python<'_>,
+    gpu: &str,
+    rail_bit: u32,
+    slot: Option<usize>,
+    expect_type: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    let value = with_target(gpu, "nvapi", |target| {
+        let out = run(
+            target,
+            ResetNvapiVoltRailLimit {
+                rail_bit,
+                slot,
+                expected_type: expect_type,
+            },
+        )
+        .map_err(to_py_err)?
+        .output;
+        Ok(match out {
+            Some(a) => value_object([
+                ("applied", Value::from(true)),
+                ("rail_bit", Value::from(a.rail_bit)),
+                (
+                    "resets",
+                    Value::Array(
+                        a.resets
+                            .iter()
+                            .map(|r| {
+                                value_object([
+                                    ("slot", Value::from(r.slot)),
+                                    ("previous", Value::from(r.previous)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+                ("vrm_max_wall_uV", Value::from(a.vrm_max_wall_uV)),
+                ("min_hold_uV", Value::from(a.min_hold_uV)),
             ]),
             None => value_object([("supported", Value::from(false))]),
         })
@@ -5113,12 +5486,657 @@ fn reset_all(py: Python<'_>, gpu: &str, domain: Option<&str>) -> PyResult<()> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Profile bridge (`nvoc_core::profile`) — mirrors the `nvoc profile` CLI
+// surface. Every function is identity-bound to the requested GPU: slots are
+// stored under (and verified against) the GPU's UUID + fingerprint.
+// ---------------------------------------------------------------------------
+
+fn profile_store_or_err(root: Option<&str>) -> PyResult<nvoc_core::profile::ProfileStore> {
+    match root {
+        Some(dir) => Ok(nvoc_core::profile::ProfileStore::new(dir)),
+        None => nvoc_core::profile::ProfileStore::default_root()
+            .map(nvoc_core::profile::ProfileStore::new)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string())),
+    }
+}
+
+fn profile_err<T>(result: Result<T, nvoc_core::Error>) -> PyResult<T> {
+    result.map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
+fn profile_now_utc() -> PyResult<String> {
+    nvoc_core::profile::now_utc().map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
+fn profile_domain_list(raw: Option<&str>) -> PyResult<Option<Vec<nvoc_core::profile::DomainKind>>> {
+    match raw {
+        None => Ok(None),
+        Some(raw) => {
+            let mut domains = Vec::new();
+            for part in raw.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let domain = nvoc_core::profile::DomainKind::parse(part).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "unknown profile domain {part:?} (expected one of: {})",
+                        nvoc_core::profile::DomainKind::ALL
+                            .iter()
+                            .map(|d| d.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                })?;
+                domains.push(domain);
+            }
+            Ok(Some(domains))
+        }
+    }
+}
+
+fn profile_identity_value(identity: &nvoc_core::profile::GpuIdentity) -> Value {
+    let mut item = Map::new();
+    item.insert("uuid".into(), identity.uuid.clone().into());
+    item.insert(
+        "device_id".into(),
+        identity
+            .fingerprint
+            .device_id
+            .map(|v| Value::Number(Number::from(v)))
+            .into(),
+    );
+    item.insert(
+        "subsystem_id".into(),
+        identity
+            .fingerprint
+            .subsystem_id
+            .map(|v| Value::Number(Number::from(v)))
+            .into(),
+    );
+    item.insert(
+        "vbios_version".into(),
+        identity.fingerprint.vbios_version.clone().into(),
+    );
+    item.insert(
+        "model_name".into(),
+        identity.fingerprint.model_name.clone().into(),
+    );
+    item.insert(
+        "driver_version".into(),
+        identity.fingerprint.driver_version.clone().into(),
+    );
+    Value::Object(item)
+}
+
+fn profile_verdict_text(check: &nvoc_core::profile::IdentityCheck) -> String {
+    check.to_string()
+}
+
+fn profile_outcome_value(outcome: &nvoc_core::profile::DomainOutcome) -> Value {
+    match outcome {
+        nvoc_core::profile::DomainOutcome::Applied { verified } => {
+            json!({"state": "applied", "verified": verified})
+        }
+        nvoc_core::profile::DomainOutcome::Failed { error, rolled_back } => {
+            json!({"state": "failed", "error": error, "rolled_back": rolled_back})
+        }
+        nvoc_core::profile::DomainOutcome::Unavailable { error } => {
+            json!({"state": "unavailable", "error": error})
+        }
+    }
+}
+
+#[pyfunction]
+fn profile_capture_stock(
+    py: Python<'_>,
+    gpu: &str,
+    note: Option<String>,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        with_target(&gpu, &backends, |target| {
+            let (_, identity) = profile_err(nvoc_core::profile::live_identity(target))?;
+            let mut backup = profile_err(nvoc_core::profile::capture_backup_now(
+                target,
+                &identity,
+                profile_now_utc()?,
+            ))?;
+            backup.note = note;
+            let path = profile_err(store.save_stock(&identity, &backup))?;
+            Ok(json!({
+                "stock": path.display().to_string(),
+                "captured_utc": backup.captured_utc,
+                "power_watts": backup.power_watts,
+                "fan_curves": backup.fan_curves.len(),
+                "identity": profile_identity_value(&identity),
+            }))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn profile_save(
+    py: Python<'_>,
+    gpu: &str,
+    name: &str,
+    domains: Option<&str>,
+    note: Option<String>,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let name = name.trim().to_owned();
+    let domains_raw = domains.map(str::to_owned);
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        let wanted = match profile_domain_list(domains_raw.as_deref())? {
+            Some(list) => list,
+            None => nvoc_core::profile::DomainKind::DEFAULT_CAPTURE.to_vec(),
+        };
+        with_target(&gpu, &backends, |target| {
+            let (_, identity) = profile_err(nvoc_core::profile::live_identity(target))?;
+            let context = nvoc_core::profile::capture_context(target, identity);
+            let settings = run(target, QueryGpuSettings)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+                .output;
+            let captured = nvoc_core::profile::capture_domains(&settings, &context, &wanted);
+            if captured.present().is_empty() {
+                return Err(PyRuntimeError::new_err(
+                    "nothing captured: the driver reported no values for the requested domains",
+                ));
+            }
+            let baseline = nvoc_core::profile::capture_baseline(&settings, context.power.as_ref());
+            let mut doc = nvoc_core::profile::new_profile_doc(
+                name.clone(),
+                note,
+                &context,
+                captured,
+                Some(baseline),
+                profile_now_utc()?,
+            );
+            if store.exists(&context.identity, &name) {
+                let existing = profile_err(store.load_profile(&context.identity, &name))?;
+                doc.created_utc = existing.created_utc;
+            }
+            let path = profile_err(store.save_profile(&context.identity, &doc))?;
+            Ok(json!({
+                "saved": path.display().to_string(),
+                "name": doc.name,
+                "domains": doc.domains.present().iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                "identity": profile_identity_value(&context.identity),
+            }))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn profile_list(
+    py: Python<'_>,
+    gpu: &str,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        with_target(&gpu, &backends, |target| {
+            let (_, identity) = profile_err(nvoc_core::profile::live_identity(target))?;
+            let listed = profile_err(store.list_profiles(&identity))?;
+            let active = profile_err(store.active_name(&identity))?;
+            let mut slots = Vec::new();
+            for entry in listed {
+                match entry {
+                    Ok(doc) => slots.push(json!({
+                        "name": doc.name,
+                        "domains": doc.domains.present().iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                        "created_utc": doc.created_utc,
+                        "updated_utc": doc.updated_utc,
+                        "note": doc.note,
+                        "active": active.as_deref() == Some(doc.name.as_str()),
+                    })),
+                    Err(reason) => slots.push(json!({"error": reason})),
+                }
+            }
+            Ok(json!({
+                "identity": profile_identity_value(&identity),
+                "store": store.gpu_dir(&identity).display().to_string(),
+                "stock_present": profile_err(store.load_stock(&identity))?.is_some(),
+                "backup_last_present": profile_err(store.load_backup_last(&identity))?.is_some(),
+                "active": active,
+                "slots": slots,
+            }))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn profile_show(
+    py: Python<'_>,
+    gpu: &str,
+    name: &str,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let name = name.trim().to_owned();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        with_target(&gpu, &backends, |target| {
+            let (_, identity) = profile_err(nvoc_core::profile::live_identity(target))?;
+            let doc = profile_err(store.load_profile(&identity, &name))?;
+            serde_json::to_value(&doc).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn profile_diff(
+    py: Python<'_>,
+    gpu: &str,
+    name: &str,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let name = name.trim().to_owned();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        with_target(&gpu, &backends, |target| {
+            let (_, identity) = profile_err(nvoc_core::profile::live_identity(target))?;
+            let doc = profile_err(store.load_profile(&identity, &name))?;
+            let settings = run(target, QueryGpuSettings)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+                .output;
+            let mut entries = Vec::new();
+            for domain in doc.domains.present() {
+                let (in_sync, detail) = match domain {
+                    nvoc_core::profile::DomainKind::ClockOffsets => (
+                        doc.domains.clock_offsets.as_ref() == Some(&settings.pstate_deltas),
+                        "pstate delta map",
+                    ),
+                    nvoc_core::profile::DomainKind::PublicVftable => (
+                        doc.domains.public_vftable.as_ref() == settings.vfp.as_ref(),
+                        "per-point delta map",
+                    ),
+                    nvoc_core::profile::DomainKind::Voltage => {
+                        let expected = doc.domains.voltage.as_ref();
+                        let boost_ok = expected.and_then(|v| v.boost_percent)
+                            == settings.voltage_boost
+                            || expected.and_then(|v| v.boost_percent).is_none();
+                        let ov_ok = expected
+                            .map(|v| v.overvolt_uv == settings.overvolt)
+                            .unwrap_or(true);
+                        (boost_ok && ov_ok, "boost percent / overvolt")
+                    }
+                    nvoc_core::profile::DomainKind::VoltRails => {
+                        let recorded = doc
+                            .domains
+                            .volt_rails
+                            .as_ref()
+                            .map(|v| v.len())
+                            .unwrap_or(0);
+                        (recorded == 0, "volt-rail offsets (recorded intent only)")
+                    }
+                    nvoc_core::profile::DomainKind::Power => {
+                        (true, "recorded intent (live watts not compared)")
+                    }
+                    nvoc_core::profile::DomainKind::Thermal => (
+                        doc.domains.thermal.as_ref() == Some(&settings.sensor_limits),
+                        "sensor limit table",
+                    ),
+                    nvoc_core::profile::DomainKind::Fan => {
+                        let recorded = doc
+                            .domains
+                            .fan
+                            .as_ref()
+                            .map(|f| f.curves.len())
+                            .unwrap_or(0);
+                        (recorded == 0, "fan curves (recorded intent only)")
+                    }
+                    nvoc_core::profile::DomainKind::ClkDomainOffsets => {
+                        let live = run(target, QueryNvapiClkDomains)
+                            .ok()
+                            .and_then(|report| report.output);
+                        let all_match = match (doc.domains.clk_domain_offsets.as_ref(), live) {
+                            (Some(records), Some(live_control)) => records.iter().all(|record| {
+                                live_control
+                                    .entries
+                                    .iter()
+                                    .find(|entry| entry.bit == record.bit)
+                                    .map(|entry| entry.values_kHz == record.values)
+                                    .unwrap_or(false)
+                            }),
+                            (Some(_), None) => false,
+                            (None, _) => true,
+                        };
+                        (all_match, "ClkDomains control records")
+                    }
+                    nvoc_core::profile::DomainKind::PrivateVfOffsets => {
+                        let live = run(target, QueryNvapiClkVfPoints { include_raw: false })
+                            .ok()
+                            .and_then(|report| report.output);
+                        let all_match = match (doc.domains.private_vf_offsets.as_ref(), live) {
+                            (Some(records), Some(live_points)) => records.iter().all(|record| {
+                                live_points
+                                    .points
+                                    .iter()
+                                    .find(|p| p.bank == record.bank && p.index == record.index)
+                                    .map(|p| {
+                                        ((p.freq_current_mhz as i64 - p.freq_default_mhz as i64)
+                                            * 1000) as i32
+                                            == record.offset_khz
+                                    })
+                                    .unwrap_or(false)
+                            }),
+                            (Some(_), None) => false,
+                            (None, _) => true,
+                        };
+                        (all_match, "private V/F point offsets")
+                    }
+                    nvoc_core::profile::DomainKind::TopRelsRatios => {
+                        // Best-effort: the plane is 50-series-only; an
+                        // absent plane reads as "no live data" rather than
+                        // drift. Slot identity is the GetInfo index.
+                        let live = run(target, QueryTopRelsRelations)
+                            .ok()
+                            .map(|report| report.output)
+                            .unwrap_or_default();
+                        let all_match = match doc.domains.toprels_ratios.as_ref() {
+                            Some(records) => records.iter().all(|record| {
+                                live.iter()
+                                    .find(|(index, ..)| index == &record.index)
+                                    .map(|entry| entry.5 == Some(record.ratio_raw))
+                                    .unwrap_or(false)
+                            }),
+                            None => true,
+                        };
+                        (all_match, "TopRels slot ratios")
+                    }
+                    nvoc_core::profile::DomainKind::LockedClocks
+                    | nvoc_core::profile::DomainKind::VfpLocks => {
+                        (true, "recorded intent only in v1")
+                    }
+                };
+                entries.push(json!({
+                    "domain": domain.as_str(),
+                    "status": if in_sync { "in-sync" } else { "drift" },
+                    "detail": detail,
+                }));
+            }
+            Ok(json!({
+                "profile": doc.name,
+                "identity": profile_identity_value(&identity),
+                "domains": entries,
+            }))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn profile_apply(
+    py: Python<'_>,
+    gpu: &str,
+    name: &str,
+    dry_run: Option<bool>,
+    no_verify: Option<bool>,
+    no_rollback: Option<bool>,
+    rebase: Option<bool>,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let name = name.trim().to_owned();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        let dry_run = dry_run.unwrap_or(false);
+        with_target(&gpu, &backends, |target| {
+            let (info, identity) = profile_err(nvoc_core::profile::live_identity(target))?;
+            let doc = profile_err(store.load_profile(&identity, &name))?;
+            let gpu_type =
+                fetch_gpu_type(&info).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let plan = nvoc_core::profile::build_plan(
+                &doc,
+                &identity,
+                gpu_type,
+                &nvoc_core::profile::PlanOptions {
+                    rebase: rebase.unwrap_or(false),
+                },
+            );
+            if let Some(refusal) = plan.refusal() {
+                return Err(PyRuntimeError::new_err(format!(
+                    "profile-apply refused: {refusal} (re-run with rebase=True to re-bind)"
+                )));
+            }
+            let verify = !no_verify.unwrap_or(false) || plan.identity.requires_verify();
+            let rollback = !no_rollback.unwrap_or(false);
+            if dry_run {
+                return Ok(json!({
+                    "dry_run": true,
+                    "profile": doc.name,
+                    "identity": profile_verdict_text(&plan.identity),
+                    "steps": plan.steps.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                    "not_applicable": plan.not_applicable.iter()
+                        .map(|(d, r)| json!({"domain": d.as_str(), "reason": r}))
+                        .collect::<Vec<_>>(),
+                    "unimplemented": plan.unimplemented.iter()
+                        .map(|(d, r)| json!({"domain": d.as_str(), "reason": r}))
+                        .collect::<Vec<_>>(),
+                    "warnings": plan.warnings,
+                }));
+            }
+            let backup = profile_err(nvoc_core::profile::capture_backup_now(
+                target,
+                &identity,
+                profile_now_utc()?,
+            ))?;
+            profile_err(store.save_backup_last(&identity, &backup))?;
+            let report = nvoc_core::profile::execute_profile(
+                target,
+                &doc,
+                &plan,
+                &backup,
+                nvoc_core::profile::ApplyOptions {
+                    verify,
+                    rollback_on_failure: rollback,
+                },
+            );
+            if report.is_success() {
+                profile_err(store.set_active(&identity, Some(doc.name.as_str())))?;
+            }
+            Ok(json!({
+                "profile": doc.name,
+                "identity": profile_verdict_text(&plan.identity),
+                "success": report.is_success(),
+                "rolled_back": report.rolled_back,
+                "warnings": plan.warnings,
+                "domains": report.outcomes.iter().map(|(domain, outcome)| {
+                    json!({"domain": domain.as_str(), "outcome": profile_outcome_value(outcome)})
+                }).collect::<Vec<_>>(),
+            }))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn profile_restore_last(
+    py: Python<'_>,
+    gpu: &str,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        with_target(&gpu, &backends, |target| {
+            let (_, identity) = profile_err(nvoc_core::profile::live_identity(target))?;
+            let backup = profile_err(store.load_backup_last(&identity))?.ok_or_else(|| {
+                PyRuntimeError::new_err("no backup-last.json for this GPU: nothing to restore")
+            })?;
+            let domains = nvoc_core::profile::backup_domains(&backup);
+            if domains.is_empty() {
+                return Err(PyRuntimeError::new_err(
+                    "backup-last.json carries no restorable domains",
+                ));
+            }
+            let notes = profile_err(nvoc_core::profile::restore_backup(
+                target, &backup, &domains,
+            ))?;
+            Ok(json!({
+                "restored": domains.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                "captured_utc": backup.captured_utc,
+                "notes": notes.iter()
+                    .map(|(d, m)| json!({"domain": d.as_str(), "note": m}))
+                    .collect::<Vec<_>>(),
+            }))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn profile_export(
+    py: Python<'_>,
+    gpu: &str,
+    names: Option<Vec<String>>,
+    out: Option<String>,
+    purpose: Option<String>,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        with_target(&gpu, &backends, |target| {
+            let (_, identity) = profile_err(nvoc_core::profile::live_identity(target))?;
+            let listed = profile_err(store.list_profiles(&identity))?;
+            let wanted = names.unwrap_or_default();
+            let mut docs = Vec::new();
+            for entry in listed {
+                let doc = entry.map_err(PyRuntimeError::new_err)?;
+                if wanted.is_empty() || wanted.iter().any(|n| n.eq_ignore_ascii_case(&doc.name)) {
+                    docs.push(doc);
+                }
+            }
+            for name in &wanted {
+                if !docs.iter().any(|doc| doc.name.eq_ignore_ascii_case(name)) {
+                    return Err(PyValueError::new_err(format!("profile {name:?} not found")));
+                }
+            }
+            if docs.is_empty() {
+                return Err(PyRuntimeError::new_err("no profiles to export"));
+            }
+            let package = profile_err(nvoc_core::profile::export_package(
+                docs,
+                None,
+                purpose,
+                profile_now_utc()?,
+            ))?;
+            let out = out.unwrap_or_else(|| "nvoc-profiles.nvocprofile.json".to_owned());
+            let out_path = std::path::Path::new(&out);
+            profile_err(nvoc_core::profile::write_package(out_path, &package))?;
+            Ok(json!({
+                "exported": out_path.display().to_string(),
+                "profiles": package.profiles.iter().map(|doc| doc.name.clone()).collect::<Vec<_>>(),
+            }))
+        })
+    })?;
+    py_value(py, &value)
+}
+
+#[pyfunction]
+fn profile_import(
+    py: Python<'_>,
+    gpu: &str,
+    file: &str,
+    on_conflict: Option<&str>,
+    dry_run: Option<bool>,
+    profile_root: Option<&str>,
+    backends: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let gpu = gpu.to_string();
+    let file = file.to_string();
+    let on_conflict = on_conflict.map(str::to_owned);
+    let backends = backends.unwrap_or("both").to_string();
+    let value = py.detach(|| -> PyResult<Value> {
+        let store = profile_store_or_err(profile_root)?;
+        let package = nvoc_core::profile::read_package_file(std::path::Path::new(&file))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let policy = match on_conflict.as_deref().unwrap_or("skip") {
+            "skip" => nvoc_core::profile::ImportPolicy::Skip,
+            "overwrite" => nvoc_core::profile::ImportPolicy::Overwrite,
+            "rename" => nvoc_core::profile::ImportPolicy::Rename,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid on_conflict {other:?} (expected skip, overwrite or rename)"
+                )));
+            }
+        };
+        let planned = package
+            .profiles
+            .iter()
+            .map(|doc| {
+                json!({
+                    "name": doc.name,
+                    "uuid": doc.gpu.uuid,
+                    "domains": doc.domains.present().iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        if dry_run.unwrap_or(false) {
+            return Ok(json!({
+                "dry_run": true,
+                "profiles": planned,
+                "on_conflict": on_conflict.unwrap_or_else(|| "skip".to_owned()),
+            }));
+        }
+        with_target(&gpu, &backends, |_target| {
+            let import = profile_err(nvoc_core::profile::import_package(&store, &package, policy))?;
+            Ok(json!({
+                "imported": import.imported,
+                "skipped_identical": import.skipped_identical,
+                "conflicts": import.conflicts,
+                "package_profiles": planned,
+            }))
+        })
+    })?;
+    py_value(py, &value)
+}
+
 #[pymodule]
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(configure_library_paths, m)?)?;
     m.add_function(wrap_pyfunction!(discover_gpus, m)?)?;
     m.add_function(wrap_pyfunction!(force_wake, m)?)?;
     m.add_function(wrap_pyfunction!(query_info, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_capture_stock, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_save, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_list, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_show, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_diff, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_apply, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_restore_last, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_export, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_import, m)?)?;
     m.add_function(wrap_pyfunction!(query_status, m)?)?;
     m.add_function(wrap_pyfunction!(query_settings, m)?)?;
     m.add_function(wrap_pyfunction!(query_supported_applications_clocks, m)?)?;
@@ -5153,9 +6171,14 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_power_ceiling, m)?)?;
     m.add_function(wrap_pyfunction!(query_target_temp_policies, m)?)?;
     m.add_function(wrap_pyfunction!(set_dnotifier, m)?)?;
+    m.add_function(wrap_pyfunction!(query_framerate_limit, m)?)?;
     m.add_function(wrap_pyfunction!(query_volt_rails, m)?)?;
+    m.add_function(wrap_pyfunction!(query_adc_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(nvapi_doctor, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_offset, m)?)?;
     m.add_function(wrap_pyfunction!(set_volt_rail_target, m)?)?;
+    m.add_function(wrap_pyfunction!(set_volt_rail_slot_offset, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_volt_rail_limit, m)?)?;
     m.add_function(wrap_pyfunction!(set_perf_freq_cap, m)?)?;
     m.add_function(wrap_pyfunction!(query_private_freq_domain_info, m)?)?;
     m.add_function(wrap_pyfunction!(query_clk_domain_freq, m)?)?;

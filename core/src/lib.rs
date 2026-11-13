@@ -1,25 +1,33 @@
 mod conv;
 pub mod dll_path;
+pub mod doctor;
 mod error;
 mod gpu;
 mod gpu_type;
+pub mod kmd;
 
 pub use gpu::nvapi_init_attempted;
-pub mod legacy_vbios_parser;
 mod nvapi;
 pub mod nvml;
 pub mod operation;
+pub mod profile;
 pub mod result;
+pub mod rm;
 pub mod target;
 mod types;
-pub mod vbios_dcb;
+pub mod vbios;
 
 pub use self::nvapi::{
     CoolerTarget, GpuTdpTempLimits, VfpLockRequest, nvapi_overvolt_reported, set_nvapi_overvolt,
 };
+pub use ::nvapi::framerate_limit_supported;
 pub use ::nvapi::sys::gpu::power::undocumented::Wm2AcousticMode;
-pub use ::nvapi::{P0VoltageBounds, VoltRails};
+pub use ::nvapi::{ClockDomainControl, P0VoltageBounds, VoltRails};
+pub use ::nvapi::{
+    POWER_COMMAND_ENVELOPE_FLOOR_MW, POWER_COMMAND_ENVELOPE_MULTIPLE, power_command_envelope_max_mw,
+};
 pub use conv::ConvertEnum;
+pub use doctor::{NvapiDoctorEntry, NvapiDoctorReport, nvapi_doctor_report};
 pub use error::Error;
 pub use gpu::{GpuSelector, nvapi_interface_version};
 pub use gpu_type::{
@@ -28,48 +36,57 @@ pub use gpu_type::{
 };
 pub use operation::{
     CheckVoltageFrequency, ClearEdid, DisableNvapiThermalSim, GetFanCurves, GetPowerMode,
-    GpuOperation, OemOcScanner, OemOcScannerAction, PmgrArbiterProbe, PrivateVfPairPlane,
-    PrivateVfPairReport, PrivateVfPairWrite, ProbeVoltageLimits, QueryApiRestriction,
-    QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices, QueryDomainVfpPoints,
-    QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
-    QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiBarInfo,
-    QueryNvapiClkDomainFreq, QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect,
-    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains,
-    QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCoolerInfo,
+    GpuOperation, NvapiI2cTransaction, OemOcScanner, OemOcScannerAction, PmgrArbiterProbe,
+    PrivateVfPairPlane, PrivateVfPairReport, PrivateVfPairWrite, ProbeVoltageLimits,
+    QueryApiRestriction, QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpIndices,
+    QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings, QueryGpuStatus,
+    QueryLegacyCoreOvervoltRanges, QueryLegacyP0CoreMaxVoltageDelta, QueryNvapiAdcDevices,
+    QueryNvapiBarInfo, QueryNvapiBoostLocks, QueryNvapiClkDomainFreq,
+    QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqDirect, QueryNvapiClkDomainFreqsBatch,
+    QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains, QueryNvapiClkVfControl,
+    QueryNvapiClkVfPoints, QueryNvapiComputeCaps, QueryNvapiCoolerInfo,
     QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPstates20Private,
-    QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiVoltDevices,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString,
-    QueryVbiosVersion, QueryVfpPointVoltage, QueryViolationStatus, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
-    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
-    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
-    ResetNvapiVfpPrivate, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
-    ResetPublicVftableOffset, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
-    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
-    SetDomainVfpDeltas, SetEdid, SetFanCurve, SetFanPercent, SetFanRpm, SetFanSpeed, SetFanStop,
-    SetForcePstate, SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
-    SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
-    SetNvapiEccConfiguration, SetNvapiOverclockedPstates, SetNvapiOvervolt, SetNvapiPStateNative,
-    SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits,
-    SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp,
-    SetNvapiTgpWatt, SetNvapiThermalSim, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
-    SetNvmlPstateLock, SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
-    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetTemperatureLimit,
-    SetVfpFrequencyLock, SetVoltageBoost, SetWm2Active, SetWm2Mode, TgpWattRangeInfo,
-    detect_gpu_type, fetch_gpu_type, find_matching_vfp_point, is_server_pascal_dual_plane,
+    QueryNvapiFramerateLimit, QueryNvapiI2cRead, QueryNvapiOcScannerIncomplete,
+    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
+    QueryNvapiPowerCeiling, QueryNvapiPowerChannels, QueryNvapiPowerCommand,
+    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiRegisterThermals,
+    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
+    QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
+    QueryNvapiTopRelsRatio, QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits,
+    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
+    QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage,
+    QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryVfpPointVoltage,
+    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
+    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
+    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
+    ResetSubdomainFreqRatio, ResetTopRelsRatioToDefault, ResetVfpFrequencyLock,
+    RestartDisplayDriver, SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport,
+    SetBb2Active, SetClockOffset, SetCoolerLevels, SetDomainVfpDeltas, SetEdid, SetFanCurve,
+    SetFanPercent, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
+    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
+    SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates, SetNvapiOvervolt,
+    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
+    SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
+    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate,
+    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
+    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
+    SetPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
+    SetWm2Mode, TOPRELS_MIN_TESTED_RAW, TgpWattRangeInfo, TopRelsRelationRow, detect_gpu_type,
+    fetch_gpu_type, find_matching_vfp_point, is_server_pascal_dual_plane,
     legacy_core_overvolt_ranges, legacy_p0_core_max_voltage_delta, nvapi_status_name,
     nvml_pstate_to_index, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
     parse_nvml_fan_control_policy, parse_nvml_pstate, plan_private_vf_oc_order,
-    plan_private_vf_pair_order, query_domain_vf_points_indexed, query_domain_vfp_indices, run,
-    run_many, set_nvapi_cooler_settings, set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks,
-    set_nvapi_pstate_clock_offsets, set_nvapi_vfp_curve_delta, set_private_vf_oc_offset,
-    set_private_vf_pair_offset, sync_memory_pstate_as_p0, try_parse_nvml_pstate,
+    plan_private_vf_pair_order, query_domain_vf_points_indexed, query_domain_vfp_indices,
+    resolve_toprels_relation, run, run_many, set_nvapi_cooler_settings,
+    set_nvapi_domain_vfp_deltas, set_nvapi_legacy_clocks, set_nvapi_pstate_clock_offsets,
+    set_nvapi_vfp_curve_delta, set_private_vf_oc_offset, set_private_vf_pair_offset,
+    sync_memory_pstate_as_p0, try_parse_nvml_pstate,
 };
 pub use result::{
     ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
@@ -90,9 +107,10 @@ pub use types::{NvapiLockedVoltageTarget, VfpResetDomain};
 pub use ::nvapi::hi::{
     Celsius, ClkVfControlPointPrivate, ClkVfControlPrivate, ClkVfDomainClass, ClkVfDomainHint,
     ClkVfPointPrivate, ClkVfPointsPrivate, ClkVfRawRecord, ClkVfSegmentKind, ClockDomain,
-    CoolerControl, CoolerPolicy, CoolerSettings, DisplayId, FanCoolerId, GpuInfo, GpuSettings,
-    GpuStatus, Kilohertz, KilohertzDelta, Microvolts, MicrovoltsDelta, PState, Percentage,
-    SensorThrottle, VfPoint, VfPointType, VoltageDomain,
+    ClockLockEntry, ClockLockMode, CoolerControl, CoolerPolicy, CoolerSettings, DisplayId,
+    FanCoolerId, GpuInfo, GpuSettings, GpuStatus, Kilohertz, KilohertzDelta, Microvolts,
+    MicrovoltsDelta, PState, Percentage, PerfLimitId, SensorThrottle, VfPoint, VfPointType,
+    VoltageDomain,
 };
 pub use ::nvapi::{ClkVfSegment, clk_vf_delta_for_target, clk_vf_effect_for_delta};
 

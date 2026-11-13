@@ -149,7 +149,7 @@ pub(super) fn format_pstates20_private(output: &Value) -> Vec<String> {
             0 => "Gpc",
             1 => "Xbar",
             2 => "Sys",
-            3 => "Hub",
+            3 => "Hub/L2C",
             4 => "M",
             5 => "Host",
             6 => "Disp",
@@ -167,7 +167,7 @@ pub(super) fn format_pstates20_private(output: &Value) -> Vec<String> {
             18 => "Hub2",
             19 => "Leg",
             20 => "Pwr",
-            21 => "Msd",
+            21 => "Msd/Vid",
             22 => "Utils",
             23 => "ColdNv",
             24 => "ColdHotclk",
@@ -294,6 +294,128 @@ pub(super) fn format_power_ceiling(output: &Value) -> Vec<String> {
         format!("  D-Notifier Cap: {}", watts(output, "dnotify_watt")),
         format!("  Default TGP: {}", watts(output, "default_watt")),
     ]
+}
+
+/// Human output for `get-power-command`: one ExtendedLimits power-command
+/// lease cell (raw value, or the mW/W view on the request command where the
+/// live unit is known).
+pub(super) fn format_power_command(output: &Value) -> Vec<String> {
+    let channel = output.get("channel").and_then(Value::as_u64).unwrap_or(0);
+    let command = output.get("command").and_then(Value::as_str).unwrap_or("?");
+    if output.get("unset").and_then(Value::as_bool) == Some(true) {
+        return vec![format!(
+            "  Power command (channel {channel}, {command}): unset (0xFFFFFFFF)"
+        )];
+    }
+    let value = output.get("value").and_then(Value::as_u64).unwrap_or(0);
+    let mut lines = vec![format!(
+        "  Power command (channel {channel}, {command}): {value}"
+    )];
+    if let (Some(mw), Some(watt)) = (
+        output.get("value_mW").and_then(Value::as_u64),
+        output.get("value_W").and_then(Value::as_f64),
+    ) {
+        lines.push(format!("    {mw} mW ({watt:.1} W)"));
+    }
+    if command == "request" {
+        lines.push(
+            "    note: echo layer — load-time enforcement stays at the legal slider window (set-pwr-cur-limit)".to_string(),
+        );
+    }
+    lines
+}
+
+/// Human output for `set-power-command` — the post-write readback nvapi-rs
+/// verified is what the formatter prints, with the envelope facts and the
+/// echo-layer warning (the lease does NOT move load-time enforcement).
+/// The `--kmd` shape (`"kmd": true`) renders the kernel patch cycle instead:
+/// there the enforced wall WAS patched in driver memory via pmxdrv, so the
+/// echo-layer warning would be wrong.
+pub(super) fn format_set_power_command(output: &Value) -> Vec<String> {
+    if output.get("kmd").and_then(Value::as_bool) == Some(true) {
+        return format_set_power_command_kmd(output);
+    }
+    let channel = output.get("channel").and_then(Value::as_u64).unwrap_or(0);
+    let command = output.get("command").and_then(Value::as_str).unwrap_or("?");
+    let value = output.get("value").and_then(Value::as_u64).unwrap_or(0);
+    let mut lines = match (
+        output.get("value_mW").and_then(Value::as_u64),
+        output.get("value_W").and_then(Value::as_f64),
+    ) {
+        (Some(mw), Some(watt)) => vec![format!(
+            "  Power command set: channel {channel} {command} = {mw} mW ({watt:.1} W)"
+        )],
+        _ => vec![format!(
+            "  Power command set: channel {channel} {command} = {value}"
+        )],
+    };
+    if let Some(baseline) = output.get("baseline_before_W").and_then(Value::as_f64) {
+        lines.push(format!(
+            "    baseline: {baseline:.1} W — restore with set-power-command {baseline:.0}"
+        ));
+    } else if let Some(baseline) = output.get("baseline_before").and_then(Value::as_u64) {
+        if baseline == u32::MAX as u64 {
+            lines
+                .push("    baseline: unset sentinel (0xFFFFFFFF) — nothing to restore".to_string());
+        } else {
+            lines.push(format!("    baseline: {baseline} raw"));
+        }
+    }
+    if let Some(default_mw) = output.get("board_default_mW").and_then(Value::as_u64) {
+        lines.push(format!("    board default: {default_mw} mW"));
+    }
+    if let Some(envelope) = output.get("envelope").and_then(Value::as_str) {
+        lines.push(format!("    envelope: {envelope}"));
+    }
+    lines.push(
+        "    ECHO LAYER ONLY: GET/NVML/nvidia-smi read this value; load-time enforcement stays at the legal slider window (set-pwr-cur-limit)".to_string(),
+    );
+    lines
+}
+
+/// Human output for `set-power-command --kmd`: leads with the verified wall
+/// transition, replays the kernel cycle log (service register → chain walk →
+/// arm write with readback → lease → recheck) so the user can see the patch
+/// actually happened in driver memory, and closes with the kernel-patch fact
+/// plus the volatility caveat — never the echo-layer warning.
+fn format_set_power_command_kmd(output: &Value) -> Vec<String> {
+    let arm = output.get("arm").and_then(Value::as_str).unwrap_or("?");
+    let before = output
+        .get("wall_before_mw")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut lines = match output.get("wall_after_mw").and_then(Value::as_u64) {
+        Some(after) => vec![format!(
+            "  Kernel wall patched via pmxdrv ({arm} arm): {before} mW → {after} mW ({:.1} W)",
+            after as f64 / 1000.0
+        )],
+        None => vec![format!("  Kernel wall patched via pmxdrv ({arm} arm)")],
+    };
+    if let Some(layout) = output.get("layout").and_then(Value::as_str) {
+        lines.push(format!("    layout: {layout}"));
+    }
+    // tgp/lease notes are already appended to `steps` by core — replaying the
+    // step log is the whole verbose block, no per-note summary on top.
+    for step in output
+        .get("steps")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(step) = step.as_str() {
+            lines.push(format!("    {}", step.trim()));
+        }
+    }
+    lines.push(
+        "    KERNEL PATCH APPLIED: the enforced wall in driver memory was rewritten through the pmxdrv kernel driver — load-time enforcement follows the new wall; this is NOT the echo-layer-only lease write (set-pwr-cur-limit still moves the legal slider)".to_string(),
+    );
+    if let Some(note) = output.get("note").and_then(Value::as_str) {
+        lines.push(format!("    note: {note}"));
+    }
+    lines
+        .into_iter()
+        .map(|line| nvoc_cli_common::color::stylize_kmd_step(&line))
+        .collect()
 }
 
 pub(super) fn format_power_mode(output: &Value) -> Vec<String> {
@@ -579,6 +701,7 @@ fn format_blackwell_table(output: &Value) -> Vec<String> {
             false,
         ));
     }
+    push_structural_sections(output, &mut lines);
     lines
 }
 
@@ -739,18 +862,24 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
             false,
         ));
     }
-    // VP footers: per-ID memory clocks (CPR footer walk, file order)
+    // VP footers: per-ID memory clocks (CPR footer walk, file order). The
+    // footer id is the pstate slot encoding; label it like the profiles row.
     if let Some(footers) = output.get("footers").and_then(Value::as_array) {
         let items: Vec<String> = footers
             .iter()
             .map(|f| {
                 let id = f.get("id").and_then(Value::as_str).unwrap_or("?");
+                let pstate = f
+                    .get("pstate")
+                    .and_then(Value::as_str)
+                    .map(|p| format!("({p})"))
+                    .unwrap_or_default();
                 let mem = f.get("mem_clock_mhz").and_then(Value::as_i64).unwrap_or(0);
                 let ddr = f
                     .get("mem_clock_ddr_mhz")
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
-                format!("{id} {mem}/{ddr}")
+                format!("{id}{pstate} {mem}/{ddr}")
             })
             .collect();
         if !items.is_empty() {
@@ -758,6 +887,34 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
                 &format!("    footers (DRAM/DDR MHz): {}", items.join(", ")),
                 false,
             ));
+        }
+    }
+    if let Some(dual) = output.get("dual_bank") {
+        let banks = dual.get("banks").and_then(Value::as_u64).unwrap_or(0);
+        match dual.get("identical").and_then(Value::as_bool) {
+            Some(true) => {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dual bank: {banks} banks, contents identical (bank0 rendered)"),
+                    false,
+                ));
+            }
+            Some(false) => {
+                let fields: Vec<String> = dual
+                    .get("differences")
+                    .and_then(Value::as_array)
+                    .map(|ds| {
+                        ds.iter()
+                            .filter_map(|d| d.get("field").and_then(Value::as_str))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    dual bank: {banks} banks DIFFER in {} (bank0 rendered; see dual_bank.differences)",
+                    fields.join(", ")
+                )));
+            }
+            _ => {}
         }
     }
     push_detail_shared_sections(output, &mut lines);
@@ -769,44 +926,723 @@ fn format_vp_ladder_table(output: &Value) -> Vec<String> {
 /// lines as Pascal): power, thermal, DCB display map, identity,
 /// internal-use, flash directory, memory, thermal limits, fan curve /
 /// coolers, falcon ucode, NVGI and the PERF_PTR slot map.
-fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
-    // power table (target/limit/slider per CPR power scan)
-    if let Some(power) = output.get("power").and_then(Value::as_array)
-        && let Some(p) = power.first()
-    {
-        let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
-        let target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
-        let limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
-        let slider = p
-            .get("slider")
-            .and_then(|s| s.get("enabled"))
-            .and_then(Value::as_bool);
-        let slider_text = match slider {
-            Some(true) => "enabled",
-            Some(false) => "disabled",
-            None => "not found",
+/// Structural layer (vix 对照补差) human rendering: image chain + 架构门 +
+/// 按族表解码，每表一段紧凑行。unsupported 形状以 warning 行呈现（fail
+/// closed 保持可见）。
+fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
+    let Some(st) = output.get("structural") else {
+        return;
+    };
+    // 镜像链 + 架构门。
+    if let Some(arch) = st.get("architecture") {
+        let (pci, npds, issues) = match st.get("image_chain") {
+            Some(chain) => (
+                chain
+                    .get("pci_images")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+                chain
+                    .get("npds_images")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+                chain
+                    .get("issues")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len()),
+            ),
+            None => (0, 0, 0),
         };
-        let min_w = p
-            .get("min_watt")
-            .and_then(Value::as_f64)
-            .map(|v| format!("min {v:.0} W, "));
-        let range = p
-            .get("adjustment_percent")
+        let family = arch
+            .get("family")
             .and_then(Value::as_str)
-            .map(|r| format!(", range {r}"))
+            .unwrap_or("unknown");
+        let product = arch.get("product").and_then(Value::as_str).unwrap_or("?");
+        let device = arch
+            .get("pci_device")
+            .and_then(Value::as_str)
+            .unwrap_or("????");
+        let inferred = arch
+            .get("family_inferred")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let versions: Vec<String> = arch
+            .get("bios_versions")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
-        let count = if power.len() > 1 {
-            format!(" ({} copies)", power.len())
+        let ver_note = versions
+            .first()
+            .map(|v| format!(" bios {v}"))
+            .unwrap_or_default();
+        let scope_note = if arch.get("in_scope").and_then(Value::as_bool) == Some(false) {
+            " OUT-OF-SCOPE"
+        } else {
+            ""
+        };
+        let infer_note = if inferred {
+            " (family inferred from BIOS prefix)"
+        } else {
+            ""
+        };
+        let issue_note = if issues > 0 {
+            format!(", {issues} ISSUES")
         } else {
             String::new()
         };
         lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    structural: {pci} PCI + {npds} NPDS images{issue_note} | {family}{scope_note}{infer_note} {device} {product}{ver_note}"
+            ),
+            false,
+        ));
+    } else if let Some(status) = st
+        .get("image_chain")
+        .and_then(|c| c.get("status"))
+        .and_then(Value::as_str)
+    {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    structural: {status}"),
+            false,
+        ));
+    }
+    // 3x 世代表（Turing/Ampere/Ada）。
+    if let Some(t) = st.get("tables_v3") {
+        if let Some(reason) = t.get("reason").and_then(Value::as_str) {
+            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                "    structural: {reason}"
+            )));
+        } else {
+            let family = t.get("family").and_then(Value::as_str).unwrap_or("?");
+            if let Some(p) = t.get("power_policy").and_then(Value::as_object)
+                && let (Some(rows), Some(tgp)) = (
+                    p.get("rows").and_then(Value::as_array),
+                    p.get("tgp_index").and_then(Value::as_u64),
+                )
+                && let Some(tgp_row) = rows.get(tgp as usize)
+            {
+                let ver = p.get("version").and_then(Value::as_str).unwrap_or("?");
+                let nb = if p.get("notebook").and_then(Value::as_bool) == Some(true) {
+                    " notebook"
+                } else {
+                    ""
+                };
+                let unit = tgp_row.get("unit").and_then(Value::as_str).unwrap_or("mW");
+                let scale = if unit == "mA" { 1.0 } else { 1000.0 };
+                let fmt = |v: u64| {
+                    if unit == "mA" {
+                        format!("{v} {unit}")
+                    } else {
+                        format!("{:.0} W", v as f64 / scale)
+                    }
+                };
+                let empty = rows
+                    .iter()
+                    .filter(|r| {
+                        r.get("kind").and_then(Value::as_u64) == Some(0)
+                            && r.get("maximum_raw").and_then(Value::as_u64) == Some(0)
+                    })
+                    .count();
+                let empty_note = if empty > 0 {
+                    format!(", {empty} empty")
+                } else {
+                    String::new()
+                };
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power policy (v3x {ver} {family}{nb}): TGP row{tgp} {}/{}/{}, {} rows{empty_note}",
+                        fmt(tgp_row
+                            .get("minimum_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        fmt(tgp_row
+                            .get("default_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        fmt(tgp_row
+                            .get("maximum_raw")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)),
+                        rows.len()
+                    ),
+                    false,
+                ));
+
+                // 全行解码（对照 NVAPI GetPwrCurInfo：Index = 行号、Subtype = 通道
+                // 字节、min/def/max 逐值一致；空行是驱动运行时隐藏的超集）。kind
+                // 名为 vix 语料观测语义，未列出的按 raw 显示。
+                if let Some(rows) = t
+                    .get("power_policy")
+                    .and_then(Value::as_object)
+                    .and_then(|p| p.get("rows"))
+                    .and_then(Value::as_array)
+                {
+                    let tgp = t
+                        .get("power_policy")
+                        .and_then(Value::as_object)
+                        .and_then(|p| p.get("tgp_index"))
+                        .and_then(Value::as_u64);
+                    let items: Vec<String> = rows
+                        .iter()
+                        .filter(|r| {
+                            !(r.get("kind").and_then(Value::as_u64) == Some(0)
+                                && r.get("maximum_raw").and_then(Value::as_u64) == Some(0))
+                        })
+                        .map(|r| {
+                            let row = r.get("row").and_then(Value::as_u64).unwrap_or(0);
+                            // 角色名（vix 通道模板识别）优先于 kind 字节名。
+                            if let Some(role) = r.get("role").and_then(Value::as_str)
+                                && !role.is_empty()
+                            {
+                                return format_power_row(row, role, r);
+                            }
+                            let kind = r.get("kind").and_then(Value::as_u64).unwrap_or(0);
+                            let ch = r.get("channel").and_then(Value::as_u64).unwrap_or(0);
+                            // 存储单位旗标原样标注（mW/mA）；实际物理单位由 RM 策略
+                            // 侧决定（NVAPI 实测与旗标在哨兵行上不一致），不做断言性
+                            // 换算。
+                            let unit = r.get("unit").and_then(Value::as_str).unwrap_or("mW");
+                            let star = if Some(row) == tgp { "*" } else { "" };
+                            format!(
+                                "#{row}{star} {}/{} {}..{}..{} {}",
+                                power_row_kind_name(kind as u8),
+                                ch,
+                                r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0),
+                                r.get("default_raw").and_then(Value::as_u64).unwrap_or(0),
+                                r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0),
+                                unit
+                            )
+                        })
+                        .collect();
+                    if !items.is_empty() {
+                        lines.push(nvoc_cli_common::color::stylize(
+                            &format!("    power rows (* = TGP): {}", items.join(" | ")),
+                            false,
+                        ));
+                    }
+                }
+            }
+            render_rails(t, lines);
+            render_rel_limits(t.get("rel_limits"), lines);
+            render_vmin(t.get("vmin"), lines);
+            render_clocks(t.get("clocks"), true, lines);
+            render_memory_nvml_scale(t.get("clocks"), lines);
+            render_fans_v3(t, lines);
+        }
+    }
+    // GB20x（50 系）。
+    if let Some(g) = st.get("gb20x") {
+        if let Some(reason) = g.get("reason").and_then(Value::as_str) {
+            lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                "    structural: {reason}"
+            )));
+            return;
+        }
+        if let Some(i) = g.get("integrity") {
+            let ok = i.get("valid").and_then(Value::as_bool).unwrap_or(false);
+            let objects = i.get("object_count").and_then(Value::as_u64).unwrap_or(0);
+            let legacy = i
+                .get("legacy_directory_present")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let legacy_note = if legacy { ", legacy dir ok" } else { "" };
+            let text = if ok {
+                format!("    integrity: {objects} objects sha384 OK, image sums zero{legacy_note}")
+            } else {
+                let bad = i
+                    .get("bad_object_ids")
+                    .and_then(Value::as_array)
+                    .map_or(0, |a| a.len());
+                format!("    integrity: FAILED ({bad} bad objects)")
+            };
+            if ok {
+                lines.push(nvoc_cli_common::color::stylize(&text, false));
+            } else {
+                lines.push(nvoc_cli_common::color::stylize_warning(&text));
+            }
+        }
+        if let Some(p) = g.get("power_policy").and_then(Value::as_object)
+            && let Some(rows) = p.get("rows").and_then(Value::as_array)
+        {
+            let notebook = p.get("notebook").and_then(Value::as_bool) == Some(true);
+            let tgp_row_idx = if notebook { 2 } else { 8 };
+            if let Some(r) = rows.get(tgp_row_idx) {
+                let ver = p.get("version").and_then(Value::as_str).unwrap_or("?");
+                let nb = if notebook { " notebook" } else { "" };
+                let fmt = |v: u64| format!("{:.0} W", v as f64 / 1000.0);
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power policy (gb20x {ver}{nb}): TGP row{tgp_row_idx} {}/{}/{}, {} rows",
+                        fmt(r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        fmt(r.get("default_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        fmt(r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0)),
+                        rows.len()
+                    ),
+                    false,
+                ));
+            }
+        }
+        render_rel_limits(g.get("rel_limits"), lines);
+        render_vmin(g.get("vmin"), lines);
+        render_clocks(g.get("clocks"), false, lines);
+        render_memory_nvml_scale(g.get("clocks"), lines);
+        if let Some(profiles) = g.get("profiles").and_then(Value::as_array)
+            && !profiles.is_empty()
+        {
+            let items: Vec<String> = profiles
+                .iter()
+                .map(|p| {
+                    let entries: Vec<String> = p
+                        .get("entries")
+                        .and_then(Value::as_array)
+                        .map(|es| {
+                            es.iter()
+                                .map(|e| {
+                                    format!(
+                                        "p{}/{}/{:#x}",
+                                        e.get("policy").and_then(Value::as_u64).unwrap_or(0),
+                                        e.get("field").and_then(Value::as_str).unwrap_or("?"),
+                                        e.get("value_raw").and_then(Value::as_u64).unwrap_or(0)
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        "#{}: {}",
+                        p.get("index").and_then(Value::as_u64).unwrap_or(0),
+                        entries.join(" ")
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    override profiles: {}", items.join(" | ")),
+                false,
+            ));
+        }
+    }
+}
+
+/// vix 语料观测的 3x power 行 type 字节语义（extended-fields.md / GB20x
+/// 行类型交叉）；未收录的按 `type0x{n}` 显示。
+fn power_row_kind_name(kind: u8) -> String {
+    match kind {
+        0 => "out".into(),
+        1 => "board".into(),
+        2 => "slot".into(),
+        4 => "conn".into(),
+        5 => "in-cur".into(),
+        7 => "ocp".into(),
+        10 => "ocp".into(),
+        11 => "in".into(),
+        12 => "board".into(),
+        13 => "link".into(),
+        other => format!("type{other:#x}"),
+    }
+}
+
+/// power rows 图例的行格式（vix 通道模板 role 命中时使用；命名对应
+/// vix-editor GUI：pcie-slot=PCIe slot power、12v-input=12V input current、
+/// nvvdd-power/current=NVVDD output power/current、total-board=board power）。
+fn format_power_row(row: u64, role: &str, r: &Value) -> String {
+    let unit = r.get("unit").and_then(Value::as_str).unwrap_or("mW");
+    format!(
+        "#{row} {role} {}..{}..{} {}",
+        r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0),
+        r.get("default_raw").and_then(Value::as_u64).unwrap_or(0),
+        r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0),
+        unit
+    )
+}
+
+/// DRAM 行的 NVML 换算注记：offset 工具（NVML/Linux、MSI Afterburner 的
+/// memory 轴）按表值 ×2 呈现（vix extended-fields："NVML = 2 × table MHz"；
+/// vix GUI 显示 "6000 MHz · Windows (MSI Afterburner): 3000 MHz"）。
+fn render_memory_nvml_scale(clocks: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(clocks) = clocks.and_then(Value::as_array) else {
+        return;
+    };
+    let Some(dram) = clocks
+        .iter()
+        .find(|c| c.get("domain").and_then(Value::as_str) == Some("DRAM"))
+    else {
+        return;
+    };
+    if dram.get("range_stored").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let (lo, hi) = (
+        dram.get("min_mhz").and_then(Value::as_i64).unwrap_or(0),
+        dram.get("max_mhz").and_then(Value::as_i64).unwrap_or(0),
+    );
+    if (lo, hi) == (0, 0) {
+        return;
+    }
+    lines.push(nvoc_cli_common::color::stylize(
+        &format!(
+            "    memory offset (NVML x2 scale): {}..{} MHz (table {}..{})",
+            lo * 2,
+            hi * 2,
+            lo,
+            hi
+        ),
+        false,
+    ));
+}
+
+fn render_rails(t: &Value, lines: &mut Vec<String>) {
+    let Some(rails) = t.get("rails").and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = rails
+        .iter()
+        .map(|r| {
+            let name = r.get("name").and_then(Value::as_str).unwrap_or("?");
+            let boot = r
+                .get("boot_voltage_uv")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let sels: Vec<String> = r
+                .get("selectors")
+                .and_then(Value::as_array)
+                .map(|ss| {
+                    ss.iter()
+                        .filter(|s| s.get("absent").and_then(Value::as_bool) != Some(true))
+                        .map(|s| {
+                            format!(
+                                "{}={}",
+                                s.get("role").and_then(Value::as_str).unwrap_or("?"),
+                                s.get("raw").and_then(Value::as_u64).unwrap_or(0)
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            format!("{name} boot {}mV {}", boot / 1000, sels.join(" "))
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    rails: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_rel_limits(limits: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(limits) = limits.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = limits
+        .iter()
+        .map(|l| {
+            let rail = l.get("rail").and_then(Value::as_str).unwrap_or("?");
+            let mv = l.get("max_mv").and_then(Value::as_f64).unwrap_or(0.0);
+            match l.get("kind").and_then(Value::as_str) {
+                Some(kind) => format!("{rail} REL max {mv:.1} mV ({kind})"),
+                None => format!("{rail} REL max {mv:.1} mV"),
+            }
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    rel limits: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_vmin(vmins: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(vmins) = vmins.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = vmins
+        .iter()
+        .map(|v| {
+            let rail = v.get("rail").and_then(Value::as_str).unwrap_or("?");
+            match (
+                v.get("value_mv").and_then(Value::as_f64),
+                v.get("diagnostic").and_then(Value::as_str),
+            ) {
+                (Some(mv), _) => format!("{rail} {mv:.1} mV pinned"),
+                (None, Some(d)) => format!("{rail} {d}"),
+                (None, None) => format!("{rail} unpinned"),
+            }
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    vmin: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+fn render_clocks(clocks: Option<&Value>, filter_stored: bool, lines: &mut Vec<String>) {
+    let Some(clocks) = clocks.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = clocks
+        .iter()
+        .filter(|c| !filter_stored || c.get("range_stored").and_then(Value::as_bool) == Some(true))
+        .map(|c| {
+            format!(
+                "{} {}..{}",
+                c.get("domain").and_then(Value::as_str).unwrap_or("?"),
+                c.get("min_mhz").and_then(Value::as_i64).unwrap_or(0),
+                c.get("max_mhz").and_then(Value::as_i64).unwrap_or(0)
+            )
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    clock ranges (MHz): {}", items.join(", ")),
+            false,
+        ));
+    }
+}
+
+fn render_fans_v3(t: &Value, lines: &mut Vec<String>) {
+    match t.get("fans") {
+        Some(f) if f.get("present").and_then(Value::as_bool) == Some(true) => {
+            let channels = f
+                .get("channels")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_u64).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let rows: Vec<String> = f
+                .get("rows")
+                .and_then(Value::as_array)
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|r| r.get("active").and_then(Value::as_bool) == Some(true))
+                .map(|r| {
+                    format!(
+                        "ch{} {}..{}% {}..{}rpm {}Hz",
+                        r.get("index").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("level_min").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("level_max").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("rpm_min").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("rpm_max").and_then(Value::as_u64).unwrap_or(0),
+                        r.get("pwm_frequency_hz")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    fan channels {:?}: {}", channels, rows.join(" | ")),
+                false,
+            ));
+            let extras: Vec<String> = f
+                .get("extra_curves")
+                .and_then(Value::as_array)
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|c| {
+                    c.get("points")
+                        .and_then(Value::as_array)
+                        .is_some_and(|p| !p.is_empty())
+                })
+                .map(|c| {
+                    let pts: Vec<String> = c
+                        .get("points")
+                        .and_then(Value::as_array)
+                        .unwrap_or(&Vec::new())
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{}C/{}rpm",
+                                p.get("temp_c").and_then(Value::as_f64).unwrap_or(0.0),
+                                p.get("rpm").and_then(Value::as_u64).unwrap_or(0)
+                            )
+                        })
+                        .collect();
+                    pts.join(" ")
+                })
+                .enumerate()
+                .map(|(i, pts)| format!("extra{}: {}", i + 1, pts))
+                .collect();
+            if !extras.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    fan extra curves: {}", extras.join(" | ")),
+                    false,
+                ));
+            }
+        }
+        Some(f) if f.get("present").and_then(Value::as_bool) == Some(false) => {
+            lines.push(nvoc_cli_common::color::stylize(
+                "    fan channels: none (no GPU-driven fan)",
+                false,
+            ));
+        }
+        Some(f) => {
+            if let Some(reason) = f.get("reason").and_then(Value::as_str) {
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    fan channels: unsupported ({reason})"
+                )));
+            }
+        }
+        None => {}
+    }
+}
+
+fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
+    let sort_start = lines.len();
+    // structural layer (vix 对照补差：镜像链/架构门/按族表解码)
+    push_structural_sections(output, lines);
+    // power：锚点扫描（CPR 路径）与 BIT 'P'+0x2C PowerBudget（结构化路径）
+    // 合并为一行。两条读取器读同一份数据——budget 表占位通道的 avg/peak
+    // 哨兵对正是锚点扫描的魔数；一致时缩写为一行互证，不一致即解析器红旗
+    // （warning 高亮两侧数值）。仅一侧可用时退回各自的原格式。
+    let power_arr = output.get("power").and_then(Value::as_array);
+    let anchor_power = power_arr.and_then(|a| a.first());
+    let budget = output
+        .get("power_v2")
+        .and_then(|p2| p2.get("budget"))
+        .filter(|b| b.get("cap_entry_power").is_some_and(Value::is_object));
+    let watts = |min: Option<f64>, t: f64, l: f64| match min {
+        Some(m) => format!("{m:.0}/{t:.0}/{l:.0} W"),
+        None => format!("{t:.0}/{l:.0} W"),
+    };
+    match (anchor_power, budget) {
+        (Some(p), Some(b)) => {
+            let cap = b.get("cap_entry_power").unwrap();
+            let a_min = p.get("min_watt").and_then(Value::as_f64);
+            let a_target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let a_limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let uw = |k: &str| {
+                cap.get(k)
+                    .and_then(Value::as_u64)
+                    .map(|v| v as f64 / 1000.0)
+            };
+            let (b_min, b_avg, b_peak) = (uw("min_mw"), uw("avg_mw"), uw("peak_mw"));
+            let agree = (a_min.is_none() || b_min.is_none() || a_min == b_min)
+                && Some(a_target) == b_avg
+                && Some(a_limit) == b_peak;
+            if agree {
+                let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+                let copies = if power_arr.is_some_and(|a| a.len() > 1) {
+                    format!(", {} copies", power_arr.map(|a| a.len()).unwrap_or(1))
+                } else {
+                    String::new()
+                };
+                let slider = p
+                    .get("slider")
+                    .and_then(|s| s.get("enabled"))
+                    .and_then(Value::as_bool);
+                let slider_text = match slider {
+                    Some(true) => ", slider enabled",
+                    Some(false) => ", slider disabled",
+                    None => "",
+                };
+                let range = p
+                    .get("adjustment_percent")
+                    .and_then(Value::as_str)
+                    .map(|r| format!(", range {r}"))
+                    .unwrap_or_default();
+                let anchor_off = p
+                    .get("anchor_offset")
+                    .and_then(Value::as_u64)
+                    .map(|v| format!("{v:#x}"))
+                    .unwrap_or_else(|| "?".into());
+                let version = b
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .trim_start_matches("0x")
+                    .to_string();
+                let cap_entry = b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0);
+                // min 缺席侧（mobile 锚点路径）由另一侧补齐。
+                let min = a_min.or(b_min);
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!(
+                        "    power: {}{range}{slider_text} — anchor {anchor_off} ({platform}{copies}) ≡ P+0x2C v{version} cap#{cap_entry}",
+                        watts(min, a_target, a_limit)
+                    ),
+                    false,
+                ));
+            } else {
+                let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+                let version = b
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .trim_start_matches("0x")
+                    .to_string();
+                let cap_entry = b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0);
+                lines.push(nvoc_cli_common::color::stylize_warning(&format!(
+                    "    power MISMATCH: anchor scan ({platform}) {} vs P+0x2C v{version} cap#{cap_entry} {} — cross-check failed",
+                    watts(a_min, a_target, a_limit),
+                    watts(b_min, b_avg.unwrap_or(0.0), b_peak.unwrap_or(0.0)),
+                )));
+            }
+        }
+        (Some(p), None) => {
+            let platform = p.get("platform").and_then(Value::as_str).unwrap_or("?");
+            let target = p.get("target_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let limit = p.get("limit_watt").and_then(Value::as_f64).unwrap_or(0.0);
+            let slider = p
+                .get("slider")
+                .and_then(|s| s.get("enabled"))
+                .and_then(Value::as_bool);
+            let slider_text = match slider {
+                Some(true) => "enabled",
+                Some(false) => "disabled",
+                None => "not found",
+            };
+            let min_w = p
+                .get("min_watt")
+                .and_then(Value::as_f64)
+                .map(|v| format!("min {v:.0} W, "));
+            let range = p
+                .get("adjustment_percent")
+                .and_then(Value::as_str)
+                .map(|r| format!(", range {r}"))
+                .unwrap_or_default();
+            let count = if power_arr.is_some_and(|a| a.len() > 1) {
+                format!(" ({} copies)", power_arr.map(|a| a.len()).unwrap_or(1))
+            } else {
+                String::new()
+            };
+            lines.push(nvoc_cli_common::color::stylize(
                 &format!(
                     "    power ({platform}): {}target {target:.0} W, limit {limit:.0} W{range}, slider {slider_text}{count}",
                     min_w.unwrap_or_default()
                 ),
                 false,
             ));
+        }
+        (None, Some(b)) => {
+            let cap = b.get("cap_entry_power").unwrap();
+            let fmt = |k: &str| {
+                cap.get(k)
+                    .and_then(Value::as_u64)
+                    .map(|v| v / 1000)
+                    .unwrap_or(0)
+            };
+            let version = b
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .trim_start_matches("0x")
+                .to_string();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    power budget (P+0x2C v{version}): cap entry {} = min {} W / avg {} W / peak {} W",
+                    b.get("cap_entry").and_then(Value::as_u64).unwrap_or(0),
+                    fmt("min_mw"),
+                    fmt("avg_mw"),
+                    fmt("peak_mw")
+                ),
+                false,
+            ));
+        }
+        (None, None) => {}
     }
     // thermal/fan: documented BIT 'P' table (nouveau semantics). The
     // absence note only prints when no modern-slot fan/thermal data rendered
@@ -953,6 +1789,255 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 false,
             ));
         }
+        // strap variants 聚合渲染：按 (type/vendor/density/org) 分组，列出
+        // 各组的 strap 槽（同组热/功率参数一致才省略）。
+        if let Some(variants) = mem
+            .get("info")
+            .and_then(|i| i.get("variants"))
+            .and_then(Value::as_array)
+            && !variants.is_empty()
+        {
+            let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+            let mut extras = std::collections::BTreeSet::new();
+            for v in variants {
+                let mut key_bits: Vec<String> = Vec::new();
+                for key in ["type", "vendor", "density"] {
+                    match v.get(key).and_then(Value::as_str) {
+                        Some(val) if val != "?" => key_bits.push(val.to_string()),
+                        _ => key_bits.push("?".into()),
+                    }
+                }
+                let org = v.get("org").and_then(Value::as_u64);
+                let org_part = org
+                    .map(|o| format!("org x{o:02x}"))
+                    .unwrap_or_else(|| "org ?".into());
+                key_bits.push(org_part);
+                let key = key_bits.join(" ");
+                let strap = v
+                    .get("strap")
+                    .and_then(Value::as_u64)
+                    .map(|st| format!("x{st:02x}"))
+                    .unwrap_or_else(|| "?".into());
+                // 同键下其它字段不一致就记进 extras（不省略差异）。
+                let tj = v.get("tj_max_fan_limit").and_then(Value::as_u64);
+                if let Some(tj) = tj
+                    && tj != 0
+                {
+                    extras.insert(format!("tjmax {tj}C"));
+                }
+                match groups.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, straps)) => straps.push(strap),
+                    None => groups.push((key, vec![strap])),
+                }
+            }
+            // type/vendor 双缺的组是未填的 strap 占位槽，不渲染。
+            groups.retain(|(k, _)| !k.starts_with("? ? "));
+            if !groups.is_empty() {
+                let items: Vec<String> = groups
+                    .iter()
+                    .map(|(key, straps)| {
+                        let shown = straps.iter().take(8).cloned().collect::<Vec<_>>().join(",");
+                        let more = if straps.len() > 8 {
+                            format!(",…(+{})", straps.len() - 8)
+                        } else {
+                            String::new()
+                        };
+                        format!("{key} [{shown}{more}]")
+                    })
+                    .collect();
+                let extra_note = if extras.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " | {}",
+                        extras.iter().cloned().collect::<Vec<_>>().join(", ")
+                    )
+                };
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    memory variants: {}{}", items.join(" | "), extra_note),
+                    false,
+                ));
+            }
+        }
+        // 时序表形状（时序位段 hexpat 亦未命名，只给结构）。
+        if let Some(tw) = mem.get("tweak_table").and_then(Value::as_object)
+            && tw.get("timing_sets").is_some()
+        {
+            let base = tw
+                .get("base_entry_size")
+                .and_then(Value::as_u64)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into());
+            let ext = tw
+                .get("extended_entry_size")
+                .and_then(Value::as_u64)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into());
+            let eec = tw
+                .get("extended_entry_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let ver = tw.get("version").and_then(Value::as_str).unwrap_or("?");
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    memory timings: v{ver}, {} sets (base {base}B + {eec}×{ext}B reg; bitfields decoded below, full bytes in JSON)",
+                    tw.get("timing_sets").and_then(Value::as_i64).unwrap_or(0)
+                ),
+                false,
+            ));
+        }
+        // v0x20 位段参数摘要：按 (CL, p44, p45, CCDL, CCDS) 元组聚合 set。
+        if let Some(decoded) = mem
+            .get("tweak_table")
+            .and_then(|t| t.get("decoded"))
+            .and_then(Value::as_array)
+            && !decoded.is_empty()
+        {
+            let key = |d: &Value| {
+                (
+                    d.get("cl_ramtype2").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("param44").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("param45").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("ccdl").and_then(Value::as_u64).unwrap_or(0),
+                    d.get("ccds").and_then(Value::as_u64).unwrap_or(0),
+                )
+            };
+            /// (CL, p44, p45, CCDL, CCDS) 参数元组 → 覆盖的 set 下标段。
+            type TimingKey = ((u64, u64, u64, u64, u64), Vec<usize>);
+            let mut groups: Vec<TimingKey> = Vec::new();
+            for (i, d) in decoded.iter().enumerate() {
+                let k = key(d);
+                match groups.last_mut() {
+                    Some((gk, idx)) if *gk == k => idx.push(i),
+                    _ => groups.push((k, vec![i])),
+                }
+            }
+            let items: Vec<String> = groups
+                .iter()
+                .map(|((cl, p44, p45, ccdl, ccds), idx)| {
+                    let span = if idx.len() == 1 {
+                        format!("#{}", idx[0])
+                    } else {
+                        format!("#{}..#{}", idx[0], idx[idx.len() - 1])
+                    };
+                    format!("{span}: CL{cl} p44={p44} p45={p45} CCDL{ccdl}/CCDS{ccds}")
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    memory timing params: {}", items.join(" | ")),
+                false,
+            ));
+        }
+        // shunt/感测倍率 ≠ 1.0 的通道（Q4.12；4090 CC07B 连接器 1.3333、
+        // 4070S 2.0、3090 NVVDD 相位 4.0 实测）。1.0 通道不列。
+        if let Some(scales) = output
+            .get("structural")
+            .and_then(|t| t.get("tables_v3"))
+            .and_then(|t| t.get("power_channels"))
+            .and_then(|c| c.get("channel_scaling"))
+            .and_then(Value::as_array)
+            && let Some(roles) = output
+                .get("structural")
+                .and_then(|t| t.get("tables_v3"))
+                .and_then(|t| t.get("power_channels"))
+                .and_then(|c| c.get("roles"))
+                .and_then(Value::as_array)
+        {
+            // 只列 12V 感测族（voltage_uv == 12,000,000 且有模板 role）：
+            // 该族的 bytes 6..8 = 感测倍率（shunt 校准）。其它 class 的同位
+            // 置字节语义未证实（vix 观察 class-2 求和通道在 bytes 6..7 存
+            // 别的值），不标 shunt。
+            let items: Vec<String> = scales
+                .iter()
+                .zip(roles.iter())
+                .enumerate()
+                .filter_map(|(i, (sc, role))| {
+                    if sc.get("voltage_uv").and_then(Value::as_u64) != Some(12_000_000) {
+                        return None;
+                    }
+                    let role = role.as_str().unwrap_or("");
+                    if role.is_empty() {
+                        return None;
+                    }
+                    let scale = sc.get("scale").and_then(Value::as_f64)?;
+                    if (scale - 1.0).abs() < 1e-4 {
+                        return None;
+                    }
+                    Some(format!("ch{i} {role} x{scale:.4}"))
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    shunt/sense scales: {}", items.join(" | ")),
+                    false,
+                ));
+            }
+        }
+        // range → tweak set 映射（strap 副本 byte 0 的关联键）。各 strap 同
+        // 组时折叠为 #k；0xFF（无）折叠为 none。
+        if let Some(ranges) = mem
+            .get("clock_table")
+            .and_then(|c| c.get("freq_ranges"))
+            .and_then(Value::as_array)
+        {
+            let items: Vec<String> = ranges
+                .iter()
+                .filter(|r| {
+                    // 空槽 range（0..0）不渲染。
+                    !matches!(
+                        (
+                            r.get("freq_min_raw").and_then(Value::as_i64),
+                            r.get("freq_max_raw").and_then(Value::as_i64),
+                        ),
+                        (Some(0), Some(0))
+                    )
+                })
+                .map(|r| {
+                    let lo = r.get("freq_min_raw").and_then(Value::as_i64).unwrap_or(0);
+                    let hi = r.get("freq_max_raw").and_then(Value::as_i64).unwrap_or(0);
+                    let idxs: Vec<u8> = r
+                        .get("tweak_indices")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_u64)
+                                .map(|v| v as u8)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let label = if idxs.is_empty() {
+                        "?".into()
+                    } else {
+                        let uniq: std::collections::BTreeSet<u8> = idxs.iter().copied().collect();
+                        if uniq.len() == 1 {
+                            match uniq.iter().next().unwrap() {
+                                0xFF => "none".into(),
+                                k => format!("#{k}"),
+                            }
+                        } else {
+                            format!(
+                                "[{}]",
+                                idxs.iter()
+                                    .map(|k| if *k == 0xFF {
+                                        "-".into()
+                                    } else {
+                                        format!("{k}")
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            )
+                        }
+                    };
+                    format!("{lo}..{hi}→{label}")
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    memory timing map: {}", items.join("  ")),
+                    false,
+                ));
+            }
+        }
     }
     // Thermal limits (GPU-Z aligned: rated / maximum from ThermalPolicy)
     if let Some(tp) = output.get("thermal_policy")
@@ -1000,8 +2085,19 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
         ));
     }
     // Fan cooler envelope (per-cooler max duty / max RPM; count = cooler
-    // controllers the ROM provisions — NVAPI cooler Count same semantics)
-    if let Some(fc) = output.get("fan_cooler")
+    // controllers the ROM provisions — NVAPI cooler Count same semantics).
+    // Skipped when the structural layer already rendered the same cooler
+    // table with its full channel rows (3x families): the old line is a
+    // strict subset (duty/max-rpm) of the structural fan channels row.
+    let structural_fans_rendered = output
+        .get("structural")
+        .and_then(|st| st.get("tables_v3"))
+        .and_then(|t| t.get("fans"))
+        .and_then(|f| f.get("present"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !structural_fans_rendered
+        && let Some(fc) = output.get("fan_cooler")
         && fc.get("present").and_then(Value::as_bool) == Some(true)
         && let Some(coolers) = fc.get("coolers").and_then(Value::as_array)
     {
@@ -1037,12 +2133,29 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
             .map(|e| {
                 let app = e.get("application").and_then(Value::as_str).unwrap_or("?");
                 let tgt = e.get("target").and_then(Value::as_str).unwrap_or("?");
-                let stored = e
-                    .get("desc")
+                let d = e.get("desc").filter(|d| !d.is_null());
+                let stored = d
                     .and_then(|d| d.get("stored_size"))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                format!("{app}/{tgt} {stored:#x}")
+                // FWSEC 族（V2/V3 描述符）追加 IMEM/DMEM 几何与签名位图。
+                let geom = d
+                    .and_then(|d| {
+                        let ver = d.get("version").and_then(Value::as_u64)?;
+                        let imem = d.get("imem_load_size").and_then(Value::as_u64)?;
+                        let dmem = d.get("dmem_load_size").and_then(Value::as_u64)?;
+                        let sig = d.get("signature_count").and_then(Value::as_u64)?;
+                        let sigv = d.get("signature_versions").and_then(Value::as_u64)?;
+                        Some(if ver >= 2 && sig > 0 {
+                            format!(" imem {imem:#x} dmem {dmem:#x} sig {sig}@{sigv:#x}")
+                        } else if ver >= 2 {
+                            format!(" imem {imem:#x} dmem {dmem:#x}")
+                        } else {
+                            String::new()
+                        })
+                    })
+                    .unwrap_or_default();
+                format!("{app}/{tgt} {stored:#x}{geom}")
             })
             .collect();
         if !items.is_empty() {
@@ -1242,6 +2355,241 @@ fn push_detail_shared_sections(output: &Value, lines: &mut Vec<String>) {
                 "    warning: {w}"
             )));
         }
+    }
+    // DCB 指针子表族（envytools nvbios 移植）：I2C 端口/GPIO 命名线/
+    // EXTDEV 外设/CONN。
+    if let Some(ext) = output.get("dcb_ext") {
+        if let Some(i2c) = ext.get("i2c") {
+            let ports: Vec<String> = i2c
+                .get("ports")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter(|p| p.get("kind").and_then(Value::as_str) != Some("UNUSED"))
+                        .map(|p| {
+                            let idx = p.get("index").and_then(Value::as_u64).unwrap_or(0);
+                            let kind = p.get("kind").and_then(Value::as_str).unwrap_or("?");
+                            match p.get("kind").and_then(Value::as_str) {
+                                Some("PMGR") => {
+                                    let drive = p.get("drive").and_then(Value::as_u64);
+                                    let aux = p.get("auxch").and_then(Value::as_u64);
+                                    let d =
+                                        drive.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+                                    let x =
+                                        aux.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+                                    format!("p{idx}:PMGR(drv {d},aux {x})")
+                                }
+                                _ => format!("p{idx}:{kind}"),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !ports.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dcb i2c ports: {}", ports.join(", ")),
+                    false,
+                ));
+            }
+        }
+        if let Some(gpio) = ext.get("gpio")
+            && let Some(gpio_lines) = gpio.get("lines").and_then(Value::as_array)
+        {
+            let named: Vec<String> = gpio_lines
+                .iter()
+                .filter(|l| {
+                    !matches!(
+                        l.get("name").and_then(Value::as_str),
+                        Some("UNUSED") | Some("UNKNOWN")
+                    )
+                })
+                .map(|l| {
+                    format!(
+                        "{}:{}",
+                        l.get("line").and_then(Value::as_u64).unwrap_or(0),
+                        l.get("name").and_then(Value::as_str).unwrap_or("?")
+                    )
+                })
+                .collect();
+            if !named.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    dcb gpio: {}", named.join(", ")),
+                    false,
+                ));
+            }
+        }
+        if let Some(extdev) = ext.get("extdev")
+            && let Some(devs) = extdev.get("devices").and_then(Value::as_array)
+            && !devs.is_empty()
+        {
+            let items: Vec<String> = devs
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}@{}",
+                        d.get("name").and_then(Value::as_str).unwrap_or("?"),
+                        d.get("address").and_then(Value::as_str).unwrap_or("?")
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    dcb extdev: {}", items.join(", ")),
+                false,
+            ));
+        }
+        if let Some(conn) = ext.get("conn")
+            && let Some(entries) = conn.get("entries").and_then(Value::as_array)
+            && !entries.is_empty()
+        {
+            let items: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    let hpd = e
+                        .get("hpd")
+                        .and_then(Value::as_u64)
+                        .map(|v| format!("/HPD{v}"))
+                        .unwrap_or_default();
+                    format!(
+                        "{}{}",
+                        e.get("type").and_then(Value::as_str).unwrap_or("?"),
+                        hpd
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    dcb conn: {}", items.join(", ")),
+                false,
+            ));
+        }
+    }
+    // BIT token 级子表：目录 + 'M' 内存类型 + NVINIT 脚本指针。
+    if let Some(bt) = output.get("bit_tokens") {
+        if let Some(dir) = bt.get("directory").and_then(Value::as_array)
+            && !dir.is_empty()
+        {
+            let items: Vec<String> = dir
+                .iter()
+                .map(|t| {
+                    format!(
+                        "{}{}({:#04x})",
+                        t.get("id").and_then(Value::as_str).unwrap_or("?"),
+                        t.get("ver").and_then(Value::as_u64).unwrap_or(0),
+                        t.get("len").and_then(Value::as_u64).unwrap_or(0)
+                    )
+                })
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!("    bit tokens: {}", items.join(" ")),
+                false,
+            ));
+        }
+        if let Some(mem) = bt.get("mem")
+            && let Some(tt) = mem.get("type_table")
+        {
+            let mut counts: Vec<(String, usize)> = Vec::new();
+            for e in tt
+                .get("entries")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let name = e
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string();
+                match counts.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, c)) => *c += 1,
+                    None => counts.push((name, 1)),
+                }
+            }
+            let items: Vec<String> = counts
+                .into_iter()
+                .map(|(n, c)| format!("{n}x{c}"))
+                .collect();
+            lines.push(nvoc_cli_common::color::stylize(
+                &format!(
+                    "    bit 'M': groups {}, ramcfg types {}",
+                    mem.get("group_count").and_then(Value::as_u64).unwrap_or(0),
+                    items.join(", ")
+                ),
+                false,
+            ));
+        }
+        if let Some(nvinit) = bt.get("nvinit")
+            && let Some(slots) = nvinit.get("slots").and_then(Value::as_array)
+        {
+            let items: Vec<String> = slots
+                .iter()
+                .filter(|s| s.get("ptr").and_then(Value::as_u64).unwrap_or(0) != 0)
+                .map(|s| {
+                    format!(
+                        "{}={:#06x}",
+                        s.get("slot").and_then(Value::as_str).unwrap_or("?"),
+                        s.get("ptr").and_then(Value::as_u64).unwrap_or(0)
+                    )
+                })
+                .collect();
+            if !items.is_empty() {
+                lines.push(nvoc_cli_common::color::stylize(
+                    &format!("    nvinit (BIT 'I' u16 ptrs): {}", items.join(", ")),
+                    false,
+                ));
+            }
+        }
+    }
+    // 段名字典序：本函数追加的各段行按行首段名（首个单词，大小写不敏感）
+    // 稳定排序——同族段保持插入序（power policy → power rows、memory →
+    // memory variants），warning 行一律置尾。函数起点之前的行（VP 阶梯
+    // 表/pstate marks/dual bank）不参与。深缩进续行黏附其组头（perf ptrs
+    // 槽表），排序键取自剥离 ANSI 序列后的纯文本（着色模式下 stylize 会
+    // 逐 token 包裹）。
+    fn plain_text(l: &str) -> String {
+        let mut out = String::with_capacity(l.len());
+        let mut chars = l.chars();
+        while let Some(c) = chars.next() {
+            if c == '' {
+                for e in chars.by_ref() {
+                    if e.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+    let tail: Vec<String> = lines.drain(sort_start..).collect();
+    let header_indent = tail
+        .first()
+        .map(|l| {
+            let plain = plain_text(l);
+            plain.len() - plain.trim_start().len()
+        })
+        .unwrap_or(0);
+    let mut groups: Vec<(bool, String, Vec<String>)> = Vec::new();
+    for l in tail {
+        let plain = plain_text(&l);
+        let indent = plain.len() - plain.trim_start().len();
+        let keyword = plain
+            .trim_start()
+            .split([':', ' '])
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let is_warning = plain.contains("warning:");
+        if indent > header_indent
+            && let Some(last) = groups.last_mut()
+        {
+            last.2.push(l);
+            continue;
+        }
+        groups.push((is_warning, keyword, vec![l]));
+    }
+    groups.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    for (_, _, group_lines) in groups {
+        lines.extend(group_lines);
     }
 }
 
@@ -2278,19 +3626,36 @@ fn format_value_block_with_context(value: &Value, indent: usize, context: &str) 
                 )];
             }
 
-            items
+            // 对象/数组项渲染为多行"块"；块与块之间插一条分隔线，否则相邻
+            // 块的字段行无法目视归属（如 get-pwr-cur-info 的 Policies 列表）。
+            // 标量项保持紧凑列表，不插线。
+            let rendered: Vec<(bool, Vec<String>)> = items
                 .iter()
-                .flat_map(|item| match item {
+                .map(|item| match item {
                     Value::Object(_) | Value::Array(_) => {
-                        format_value_block_with_context(item, indent, context)
+                        let lines = format_value_block_with_context(item, indent, context);
+                        (lines.len() >= 2, lines)
                     }
-                    _ => vec![format!(
-                        "{}- {}",
-                        indent_spaces(indent),
-                        nvoc_cli_common::color::stylize(&format_scalar("", item), false)
-                    )],
+                    _ => (
+                        false,
+                        vec![format!(
+                            "{}- {}",
+                            indent_spaces(indent),
+                            nvoc_cli_common::color::stylize(&format_scalar("", item), false)
+                        )],
+                    ),
                 })
-                .collect()
+                .collect();
+            let mut out: Vec<String> = Vec::new();
+            let mut prev_block = false;
+            for (is_block, mut lines) in rendered {
+                if is_block && prev_block {
+                    out.push(format!("{}{}", indent_spaces(indent), "-".repeat(30)));
+                }
+                out.append(&mut lines);
+                prev_block = is_block;
+            }
+            out
         }
         _ => vec![format!(
             "{}{}",
@@ -3022,118 +4387,261 @@ fn format_memory_entries(indent: usize, object: &serde_json::Map<String, Value>)
         .collect()
 }
 
-/// Render the thermal `sensors` array. Each entry is a `[descriptor, temp]`
-/// tuple (sub-degree celsius). The `target` field is dropped (it adds no useful
-/// information beyond the sensor name) and each temperature gets a `C` unit.
-/// Sensor ranges are temperature limits, also shown with `C`; an all-zero range
-/// (the undocumented sensors carry no limit data) is omitted as uninformative.
+/// Render the thermal `sensors` array in COMPACT form: one line naming only
+/// the classified primary sensors (`GPU_AVG: 44.5 C  HOT_SPOT: 60.8 C`).
+/// The full research metadata per channel (Channel Num/Type, Offset Sw/Hw,
+/// Scaling, Range, sensor pairing) lives in `get-thermal-channels` — the
+/// JSON emitted here is unchanged, only the human rendering slims down.
+/// Non-tuple entries (legacy descriptor objects, e.g. the NVML/legacy
+/// path's named sensors) keep the generic block rendering; metadata-less
+/// tuple entries keep a bare temperature line.
 fn format_sensors_array(indent: usize, items: &[Value]) -> Vec<String> {
-    let mut lines = Vec::new();
+    let mut named: Vec<String> = Vec::new();
+    let mut other: Vec<String> = Vec::new();
     for sensor in items {
         let Some(tuple) = sensor.as_array() else {
-            lines.extend(format_value_block_with_context(sensor, indent, "sensors"));
+            other.extend(format_value_block_with_context(sensor, indent, "sensors"));
             continue;
         };
         let descriptor = tuple.first().and_then(Value::as_object);
         let temp = tuple.get(1);
-
-        if let Some(descriptor) = descriptor {
-            lines.extend(format_sensor_descriptor(indent, descriptor));
-        }
-        if let Some(temp) = temp {
-            let rendered = match temp {
-                Value::Number(number) => format!("{} C", number),
-                _ => format_scalar("", temp),
-            };
-            lines.push(format!(
-                "{}- {}",
-                indent_spaces(indent),
-                nvoc_cli_common::color::stylize(&rendered, false)
-            ));
+        let tag = match descriptor.map(|d| d.get("channel_type")).unwrap_or(None) {
+            Some(Value::Number(n)) => n.as_i64(),
+            _ => None,
+        };
+        let temp_text = temp.map(|t| match t {
+            Value::Number(number) => format_measurement(number.as_f64().unwrap_or(0.0), "C"),
+            _ => format_scalar("", t),
+        });
+        match (tag, temp_text) {
+            (Some(t), Some(text)) if (0..=4).contains(&t) => {
+                let name = match t {
+                    0 => "GPU_AVG",
+                    1 => "HOT_SPOT",
+                    2 => "BOARD",
+                    3 => "VRAM",
+                    _ => "PWR_SUPPLY",
+                };
+                named.push(format!(
+                    "{}: {}",
+                    nvoc_cli_common::color::stylize_title(name),
+                    nvoc_cli_common::color::stylize(&text, false)
+                ));
+            }
+            (_, Some(text)) => {
+                // unclassified (255) or metadata-less: bare temperature line
+                other.push(format!(
+                    "{}- {}",
+                    indent_spaces(indent),
+                    nvoc_cli_common::color::stylize(&text, false)
+                ));
+            }
+            (_, None) => {}
         }
     }
+    let mut lines = Vec::new();
+    if !named.is_empty() {
+        lines.push(format!("{}{}", indent_spaces(indent), named.join("  ")));
+    }
+    if named.is_empty() && other.is_empty() {
+        lines.push(format!(
+            "{}(research channels: get-thermal-channels)",
+            indent_spaces(indent)
+        ));
+    }
+    lines.extend(other);
     lines
 }
 
-/// Render a sensor descriptor (everything except `target`) as indented fields.
-/// `channel_num` is emitted verbatim; `channel_type` gets a human tag
-/// (GPU_AVG/GPU_MAX/BOARD/MEMORY/PWR_SUPPLY/unclassified); `range` is a
-/// temperature limit shown as `Max N C, Min N C`, skipped when it is `{0, 0}`
-/// (the RTSS GetInfo record may report no limits for a channel, so a zero
-/// range carries no information).
-fn format_sensor_descriptor(
-    indent: usize,
-    descriptor: &serde_json::Map<String, Value>,
-) -> Vec<String> {
-    let field = |key: &str, value: &Value| {
-        format!(
-            "{}{}: {}",
-            indent_spaces(indent),
-            nvoc_cli_common::color::stylize_title(&format_label(key)),
-            nvoc_cli_common::color::stylize(&format_scalar(key, value), false)
-        )
-    };
-
+/// Render the full ThermChannel map (get-thermal-channels): the classified
+/// primary channels with live temperatures, then every populated channel with
+/// its research metadata (type tag, offsets/scaling raw, decoded range, and
+/// the same-sensor pairing annotation for the `(dev, 1)` half whose STATUS
+/// reading already carries `offset_hw`).
+pub(super) fn format_thermal_channels(output: &Value) -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some(range) = descriptor.get("range").and_then(Value::as_object) {
-        let max = range.get("max").and_then(Value::as_f64);
-        let min = range.get("min").and_then(Value::as_f64);
-        // Skip a {0, 0} range (no limit data for undocumented sensors).
-        let is_zero_range = matches!(
-            (max, min),
-            (Some(0.0), Some(0.0)) | (Some(0.0), None) | (None, Some(0.0))
-        );
-        if !is_zero_range
-            && let Some(max) = max
-            && let Some(min) = min
-        {
+    if output.get("supported").and_then(Value::as_bool) == Some(false) {
+        return vec!["  Thermal Channels: N/A (ThermChannel family unavailable)".to_string()];
+    }
+    let temp_text = |v: Option<&Value>| -> Option<String> {
+        v.and_then(Value::as_f64)
+            .map(|t| format_measurement(t, "C"))
+    };
+    let ch_tag = |t: f64| -> String {
+        match t as i64 {
+            0 => "GPU_AVG".to_string(),
+            1 => "HOT_SPOT".to_string(),
+            2 => "BOARD".to_string(),
+            3 => "VRAM".to_string(),
+            4 => "PWR_SUPPLY".to_string(),
+            255 => "unclassified".to_string(),
+            other => format!("type {other}"),
+        }
+    };
+    if let Some(primary) = output.get("primary").and_then(Value::as_array) {
+        for entry in primary {
+            let channel = entry.get("channel").and_then(Value::as_u64);
+            let temp = temp_text(entry.get("temp_c"));
+            let label = entry
+                .get("type")
+                .and_then(Value::as_str)
+                // Same vocabulary as the compact get-status line.
+                .map(|l| match l {
+                    "GPU_MAX(hotspot)" => "HOT_SPOT",
+                    "MEMORY(vram)" => "VRAM",
+                    other => other,
+                })
+                .unwrap_or("UNKNOWN");
+            match (channel, temp) {
+                (Some(ch), Some(t)) => lines.push(format!(
+                    "  {}: ch{} = {}",
+                    nvoc_cli_common::color::stylize_title(label),
+                    nvoc_cli_common::color::stylize(&ch.to_string(), false),
+                    nvoc_cli_common::color::stylize(&t, false)
+                )),
+                (Some(ch), None) => lines.push(format!(
+                    "  {}: ch{} (no live reading)",
+                    nvoc_cli_common::color::stylize_title(label),
+                    nvoc_cli_common::color::stylize(&ch.to_string(), false)
+                )),
+                _ => {}
+            }
+        }
+    }
+    if let Some(channels) = output.get("channels").and_then(Value::as_array) {
+        if !channels.is_empty() {
+            lines.push(nvoc_cli_common::color::stylize_title("Channels").to_string());
+        }
+        for entry in channels {
+            let idx = entry
+                .get("channel")
+                .and_then(Value::as_u64)
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let ty = entry.get("ch_type").and_then(Value::as_f64);
+            let ty_text = match ty {
+                Some(t) => ch_tag(t),
+                None => "?".to_string(),
+            };
+            let temp = temp_text(entry.get("temp_c")).unwrap_or_else(|| "no reading".to_string());
+            let mut parts = vec![format!(
+                "ch{}: {} = {}",
+                nvoc_cli_common::color::stylize(&idx, false),
+                ty_text,
+                nvoc_cli_common::color::stylize(&temp, false)
+            )];
+            if let Some(dev) = entry.get("therm_dev").and_then(Value::as_array) {
+                let d = dev.first().and_then(Value::as_u64).unwrap_or(0);
+                let p = dev.get(1).and_then(Value::as_u64).unwrap_or(0);
+                parts.push(format!("dev({d},{p})"));
+                if p == 1
+                    && let Some(sib) = entry.get("same_sensor_as").and_then(Value::as_u64)
+                {
+                    parts.push(format!("same sensor as ch{sib} (+offset_hw)"));
+                }
+            }
+            for key in ["offset_sw", "offset_hw", "scaling"] {
+                if let Some(v) = entry.get(key).and_then(Value::as_i64) {
+                    parts.push(format!("{key} {v}"));
+                }
+            }
+            if let Some(range) = entry.get("range_c").and_then(Value::as_array) {
+                let lo = range.first().and_then(Value::as_f64);
+                let hi = range.get(1).and_then(Value::as_f64);
+                if let (Some(lo), Some(hi)) = (lo, hi) {
+                    parts.push(format!(
+                        "range {}..{}",
+                        format_measurement(lo, "C"),
+                        format_measurement(hi, "C")
+                    ));
+                }
+            }
+            lines.push(format!("  {}", parts.join(" | ")));
+        }
+    }
+    if output.get("status_supported").and_then(Value::as_bool) == Some(false) {
+        lines.push("  (live STATUS refused — metadata only)".to_string());
+    }
+    // RegisterOp raw reads (LACT parity): per-chip GDDR6x/7 sensors + the
+    // Blackwell+ hotspot register fallback. On Blackwell prefer the register
+    // hotspot over the channel map's HOT_SPOT slot (LACT does the same).
+    match output.get("register_views") {
+        Some(views) if views.get("supported").and_then(Value::as_bool) == Some(false) => {
+            let reason = views
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("RegisterOp unavailable");
             lines.push(format!(
-                "{}{}: Max {}, Min {}",
-                indent_spaces(indent),
-                nvoc_cli_common::color::stylize_title("Range"),
-                nvoc_cli_common::color::stylize(&format_measurement(max, "C"), false),
-                nvoc_cli_common::color::stylize(&format_measurement(min, "C"), false)
+                "  {} {}",
+                nvoc_cli_common::color::stylize_title("Register views:"),
+                nvoc_cli_common::color::stylize(&format!("N/A ({reason})"), false)
             ));
         }
-    }
-    if let Some(chan) = descriptor.get("channel_num") {
-        lines.push(field("channel_num", chan));
-    }
-    // Cross-reference to the raw sibling channel: RTSS exposes two channels
-    // per physical sensor — `(dev, 0)` raw and `(dev, 1)` with `offset_hw`
-    // already applied by the driver. Annotate the `(dev, 1)` half.
-    if let Some(sibling) = descriptor.get("same_sensor_as").and_then(Value::as_i64) {
-        lines.push(format!(
-            "{}{}: ch[{}] with offset_hw",
-            indent_spaces(indent),
-            nvoc_cli_common::color::stylize_title("Same Sensor As"),
-            nvoc_cli_common::color::stylize(&sibling.to_string(), false)
-        ));
-    }
-    // RTSS ThermChannel metadata (research fields from GetInfo). channel_type
-    // gets a human tag; offsets/scaling are shown raw (semantics undocumented).
-    if let Some(ch_type) = descriptor.get("channel_type").and_then(Value::as_i64) {
-        let tag = match ch_type {
-            0 => " (GPU_AVG)",
-            1 => " (GPU_MAX)",
-            2 => " (BOARD)",
-            3 => " (MEMORY)",
-            4 => " (PWR_SUPPLY)",
-            255 => " (unclassified)",
-            _ => "",
-        };
-        lines.push(format!(
-            "{}{}: {}{}",
-            indent_spaces(indent),
-            nvoc_cli_common::color::stylize_title("Channel Type"),
-            nvoc_cli_common::color::stylize(&ch_type.to_string(), false),
-            tag
-        ));
-    }
-    for key in ["offset_sw", "offset_hw", "scaling"] {
-        if let Some(val) = descriptor.get(key) {
-            lines.push(field(key, val));
+        Some(views) => {
+            lines.push(nvoc_cli_common::color::stylize_title("Register views").to_string());
+            if let Some(ram) = views.get("ram_type").and_then(Value::as_str) {
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("ram_type"),
+                    nvoc_cli_common::color::stylize(ram, false)
+                ));
+            }
+            if let Some(error) = views.get("vram_chip_error").and_then(Value::as_str) {
+                // A call-level NVAPI_ERROR (-1) is the non-admin signature of
+                // the kernel register lane (RE-proven on 610.47; every user-
+                // mode check passes first). Hint so the reading is actionable.
+                let hint = if error.contains("NVAPI_ERROR") {
+                    "; the register lane requires an elevated (admin) process"
+                } else {
+                    ""
+                };
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("VRAM chip probe"),
+                    nvoc_cli_common::color::stylize(&format!("aborted ({error}){hint}"), false)
+                ));
+            } else {
+                match views.get("vram_chips").and_then(Value::as_array) {
+                    Some(chips) if !chips.is_empty() => {
+                        for chip in chips {
+                            let label = chip.get("label").and_then(Value::as_str).unwrap_or("?");
+                            let temp = temp_text(chip.get("temp_c"))
+                                .unwrap_or_else(|| "no reading".to_string());
+                            lines.push(format!(
+                                "  {}: {}",
+                                nvoc_cli_common::color::stylize_title(&format!(
+                                    "VRAM chip {label}"
+                                )),
+                                nvoc_cli_common::color::stylize(&temp, false)
+                            ));
+                        }
+                    }
+                    Some(_) => {
+                        let ram = views.get("ram_type").and_then(Value::as_str).unwrap_or("?");
+                        lines.push(format!(
+                            "  {}: {}",
+                            nvoc_cli_common::color::stylize_title("VRAM chips"),
+                            nvoc_cli_common::color::stylize(
+                                &format!("none (probe set is GDDR6x/GDDR7; this is {ram})"),
+                                false
+                            )
+                        ));
+                    }
+                    None => {}
+                }
+            }
+            if let Some(temp) = views
+                .get("blackwell_hotspot_register_c")
+                .and_then(Value::as_f64)
+            {
+                lines.push(format!(
+                    "  {}: {}",
+                    nvoc_cli_common::color::stylize_title("Blackwell hotspot register"),
+                    nvoc_cli_common::color::stylize(&format_measurement(temp, "C"), false)
+                ));
+            }
         }
+        None => {}
     }
     lines
 }
@@ -3410,6 +4918,10 @@ fn format_label(key: &str) -> String {
             "nvapi" => "NVAPI".to_string(),
             "nvml" => "NVML".to_string(),
             "tdp" => "TDP".to_string(),
+            "tgp" => "TGP".to_string(),
+            "ocp" => "OCP".to_string(),
+            "nvvdd" => "NVVDD".to_string(),
+            "msvdd" => "MSVDD".to_string(),
             "vfp" => "VFP".to_string(),
             // SI unit words match case-insensitively — keys arrive both as
             // "mv" and "mV" (JSON field names carry the unit suffix), and a
@@ -3418,6 +4930,9 @@ fn format_label(key: &str) -> String {
             "mv" | "mV" | "MV" => "mV".to_string(),
             "mhz" | "MHz" | "MHZ" => "MHz".to_string(),
             "khz" | "kHz" | "KHZ" => "kHz".to_string(),
+            "ns" | "Ns" | "NS" => "ns".to_string(),
+            "ma" | "mA" | "MA" => "mA".to_string(),
+            "mw" | "mW" | "MW" => "mW".to_string(),
             "c" => "C".to_string(),
             other => {
                 let mut chars = other.chars();
@@ -3437,6 +4952,115 @@ fn indent_spaces(indent: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn set_power_command_renders_envelope_and_echo_warning() {
+        let value = serde_json::json!({
+            "channel": 0,
+            "command": "request",
+            "value": 300000,
+            "value_mW": 300000,
+            "value_W": 300.0,
+            "baseline_before": 250000,
+            "baseline_before_W": 250.0,
+            "board_default_mW": 250000,
+            "envelope": "board_default_x2",
+        });
+        let lines = super::format_set_power_command(&value);
+        assert!(lines[0].contains("300000 mW (300.0 W)"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("baseline: 250.0 W")
+                && l.contains("restore with set-power-command 250")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("board default: 250000 mW")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("envelope: board_default_x2")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("ECHO LAYER ONLY")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn set_power_command_kmd_renders_patch_cycle_without_echo_warning() {
+        let value = serde_json::json!({
+            "kmd": true,
+            "arm": "root",
+            "wall_before_mw": 115_000,
+            "wall_after_mw": 190_000,
+            "tgp_written_w": 190,
+            "tgp_note": "root arm: tgp write 190 W ✓ readback match",
+            "lease_written_mw": 190_000,
+            "lease_note": "lease channel0 = 190000 mW ✓ (checked write)",
+            "layout": "slot=0x1234 table+0x5678 root_init=0x9abc",
+            "service": "PMXDRV_KMD",
+            "steps": [
+                "service PMXDRV_KMD registered+started ✓",
+                "UPPER 115000 → 190000 ✓ readback match",
+                "lease channel0 = 190000 mW ✓ (checked write)",
+                "recheck wall field=190000 ✓",
+                "service PMXDRV_KMD stopped+deleted ✓",
+            ],
+            "note": "wall field write is volatile (resets on reboot); repeat per boot. Load test before trusting the new wall",
+        });
+        let lines = super::format_set_power_command(&value);
+        assert!(
+            lines[0].contains(
+                "Kernel wall patched via pmxdrv (root arm): 115000 mW → 190000 mW (190.0 W)"
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("UPPER 115000 → 190000 ✓ readback match")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("recheck wall field=190000 ✓")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("KERNEL PATCH APPLIED") && l.contains("pmxdrv kernel driver")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("volatile (resets on reboot)")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("ECHO LAYER ONLY")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn get_power_command_request_carries_echo_note() {
+        let value = serde_json::json!({
+            "channel": 0, "command": "request", "value": 250000,
+            "value_mW": 250000, "value_W": 250.0,
+        });
+        let lines = super::format_power_command(&value);
+        assert!(lines.iter().any(|l| l.contains("echo layer")), "{lines:?}");
+        // observed cells stay clean
+        let value = serde_json::json!({ "channel": 0, "command": "observed", "value": 7 });
+        let lines = super::format_power_command(&value);
+        assert!(!lines.iter().any(|l| l.contains("echo layer")), "{lines:?}");
+    }
     use super::*;
     use crate::{Command, TargetResult, all_commands};
     use serde_json::json;
@@ -3467,6 +5091,55 @@ mod tests {
         assert!(rendered.contains("Watt: Max 350 W, Current 250 W, Min 100 W"));
         assert!(!rendered.contains('{'));
         assert!(!rendered.contains("\"current_watt\""));
+    }
+
+    /// SI casing on current/power units: keys carry the unit as a suffix
+    /// (`raw_mA`, `driver_window_mW`), and the generic label formatter must
+    /// read them back as mA/mW — an unlisted token fell through to plain
+    /// "uppercase the first letter" and rendered "Raw MA" (user report,
+    /// 40-series set-pwr-cur-limit run).
+    #[test]
+    fn si_unit_case_is_preserved_for_ma_and_mw() {
+        nvoc_cli_common::color::init(true);
+        let execution = Execution {
+            function: "set-pwr-cur-limit",
+            command: Command::SetPwrCurLimit,
+            backend: "nvapi".to_string(),
+            warnings: Vec::new(),
+            results: vec![TargetResult {
+                gpu_id: Some(7),
+                backend: "nvapi",
+                ok: true,
+                output: Some(json!({
+                    "applied": true,
+                    "target": "nvvdd",
+                    "index": 0,
+                    "identity": "(13,19)",
+                    "amperes": 135.0,
+                    "raw_mA": 135000,
+                    "driver_window_mA": [1, 135000],
+                    "requested_mA": 140000,
+                    "clamped_to_driver_window": true,
+                })),
+                error: None,
+            }],
+        };
+
+        let rendered = format_human(&execution);
+
+        assert!(rendered.contains("Raw mA: 135000"), "{rendered}");
+        assert!(rendered.contains("Driver Window mA"), "{rendered}");
+        assert!(rendered.contains("Requested mA: 140000"), "{rendered}");
+        assert!(!rendered.contains("MA"), "{rendered}");
+
+        // Board-power row: the same formatter path with the mW suffix.
+        let rendered_mw = format_label("raw_mW") + &format_label("driver_window_mW");
+        assert_eq!(rendered_mw, "Raw mWDriver Window mW");
+
+        // Acronyms keep their canonical spelling in labels too.
+        assert_eq!(format_label("is_ocp_current"), "Is OCP Current");
+        assert_eq!(format_label("nvvdd_ocp"), "NVVDD OCP");
+        assert_eq!(format_label("tgp_range"), "TGP Range");
     }
 
     #[test]
@@ -3517,7 +5190,7 @@ mod tests {
         assert!(text.contains("0x0f(P0) 1911/1811"), "{text}");
         assert!(text.contains("mem clock (DDR): 4004 MHz"), "{text}");
         assert!(
-            text.contains("footers (DRAM/DDR MHz): 0x0f 2002/4004"),
+            text.contains("footers (DRAM/DDR MHz): 0x0f(P0) 2002/4004"),
             "{text}"
         );
         assert!(
@@ -3599,6 +5272,134 @@ mod tests {
         assert!(legacy.contains("Value: 0x00002300 (WDDM 2.3)"));
         // Sensor range bounds carry a C unit.
         assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
+    }
+
+    #[test]
+    fn sensors_array_renders_compact_primaries_only() {
+        nvoc_cli_common::color::init(true);
+        // Mirrors get-status `sensors`: [descriptor, temp] tuples. Classified
+        // primaries collapse onto one line; unclassified research channels are
+        // dropped from the human view (full detail lives in
+        // get-thermal-channels), and legacy descriptor objects keep the block
+        // rendering.
+        let output = json!({
+            "sensors": [
+                [{"target": "Gpu", "channel_num": 0, "channel_type": 0, "offset_sw": 0, "offset_hw": 0, "scaling": 256}, 44.53125],
+                [{"target": "Gpu", "channel_num": 1, "channel_type": 1, "offset_sw": 0, "offset_hw": 0, "scaling": 256}, 60.75],
+                [{"target": "Gpu", "channel_num": 2, "channel_type": 255, "offset_sw": 0, "offset_hw": 3736, "scaling": 256}, 44.59375],
+                {"name": "Core", "range": {"max": 139, "min": -35}}
+            ]
+        });
+        let rendered = format_value_block(&output, 0).join("\n");
+        // Classified primaries collapse onto one line (sub-degree temps go
+        // through the house measurement formatter); ANSI coloring sits between
+        // the segments, so assert the parts individually.
+        assert!(rendered.contains("GPU_AVG: 44.531 C"), "{rendered}");
+        assert!(rendered.contains("HOT_SPOT: 60.75 C"), "{rendered}");
+        // Unclassified channel dropped; research fields no longer rendered here.
+        assert!(!rendered.contains("Channel Type"));
+        assert!(!rendered.contains("44.59375"));
+        assert!(!rendered.contains("Offset Hw"));
+        // Legacy object entries keep the range line.
+        assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
+    }
+
+    #[test]
+    fn thermal_channels_formatter_renders_primaries_and_metadata() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "channel_mask": "0x000000ff",
+            "primary": [
+                {"type": "GPU_AVG", "channel": 0, "temp_c": 44.5},
+                {"type": "GPU_MAX(hotspot)", "channel": 1, "temp_c": 60.8},
+                {"type": "BOARD", "channel": null, "temp_c": null}
+            ],
+            "channels": [
+                {"channel": 0, "ch_type": 0, "therm_dev": [0, 0], "same_sensor_as": null,
+                 "offset_sw": 0, "offset_hw": 0, "scaling": 256, "temp_c": 44.5},
+                {"channel": 3, "ch_type": 255, "therm_dev": [0, 1], "same_sensor_as": 2,
+                 "offset_sw": 0, "offset_hw": 3736, "scaling": 256,
+                 "range_c": [-40, 150], "temp_c": 59.2}
+            ],
+            "status_supported": true
+        });
+        let rendered = super::format_thermal_channels(&output).join("\n");
+        assert!(rendered.contains("GPU_AVG: ch0 = 44.5 C"), "{rendered}");
+        assert!(rendered.contains("HOT_SPOT: ch1 = 60.8 C"), "{rendered}");
+        assert!(
+            rendered.contains("ch3: unclassified = 59.2 C"),
+            "{rendered}"
+        );
+        // Pairing annotation + research fields + decoded range (integer
+        // degrees render without decimals through format_measurement).
+        assert!(
+            rendered.contains("same sensor as ch2 (+offset_hw)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("offset_hw 3736"), "{rendered}");
+        assert!(rendered.contains("scaling 256"), "{rendered}");
+        assert!(rendered.contains("range -40 C..150 C"), "{rendered}");
+    }
+
+    #[test]
+    fn thermal_channels_formatter_renders_register_views() {
+        nvoc_cli_common::color::init(true);
+        let output = json!({
+            "channel_mask": "0x000000ff",
+            "primary": [],
+            "channels": [],
+            "status_supported": true,
+            "register_views": {
+                "ram_type": "GDDR7",
+                "vram_chips": [
+                    {"label": "A0 (Front)", "temp_c": 45},
+                    {"label": "A0 (Back)", "temp_c": 41}
+                ],
+                "vram_chip_error": null,
+                "blackwell_hotspot_register_c": 52
+            }
+        });
+        let rendered = super::format_thermal_channels(&output).join("\n");
+        assert!(rendered.contains("Register views"), "{rendered}");
+        assert!(rendered.contains("ram_type: GDDR7"), "{rendered}");
+        assert!(
+            rendered.contains("VRAM chip A0 (Front): 45 C"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("VRAM chip A0 (Back): 41 C"), "{rendered}");
+        assert!(
+            rendered.contains("Blackwell hotspot register: 52 C"),
+            "{rendered}"
+        );
+
+        // Gated-out card: the probe set note carries the RAM type…
+        let gddr6 = json!({
+            "primary": [],
+            "channels": [],
+            "register_views": {
+                "ram_type": "GDDR6",
+                "vram_chips": [],
+                "vram_chip_error": null,
+                "blackwell_hotspot_register_c": null
+            }
+        });
+        let rendered = super::format_thermal_channels(&gddr6).join("\n");
+        assert!(
+            rendered.contains("VRAM chips: none (probe set is GDDR6x/GDDR7; this is GDDR6)"),
+            "{rendered}"
+        );
+
+        // …and an errored op degrades to the N/A line with the reason.
+        let failed = json!({
+            "primary": [],
+            "channels": [],
+            "register_views": {"supported": false, "error": "RegisterOp refused"}
+        });
+        let rendered = super::format_thermal_channels(&failed).join("\n");
+        assert!(
+            rendered.contains("Register views: N/A (RegisterOp refused)"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -3710,14 +5511,14 @@ mod tests {
         assert!(rendered.contains("Shared: 32573.785 MB"));
         assert!(rendered.contains("Dedicated Evictions: 0"));
         assert!(!rendered.contains("Dedicated: 8384512"));
-        // Sensors: target dropped, classified by channel type (no Name line),
-        // temperature gets a C unit.
+        // Sensors: compact primary line (the research metadata — Channel
+        // Num/Type, Range, offsets — moved to get-thermal-channels);
+        // temperature goes through the house measurement formatter.
         assert!(!rendered.contains("Target"));
         assert!(!rendered.contains("Name:"));
-        assert!(rendered.contains("Channel Num: 0"));
-        assert!(rendered.contains("Channel Type: 0 (GPU_AVG)"));
-        assert!(rendered.contains("Range: Max 139 C, Min -35 C"));
-        assert!(rendered.contains("- 52.58203125 C"));
+        assert!(!rendered.contains("Channel Type"));
+        assert!(!rendered.contains("Offset"));
+        assert!(rendered.contains("GPU_AVG: 52.582 C"));
     }
 
     #[test]
@@ -3741,8 +5542,9 @@ mod tests {
 
         let rendered = render_command_output(Command::GetStatus, &output).join("\n");
 
-        assert!(rendered.contains("Channel Type: 1 (GPU_MAX)"));
-        assert!(rendered.contains("- 78.5 C"));
+        // The tuple path no longer renders ranges at all (research metadata
+        // lives in get-thermal-channels); the primary collapses to one line.
+        assert!(rendered.contains("HOT_SPOT: 78.5 C"));
         assert!(!rendered.contains("Range"));
         assert!(!rendered.contains("Target"));
         assert!(!rendered.contains("Name:"));
@@ -4315,7 +6117,7 @@ mod tests {
             }),
             Command::SetPublicTgpPercent => json!({"applied": true, "power_percent": 90}),
             Command::SetPpabStatus => json!({"applied": true, "dynamic_boost": true}),
-            Command::SetPowerLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
+            Command::SetPwrCurLimit => json!({"applied": true, "tgp_watt": 140, "tgp_mw": 140000}),
             Command::ResetPowerLimit => json!({"applied": true, "default_watt": 100.0}),
             Command::GetDNotifier => json!({
                 "active": "D2",
