@@ -5,7 +5,7 @@ use std::process::Command;
 pub const WORKER_ARG: &str = "--nvoc-stressor-cuda-rs-worker";
 // Internal marker used in scan configuration instead of a filesystem path.
 // It never reaches Command::new; bundled_command resolves it to current_exe().
-pub const BUNDLED_SENTINEL: &str = "@bundled:cli-stressor-cuda-rs";
+pub const BUNDLED_SENTINEL: &str = "@bundled:cli-stressor-rs";
 
 pub fn is_bundled(path: &str) -> bool {
     path == BUNDLED_SENTINEL
@@ -78,7 +78,7 @@ pub fn bundled_command(
         .map_err(|e| Error::Custom(format!("failed to resolve current executable: {e}")))?;
     let mut command = Command::new(executable);
     // main() checks this before parsing optimizer commands and dispatches the
-    // child directly into the embedded cli-stressor-cuda-rs runner.
+    // child directly into the embedded cli-stressor-rs runner.
     command.arg(WORKER_ARG);
     add_stressor_args(
         &mut command,
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn bundled_sentinel_is_exact() {
         assert!(is_bundled(BUNDLED_SENTINEL));
-        assert!(!is_bundled("cli-stressor-cuda-rs"));
+        assert!(!is_bundled("cli-stressor-rs"));
     }
 
     #[test]
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn external_command_uses_structured_cli_arguments() {
         let command = external_command(
-            "cli-stressor-cuda-rs",
+            "cli-stressor-rs",
             Some("low-vram"),
             None,
             25.0,
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn explicit_gpu_generate_flag_is_not_duplicated() {
         let command = external_command(
-            "cli-stressor-cuda-rs",
+            "cli-stressor-rs",
             None,
             None,
             10.0,

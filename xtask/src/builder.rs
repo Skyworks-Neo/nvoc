@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Which CUDA driver generation the stressor targets. Mirrors the
-/// `cuda11`/`cuda12` features of cli-stressor-cuda-rs, which are mutually
+/// `cuda11`/`cuda12` features of cli-stressor-rs, which are mutually
 /// exclusive by compile_error!.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CudaMode {
@@ -90,7 +90,7 @@ fn build_tree(args: &BuildArgs) -> Res<()> {
     if let Some(tail_args) = tail_feature_args(args.cuda) {
         let mut tail = base(args.release);
         tail.arg("-p").arg("nvoc-auto-optimizer");
-        tail.arg("-p").arg("cli-stressor-cuda-rs");
+        tail.arg("-p").arg("cli-stressor-rs");
         tail.args(tail_args);
         nvapi_cache::run_guarded(&root, &mut tail)?;
     }
@@ -110,12 +110,13 @@ fn build_packages(args: &BuildArgs) -> Res<()> {
     Ok(())
 }
 
-/// Feature arguments appended when building the CUDA stressor crate. Vulkan is
-/// always on to match the `stressor-bundled` dependency edge and release.yml.
+/// Feature arguments appended when building the CUDA stressor crate. Vulkan
+/// and video are always on to match the `stressor-bundled` dependency edge,
+/// release.yml, and the crate's own default features.
 pub fn stressor_feature_args(cuda: CudaMode) -> Vec<&'static str> {
     match cuda {
-        CudaMode::Cuda12 => vec!["--features", "vulkan"],
-        CudaMode::Cuda11 => vec!["--no-default-features", "--features", "cuda11,vulkan"],
+        CudaMode::Cuda12 => vec!["--features", "vulkan,video"],
+        CudaMode::Cuda11 => vec!["--no-default-features", "--features", "cuda11,vulkan,video"],
         CudaMode::Off => vec!["--no-default-features"],
     }
 }
@@ -123,13 +124,13 @@ pub fn stressor_feature_args(cuda: CudaMode) -> Vec<&'static str> {
 /// Whole-tree `--exclude` list for the requested CUDA mode. cuda12 keeps every
 /// member in one invocation: the stressor's direct member selection (default
 /// cuda12) and the optimizer's bundled activation unify to the same
-/// {cuda12, vulkan} unit, so the workspace step builds the standalone binary
-/// itself. cuda11/none must drop both CUDA crates or the workspace selection's
-/// default cuda12 features would poison the tail's cuda11 units.
+/// {cuda12, vulkan, video} unit, so the workspace step builds the standalone
+/// binary itself. cuda11/none must drop both CUDA crates or the workspace
+/// selection's default cuda12 features would poison the tail's cuda11 units.
 pub fn workspace_excludes(cuda: CudaMode) -> Vec<&'static str> {
     match cuda {
         CudaMode::Cuda12 => vec![],
-        CudaMode::Cuda11 | CudaMode::Off => vec!["cli-stressor-cuda-rs", "nvoc-auto-optimizer"],
+        CudaMode::Cuda11 | CudaMode::Off => vec!["cli-stressor-rs", "nvoc-auto-optimizer"],
     }
 }
 
@@ -170,7 +171,7 @@ pub fn tail_feature_args(cuda: CudaMode) -> Option<Vec<&'static str>> {
 /// features.
 fn package_feature_args(package: &str, cuda: CudaMode) -> Vec<&'static str> {
     match package {
-        "cli-stressor-cuda-rs" => stressor_feature_args(cuda),
+        "cli-stressor-rs" => stressor_feature_args(cuda),
         "nvoc-auto-optimizer" => optimizer_feature_args(cuda).unwrap_or_default(),
         _ => Vec::new(),
     }
@@ -186,7 +187,7 @@ fn package_groups<'a>(
     cuda: CudaMode,
 ) -> Vec<(Vec<&'a str>, Vec<&'static str>)> {
     let pair_signature = if packages.iter().any(|p| p == "nvoc-auto-optimizer")
-        && packages.iter().any(|p| p == "cli-stressor-cuda-rs")
+        && packages.iter().any(|p| p == "cli-stressor-rs")
     {
         tail_feature_args(cuda)
     } else {
@@ -195,10 +196,8 @@ fn package_groups<'a>(
     let mut groups: Vec<(Vec<&'a str>, Vec<&'static str>)> = Vec::new();
     for package in packages {
         let signature = if pair_signature.is_some()
-            && matches!(
-                package.as_str(),
-                "nvoc-auto-optimizer" | "cli-stressor-cuda-rs"
-            ) {
+            && matches!(package.as_str(), "nvoc-auto-optimizer" | "cli-stressor-rs")
+        {
             pair_signature
                 .clone()
                 .expect("pair_signature is Some whenever it is read")
@@ -541,7 +540,7 @@ mod tests {
     fn cuda11_and_none_split_into_workspace_plus_merged_tail() {
         for mode in [CudaMode::Cuda11, CudaMode::Off] {
             let excludes = super::workspace_excludes(mode);
-            assert!(excludes.contains(&"cli-stressor-cuda-rs"), "{mode:?}");
+            assert!(excludes.contains(&"cli-stressor-rs"), "{mode:?}");
             assert!(excludes.contains(&"nvoc-auto-optimizer"), "{mode:?}");
             assert!(super::tree_feature_args(mode).is_empty(), "{mode:?}");
             let tail = super::tail_feature_args(mode).expect("tail invocation required");
@@ -582,7 +581,7 @@ mod tests {
 
     #[test]
     fn cuda11_optimizer_stressor_pair_shares_the_tail_signature() {
-        let packages = ["nvoc-auto-optimizer", "cli-stressor-cuda-rs"]
+        let packages = ["nvoc-auto-optimizer", "cli-stressor-rs"]
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
@@ -596,7 +595,7 @@ mod tests {
 
     #[test]
     fn cuda11_lone_stressor_keeps_its_own_signature() {
-        let packages = vec!["cli-stressor-cuda-rs".to_string()];
+        let packages = vec!["cli-stressor-rs".to_string()];
         let groups = super::package_groups(&packages, CudaMode::Cuda11);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].1, super::stressor_feature_args(CudaMode::Cuda11));

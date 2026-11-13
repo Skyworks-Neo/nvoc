@@ -8,7 +8,7 @@ use cudarc::cublas::{Gemm, GemmConfig, result as cublas_res, sys as cublas_sys};
 use cudarc::driver::{DevicePtr, DevicePtrMut, DeviceRepr};
 use half::{bf16, f16};
 
-use cli_stressor_cuda_rs::{
+use cli_stressor_rs::{
     BackendError, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig, choose_tolerance,
     cpu_reference_int8, make_random_host_matrix,
 };

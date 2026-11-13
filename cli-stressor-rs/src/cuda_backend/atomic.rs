@@ -6,7 +6,7 @@ use std::time::Instant;
 use cudarc::driver::{CudaContext, CudaFunction, CudaModule, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::compile_ptx;
 
-use cli_stressor_cuda_rs::{BackendError, StreamMode, fill_random_f32};
+use cli_stressor_rs::{BackendError, StreamMode, fill_random_f32};
 
 use super::backend::CudaBackend;
 use super::kernels::load_kernel;

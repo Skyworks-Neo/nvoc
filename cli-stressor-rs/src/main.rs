@@ -1,5 +1,5 @@
 use anstream::eprintln;
-#[cfg(any(feature = "cuda", feature = "vulkan"))]
+#[cfg(any(feature = "cuda", feature = "vulkan", feature = "video"))]
 use anstream::println;
 use clap::Parser;
 #[cfg(feature = "cuda")]
@@ -15,10 +15,10 @@ use style::stylize_config;
 use style::stylize_title;
 
 #[cfg(feature = "cuda")]
-use cli_stressor_cuda_rs::parse_int_list;
+use cli_stressor_rs::parse_int_list;
 
 #[cfg(feature = "cuda")]
-use cli_stressor_cuda_rs::{
+use cli_stressor_rs::{
     Backend, DeviceInfo, KernelParamOverride, KernelType, PrecisionKind, PrecisionMixtureEntry,
     PrecisionSpec, StressResult, StressRunConfig, VerdictClass, VerifyConfig, classify,
     parse_kernel_mixture, parse_kernel_param_overrides, parse_kernel_type, parse_kernel_type_list,
@@ -30,7 +30,7 @@ use serde::Deserialize;
 pub mod style;
 
 #[cfg(feature = "cuda")]
-use cli_stressor_cuda_rs::cuda_backend;
+use cli_stressor_rs::cuda_backend;
 
 #[cfg(feature = "cuda")]
 use cuda_backend::{
@@ -41,9 +41,110 @@ use cuda_backend::{
 // Stressor Vulkan engine (optional). Only compiled when the crate is built with
 // --features "vulkan" in addition to "cuda".
 #[cfg(feature = "vulkan")]
-use cli_stressor_cuda_rs::vulkan_gfx_stressor::{
+use cli_stressor_rs::vulkan_gfx_stressor::{
     VulkanDeviceSelection, VulkanGraphicsEngine, VulkanRenderConfig,
 };
+
+// Stressor video engine (optional): NVENC→NVDEC closed loop over the
+// driver-shipped libraries, only compiled with --features video.
+#[cfg(feature = "video")]
+use cli_stressor_rs::{VideoConfig, VideoEngine, VideoStats};
+
+#[cfg(feature = "video")]
+fn build_video_config(
+    args: &Args,
+    device_index: u32,
+    device_is_pci_sorted: bool,
+) -> Result<VideoConfig, String> {
+    let preset = VideoConfig::parse_preset(&args.video_preset)?;
+    Ok(VideoConfig {
+        device_index,
+        device_is_pci_sorted,
+        width: args.video_width,
+        height: args.video_height,
+        validate: args.video_validate,
+        bitrate_bps: args.video_bitrate,
+        preset,
+        fps: 60,
+    })
+}
+
+/// Video-only mode: build the pipeline, run it for the duration, print the
+/// summary and (optionally) persist a verdict. Returns the process exit code:
+/// 0 clean, 1 unavailable/failed, and CRC mismatches fail the run.
+#[cfg(feature = "video")]
+fn run_video_for_duration(duration_s: f64, config: VideoConfig, json_out: Option<&String>) -> i32 {
+    println!(
+        "{}",
+        stylize(
+            &format!("Video-only mode: running NVENC->NVDEC engine for {duration_s:.1}s"),
+            false
+        )
+    );
+    let mut engine = match VideoEngine::new(config) {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!(
+                "{}",
+                stylize(&format!("[Video] video engine unavailable: {err}"), true)
+            );
+            return 1;
+        }
+    };
+    let stats: VideoStats = match engine.run_for_duration(duration_s) {
+        Ok(stats) => stats,
+        Err(err) => {
+            eprintln!(
+                "{}",
+                stylize(&format!("[FATAL] Video engine failed: {err}"), true)
+            );
+            return 1;
+        }
+    };
+    println!(
+        "{}",
+        stylize(
+            &format!(
+                "[Video] summary: encoded={} decoded={} crc_mismatches={} encode={:.1} Mbps decode={:.1} fps elapsed={:.1}s",
+                stats.encoded_frames,
+                stats.decoded_frames,
+                stats.crc_mismatches,
+                stats.encode_mbps,
+                stats.decode_fps,
+                stats.elapsed_s
+            ),
+            false
+        )
+    );
+    let passed = stats.crc_mismatches == 0;
+    let verdict = serde_json::json!({
+        "stressor": "cli-stressor-rs",
+        "result": if passed { "pass" } else { "fail" },
+        "classification": if passed { "none" } else { "data_error" },
+        "duration_s": duration_s,
+        "video": stats,
+    });
+    println!("{}", stylize(&format!("VERDICT_JSON: {verdict}"), false));
+    if let Some(path) = json_out {
+        match serde_json::to_string_pretty(&verdict) {
+            Ok(pretty) => {
+                if let Err(err) = std::fs::write(path, pretty + "\n") {
+                    eprintln!(
+                        "{}",
+                        stylize(&format!("Failed to write --json-out: {err}"), true)
+                    );
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("Failed to serialize verdict JSON: {err}"), true)
+                );
+            }
+        }
+    }
+    if passed { 0 } else { 1 }
+}
 
 #[cfg(feature = "vulkan")]
 fn run_vulkan_for_duration(
@@ -99,9 +200,54 @@ fn run_vulkan_for_duration(
     0
 }
 
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum PulseModeArg {
+    #[value(name = "off")]
+    Off,
+    #[value(name = "fixed")]
+    Fixed,
+    #[value(name = "sweep")]
+    Sweep,
+}
+
+#[cfg(feature = "vulkan")]
+impl From<PulseModeArg> for cli_stressor_rs::PulseMode {
+    fn from(mode: PulseModeArg) -> Self {
+        match mode {
+            PulseModeArg::Off => cli_stressor_rs::PulseMode::Off,
+            PulseModeArg::Fixed => cli_stressor_rs::PulseMode::Fixed,
+            PulseModeArg::Sweep => cli_stressor_rs::PulseMode::Sweep,
+        }
+    }
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum MemModeArg {
+    /// Resident pattern block sized from the reported L2 (0.75×L2, 8–128 MiB)
+    #[value(name = "auto")]
+    Auto,
+    /// Explicit spelling of auto
+    #[value(name = "resident")]
+    Resident,
+    /// Enable the address-walk slab: pattern windows sweep VRAM beyond L2
+    #[value(name = "stream")]
+    Stream,
+}
+
+#[cfg(feature = "cuda")]
+impl From<MemModeArg> for cli_stressor_rs::MemMode {
+    fn from(mode: MemModeArg) -> Self {
+        match mode {
+            MemModeArg::Auto => cli_stressor_rs::MemMode::Auto,
+            MemModeArg::Resident => cli_stressor_rs::MemMode::Resident,
+            MemModeArg::Stream => cli_stressor_rs::MemMode::Stream,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
-    name = "cli-stressor-cuda-rs",
+    name = "cli-stressor-rs",
     about = "GPU core-domain stressor (Rust): mixed kernel-path stress + validation sidecar"
 )]
 struct Args {
@@ -180,6 +326,11 @@ struct Args {
     /// Skip the detector injection self-test gate
     #[arg(long, default_value_t = false)]
     skip_self_test: bool,
+
+    /// Write the SDC event stream (fault records + telemetry cadence rows)
+    /// as JSONL to this path. Requires NVML for the telemetry context.
+    #[arg(long, value_name = "PATH")]
+    sdc_log: Option<std::path::PathBuf>,
 
     /// Write the machine-readable verdict JSON to this path (also printed as
     /// a `VERDICT_JSON:` line on stdout)
@@ -286,6 +437,89 @@ struct Args {
     #[arg(long, default_value_t = false)]
     verify_slab: bool,
 
+    /// Memory-pressure mode for the ride-on-load verify engine: `auto` sizes
+    /// the resident pattern block from the reported L2 cache (0.75×L2,
+    /// 8–128 MiB), `resident` is the explicit spelling, `stream` enables the
+    /// address-walk slab so checks sweep VRAM beyond L2 (MODS VkStressFb's
+    /// big-L2 / small-L2 split).
+    #[arg(long, value_enum, default_value_t = MemModeArg::Auto)]
+    mem_mode: MemModeArg,
+
+    /// Drop the Vulkan render queue to LOW global priority
+    /// (VK_EXT_global_priority) so background/in-process work wins when
+    /// scheduling is contended.
+    #[arg(long, default_value_t = false)]
+    vulkan_queue_priority_low: bool,
+
+    /// Duty-cycle power pulsing for the Vulkan renderer (MODS VkStressPulse
+    /// borrow): `fixed` holds the low frequency, `sweep` climbs a log-octave
+    /// ladder toward the ceiling.
+    #[arg(long, value_enum, default_value_t = PulseModeArg::Off)]
+    pulse_mode: PulseModeArg,
+
+    /// Percent of each pulse period spent bursting (0-100)
+    #[arg(long, default_value_t = 30.0)]
+    pulse_duty: f32,
+
+    /// Pulse frequency floor in Hz (50 Hz = the RM power-capping period)
+    #[arg(long, default_value_t = 50.0)]
+    pulse_low_hz: f32,
+
+    /// Sweep ceiling in Hz (frames longer than the period saturate duty)
+    #[arg(long, default_value_t = 1000.0)]
+    pulse_high_hz: f32,
+
+    /// Log2-octave climb rate for `--pulse-mode sweep`
+    #[arg(long, default_value_t = 3.0)]
+    pulse_octaves: f32,
+
+    /// Spin-wait through pulse idle windows (reaches the kHz range, burns a
+    /// core; default is a sleep-then-spin hybrid)
+    #[arg(long, default_value_t = false)]
+    pulse_spin_idle: bool,
+
+    /// Run the NVENC→NVDEC video-engine loop alongside the CUDA load
+    /// (synthetic vhash32 NV12 frames, H264 all-I encode, hardware decode)
+    #[arg(long, default_value_t = false)]
+    video: bool,
+
+    /// Run video-engine-only stress (skip CUDA workload; needs --features video)
+    #[arg(long, default_value_t = false)]
+    video_only: bool,
+
+    /// Validate every decoded frame (CRC-stability baseline over the
+    /// deterministic all-I encode; forces CONSTQP instead of CBR).
+    /// Default on; `--video-validate false` disables.
+    #[arg(
+        long,
+        default_value_t = true,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        action = clap::ArgAction::Set
+    )]
+    video_validate: bool,
+
+    /// Synthetic frame width in pixels (rounded down to even)
+    #[arg(long, default_value_t = 1920)]
+    video_width: u32,
+
+    /// Synthetic frame height in pixels (rounded down to even)
+    #[arg(long, default_value_t = 1080)]
+    video_height: u32,
+
+    /// H264 CBR bitrate in bits/s (only used with --video-validate off;
+    /// validation pins a deterministic constant-QP encode)
+    #[arg(long, value_name = "BPS")]
+    video_bitrate: Option<u32>,
+
+    /// NVENC preset P1 (fastest) .. P7 (best quality)
+    #[arg(
+        long,
+        default_value = "p3",
+        value_parser = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]
+    )]
+    video_preset: String,
+
     /// CUDA GPU index in PCI-bus-sorted order (0-based)
     #[arg(
         long,
@@ -311,8 +545,13 @@ struct Args {
     gpu_uuid: Option<String>,
 
     /// List CUDA GPUs (PCI-sorted index, CUDA index, PCI bus, UUID) and exit
+    #[arg(long = "get-cuda-uuid-list", default_value_t = false)]
+    get_cuda_uuid_list: bool,
+
+    /// Resolve the GPU-selection hints to the PCI-sorted Vulkan device index
+    /// and exit (the index space --gpu-index addresses in Vulkan-only runs)
     #[arg(long, default_value_t = false)]
-    list_gpus: bool,
+    get_vulkan_index: bool,
 }
 
 #[cfg(feature = "cuda")]
@@ -349,6 +588,15 @@ fn build_vulkan_render_config(args: &Args) -> VulkanRenderConfig {
         offscreen: !args.vulkan_window,
         rotate: args.vulkan_rotate,
         particles: args.vulkan_particles,
+        queue_priority_low: args.vulkan_queue_priority_low,
+        pulse: cli_stressor_rs::PulseConfig {
+            mode: args.pulse_mode.into(),
+            duty_pct: args.pulse_duty,
+            low_hz: args.pulse_low_hz,
+            high_hz: args.pulse_high_hz,
+            octaves_per_second: args.pulse_octaves,
+            spin_idle: args.pulse_spin_idle,
+        },
     }
 }
 
@@ -411,7 +659,8 @@ struct FileConfig {
     gpu_index: Option<u32>,
     pci_bus: Option<String>,
     gpu_uuid: Option<String>,
-    list_gpus: Option<bool>,
+    #[serde(alias = "list_gpus")]
+    get_cuda_uuid_list: Option<bool>,
 }
 
 #[cfg(feature = "cuda")]
@@ -654,7 +903,7 @@ fn parse_args_with_cli_sources() -> (Args, std::collections::HashSet<&'static st
         "gpu_index",
         "pci_bus",
         "gpu_uuid",
-        "list_gpus",
+        "get_cuda_uuid_list",
     ] {
         if matches.value_source(id) == Some(ValueSource::CommandLine) {
             cli_set.insert(id);
@@ -795,8 +1044,11 @@ fn apply_file_config_to_args(
     if let (true, Some(v)) = (!cli_set.contains("gpu_uuid"), &parsed.gpu_uuid) {
         args.gpu_uuid = Some(v.clone());
     }
-    if let (true, Some(v)) = (!cli_set.contains("list_gpus"), parsed.list_gpus) {
-        args.list_gpus = v;
+    if let (true, Some(v)) = (
+        !cli_set.contains("get_cuda_uuid_list"),
+        parsed.get_cuda_uuid_list,
+    ) {
+        args.get_cuda_uuid_list = v;
     }
     Ok(())
 }
@@ -884,7 +1136,7 @@ fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
 }
 
 #[cfg(any(feature = "cuda", feature = "vulkan"))]
-fn parse_pci_bus_string(s: &str) -> Result<cli_stressor_cuda_rs::PciBusAddress, String> {
+fn parse_pci_bus_string(s: &str) -> Result<cli_stressor_rs::PciBusAddress, String> {
     let s = s.trim();
     let (domain_raw, rest) = s
         .split_once(':')
@@ -905,7 +1157,7 @@ fn parse_pci_bus_string(s: &str) -> Result<cli_stressor_cuda_rs::PciBusAddress, 
     let function = u32::from_str_radix(function_raw, 16)
         .map_err(|_| format!("invalid PCI function: {function_raw}"))?;
 
-    Ok(cli_stressor_cuda_rs::PciBusAddress {
+    Ok(cli_stressor_rs::PciBusAddress {
         domain,
         bus,
         device,
@@ -1023,10 +1275,10 @@ fn filter_atomic_for_sm(kernel_types: &mut Vec<KernelType>, info: &DeviceInfo) {
 /// is valid integer-compute stress — just slower. IMMA tensor cores require
 /// SM >= 7.5 (Turing); DP4A dot units require SM >= 6.1 (Pascal).
 #[cfg(feature = "cuda")]
-fn warn_int8_tensor_op(precisions: &[cli_stressor_cuda_rs::PrecisionSpec], info: &DeviceInfo) {
+fn warn_int8_tensor_op(precisions: &[cli_stressor_rs::PrecisionSpec], info: &DeviceInfo) {
     let wants_int8 = precisions
         .iter()
-        .any(|s| s.kind == cli_stressor_cuda_rs::PrecisionKind::INT8);
+        .any(|s| s.kind == cli_stressor_rs::PrecisionKind::INT8);
     if !wants_int8 {
         return;
     }
@@ -1180,9 +1432,169 @@ fn print_summary(results: &[StressResult], info: &DeviceInfo) {
     println!("{}", "=".repeat(72));
 }
 
+/// Grouped root help for bare `cli-stressor-rs` (no arguments), mirroring the
+/// nvoc-cli convention: engines as families with colored group headings
+/// instead of clap's flat flag wall. clap still renders full `--help`.
+fn render_grouped_help() -> String {
+    use nvoc_cli_common::color::{stylize_group_heading, stylize_help_command};
+    let mut text = String::new();
+    text.push_str("GPU stressor: CUDA compute + Vulkan graphics + video engines, with a validation sidecar\n\n");
+    text.push_str("Usage: cli-stressor-rs [OPTIONS]\n\n");
+
+    let mut section = |key: &str, title: &str, flags: &[(&str, &str)]| {
+        text.push_str(&format!(
+            "  {}\n",
+            stylize_group_heading(key, &format!("{title} ({} flags)", flags.len()))
+        ));
+        for (flag, about) in flags {
+            text.push_str(&format!("    {}  {}\n", stylize_help_command(flag), about));
+        }
+    };
+
+    section(
+        "cuda",
+        "CUDA COMPUTE",
+        &[
+            ("--duration <S>", "stress wall time [90]"),
+            ("--seed <N>", "base RNG seed for the whole run"),
+            ("--precisions <LIST>", "fp32/tf32/fp16/bf16/int8/16/32/fp64"),
+            ("--matrix-sizes <LIST>", "GEMM edge lengths to mix"),
+            ("--fp64-matrix-sizes <L>", "FP64-only edge lengths"),
+            ("--warmup-iters <N>", "untimed iterations per op"),
+            ("--burst-iters <N>", "timed burst iterations per op"),
+            ("--kernel-types <LIST>", "kernel-path mixture"),
+            ("--kernel-mixture <SPEC>", "weighted kernel-path mixture"),
+            ("--kernel-params <SPEC>", "per-kernel parameter overrides"),
+            ("--transpose-prob <P>", "GEMM A/B transpose probability"),
+            ("--minor-mixture-rate <P>", "small-size op probability"),
+            ("--stream-mode <M>", "single/dual/triple CUDA streams"),
+            ("--disable-fp8", "skip FP8 precision"),
+            (
+                "--mem-mode <M>",
+                "verify set: auto/resident (L2) / stream (slab)",
+            ),
+            ("--no-verify", "disable the ride-on-load SDC detectors"),
+            ("--verify-continue-on-error", "count faults, don't abort"),
+            (
+                "--verify-resident-interval <S>",
+                "resident-check cadence [2.0]",
+            ),
+            ("--verify-slab", "address-walk slab (VRAM beyond L2)"),
+            (
+                "--gemm-full-check-max-size <N>",
+                "full-recompute GEMM edge cap [1024]",
+            ),
+            ("--skip-self-test", "skip detector injection self-test"),
+            ("--gpu-generate", "device-side buffer generation"),
+        ],
+    );
+    section(
+        "vulkan",
+        "VULKAN GRAPHICS",
+        &[
+            ("--vulkan", "render stress beside the CUDA load"),
+            ("--vulkan-only", "pure Vulkan run (no CUDA)"),
+            ("--vulkan-window", "windowed presentation (Windows)"),
+            ("--vulkan-width/--vulkan-height", "surface size [1280x720]"),
+            ("--vulkan-msaa <N>", "MSAA samples [1]"),
+            ("--vulkan-iters <N>", "fragment loop iterations [128]"),
+            ("--vulkan-shells <N>", "instanced shell count [16]"),
+            ("--vulkan-rotate", "animate the torus [on]"),
+            ("--vulkan-particles <N>", "compute->graphics particle pool"),
+            ("--pulse-mode <M>", "fixed/sweep duty-cycle pulsing"),
+            ("--pulse-duty <PCT>", "burst fraction per period [30]"),
+            ("--pulse-low-hz <HZ>", "pulse floor [50 = RM cap period]"),
+            ("--pulse-high-hz <HZ>", "sweep ceiling [1000]"),
+            ("--pulse-octaves <N>", "log2-octave climb rate [3]"),
+            ("--pulse-spin-idle", "spin idle windows (kHz range)"),
+            (
+                "--vulkan-queue-priority-low",
+                "render queue at LOW priority",
+            ),
+        ],
+    );
+    section(
+        "video",
+        "VIDEO ENGINES",
+        &[
+            ("--video", "NVENC→NVDEC loop beside the CUDA load"),
+            ("--video-only", "pure video run"),
+            ("--video-validate <B>", "CRC decoded frames [true]"),
+            ("--video-preset <P>", "NVENC preset p1..p7 [p3]"),
+            ("--video-bitrate <BPS>", "H264 CBR bitrate (validate off)"),
+            ("--video-width/--video-height", "frame size [1920x1080]"),
+        ],
+    );
+    section(
+        "general",
+        "GENERAL",
+        &[
+            ("--gpu-index <N>", "GPU index (PCI-bus-sorted)"),
+            ("--gpu-uuid <UUID>", "select GPU by UUID"),
+            ("--pci-bus <ADDR>", "select GPU by PCI address"),
+            ("--get-cuda-uuid-list", "list CUDA devices (UUID) and exit"),
+            (
+                "--get-vulkan-index",
+                "selected GPU's Vulkan index, then exit",
+            ),
+            ("--json-out <PATH>", "machine-readable verdict JSON"),
+            ("--sdc-log <PATH>", "JSONL SDC events + telemetry"),
+            ("--config/--profile", "runtime TOML / built-in profile"),
+        ],
+    );
+    text.push_str("\nRun `cli-stressor-rs --help` for the complete option list.\n");
+    text
+}
+
+/// `--get-vulkan-index`: resolve the CLI GPU hints to the PCI-sorted Vulkan
+/// device index and exit (query flag; never runs a load).
+fn handle_get_vulkan_index(args: &Args) -> ! {
+    #[cfg(feature = "vulkan")]
+    {
+        let selection = match build_vulkan_device_selection(args) {
+            Ok(sel) => sel,
+            Err(err) => {
+                eprintln!("{}", stylize(&format!("GPU selection failed: {err}"), true));
+                std::process::exit(2);
+            }
+        };
+        match cli_stressor_rs::vulkan_gfx_stressor::get_vulkan_device_index(selection) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("get-vulkan-index failed: {err}"), true)
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+    #[cfg(not(feature = "vulkan"))]
+    {
+        let _ = args;
+        eprintln!(
+            "{}",
+            stylize("--get-vulkan-index requires --features vulkan", true)
+        );
+        std::process::exit(2);
+    }
+}
+
+/// True when the process was invoked with no arguments at all.
+fn invoked_without_args() -> bool {
+    std::env::args().count() <= 1
+}
+
 #[cfg(feature = "cuda")]
 pub fn run_from_args() {
+    if invoked_without_args() {
+        println!("{}", render_grouped_help());
+        return;
+    }
     let (mut args, cli_set) = parse_args_with_cli_sources();
+    if args.get_vulkan_index {
+        handle_get_vulkan_index(&args);
+    }
     // --config reads a user-supplied runtime file, whereas --profile selects
     // one of the TOML documents compiled into the binary above.
     let file_config = match (&args.config, &args.profile) {
@@ -1265,7 +1677,7 @@ pub fn run_from_args() {
         verify_cfg.self_test = false;
     }
 
-    if args.list_gpus {
+    if args.get_cuda_uuid_list {
         match print_cuda_gpu_list() {
             Ok(()) => std::process::exit(0),
             Err(err) => {
@@ -1315,6 +1727,39 @@ pub fn run_from_args() {
         }
     }
 
+    // Video-only mode: pure NVENC→NVDEC path, handled before any CUDA init.
+    // GPU selection comes from --gpu-index interpreted in PCI-bus-sorted
+    // order (resolved via driver attributes, same rule as the CUDA backend).
+    if args.video_only {
+        #[cfg(feature = "video")]
+        {
+            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+                Ok(config) => config,
+                Err(err) => {
+                    eprintln!(
+                        "{}",
+                        stylize(&format!("Invalid video configuration: {err}"), true)
+                    );
+                    std::process::exit(2);
+                }
+            };
+            std::process::exit(run_video_for_duration(
+                args.duration,
+                config,
+                args.json_out.as_ref(),
+            ));
+        }
+
+        #[cfg(not(feature = "video"))]
+        {
+            eprintln!(
+                "{}",
+                stylize("--video-only requires building with --features video", true)
+            );
+            std::process::exit(2);
+        }
+    }
+
     let matrix_sizes = match parse_int_list(&args.matrix_sizes) {
         Ok(values) => values,
         Err(err) => {
@@ -1350,19 +1795,21 @@ pub fn run_from_args() {
         }
     };
 
-    let mut backend = match cuda_backend::CudaBackend::new_with_device(gpu_device_index) {
-        Ok(backend) => backend,
-        Err(err) => {
-            eprintln!(
-                "{}",
-                stylize(
-                    &format!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err),
-                    true
-                )
-            );
-            std::process::exit(1);
-        }
-    };
+    let mem_mode: cli_stressor_rs::MemMode = args.mem_mode.into();
+    let mut backend =
+        match cuda_backend::CudaBackend::new_with_device_and_mem_mode(gpu_device_index, mem_mode) {
+            Ok(backend) => backend,
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(
+                        &format!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err),
+                        true
+                    )
+                );
+                std::process::exit(1);
+            }
+        };
     if args.gpu_generate
         && let Err(err) = backend.enable_gpu_generate()
     {
@@ -1382,7 +1829,7 @@ pub fn run_from_args() {
     // default run's VRAM footprint lean; pattern rotation and the write
     // density cadence run on dedicated buffers either way.
     #[cfg(feature = "cuda")]
-    if args.verify_slab {
+    if args.verify_slab || mem_mode == cli_stressor_rs::MemMode::Stream {
         backend.enable_verify_slab(25);
     };
 
@@ -1447,7 +1894,7 @@ pub fn run_from_args() {
                 )
             );
             let verdict = serde_json::json!({
-                "stressor": "cli-stressor-cuda-rs",
+                "stressor": "cli-stressor-rs",
                 "result": "fail",
                 "classification": "self_test_failed",
                 "device": info.name,
@@ -1522,7 +1969,7 @@ pub fn run_from_args() {
     for spec in &filtered {
         let has_compatible_kernel = kernel_types
             .iter()
-            .any(|&k| cli_stressor_cuda_rs::kernel_precision_compatible(k, spec.kind));
+            .any(|&k| cli_stressor_rs::kernel_precision_compatible(k, spec.kind));
         if !has_compatible_kernel {
             incompatible.push(spec.name);
         }
@@ -1570,7 +2017,7 @@ pub fn run_from_args() {
         if kernel_mixture.is_empty() {
             kernel_mixture = kernel_types
                 .iter()
-                .map(|kind| cli_stressor_cuda_rs::KernelMixtureEntry {
+                .map(|kind| cli_stressor_rs::KernelMixtureEntry {
                     kind: *kind,
                     weight: 1.0,
                 })
@@ -1785,6 +2232,112 @@ pub fn run_from_args() {
     #[cfg(not(feature = "vulkan"))]
     let vulkan_abort: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
 
+    // Optionally start the NVENC→NVDEC video sidecar (if built with
+    // --features video). It rides the already-resolved CUDA device; a
+    // missing/old driver video library only disables the sidecar.
+    #[cfg(feature = "video")]
+    let mut video_engine: Option<VideoEngine> = None;
+
+    #[cfg(feature = "video")]
+    if args.video {
+        match build_video_config(&args, gpu_device_index, false) {
+            Ok(config) => match VideoEngine::new(config) {
+                Ok(mut engine) => match engine.start() {
+                    Ok(()) => {
+                        video_engine = Some(engine);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "{}",
+                            stylize(&format!("Failed to start VideoEngine: {err}"), true)
+                        );
+                    }
+                },
+                Err(err) => {
+                    println!(
+                        "{}",
+                        stylize(
+                            &format!("Warning: video engine unavailable (sidecar disabled): {err}"),
+                            false
+                        )
+                    );
+                }
+            },
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("Invalid video configuration: {err}"), true)
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+
+    // ---- SDC event stream (--sdc-log): structured fault records with the
+    // telemetry snapshot taken at detection time, plus a fixed-cadence
+    // telemetry thread writing rows to the same JSONL (SDC-rate vs
+    // frequency/temperature mapping data).
+    let sdc_writer: Option<std::sync::Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>> =
+        args.sdc_log.as_ref().map(|path| {
+            std::sync::Arc::new(std::sync::Mutex::new(std::io::BufWriter::new(
+                fs::File::create(path).unwrap_or_else(|err| {
+                    eprintln!(
+                        "{}",
+                        stylize(&format!("Failed to create SDC log {path:?}: {err}"), true)
+                    );
+                    std::process::exit(1);
+                }),
+            )))
+        });
+    let sdc_telemetry =
+        cli_stressor_rs::Telemetry::open(gpu_device_index, backend.device_uuid().ok());
+    let sdc_event_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let sdc_sampler_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(writer) = sdc_writer.clone()
+        && sdc_telemetry.available()
+    {
+        let stop = sdc_sampler_stop.clone();
+        // Own NVML handle: Nvml is neither Send nor Sync, but each thread can
+        // hold its own (nvmlInit is refcounted inside the driver).
+        let sampler_telemetry =
+            cli_stressor_rs::Telemetry::open(gpu_device_index, backend.device_uuid().ok());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                if let Some(sample) = sampler_telemetry.sample() {
+                    let mut row = serde_json::to_value(sample).unwrap_or_default();
+                    row["kind"] = serde_json::json!("telemetry");
+                    if let Ok(mut w) = writer.lock() {
+                        use std::io::Write;
+                        let _ = writeln!(w, "{row}");
+                    }
+                }
+            }
+        });
+    } else {
+        sdc_sampler_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    // Sink closure: serialize events into the JSONL (the event's telemetry
+    // field was sampled by the dispatch loop via `sdc_telemetry` below).
+    let sdc_sink_impl = sdc_writer.map(|writer| {
+        let counter = sdc_event_count.clone();
+        move |event: &cli_stressor_rs::SdcEvent| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(mut w) = writer.lock() {
+                use std::io::Write;
+                if let Ok(line) = serde_json::to_string(event) {
+                    let _ = writeln!(w, "{line}");
+                }
+            }
+        }
+    });
+    let sdc_sink: Option<&dyn Fn(&cli_stressor_rs::SdcEvent)> = sdc_sink_impl
+        .as_ref()
+        .map(|f| f as &dyn Fn(&cli_stressor_rs::SdcEvent));
+
     let results = run_stress_mixed(
         &mut backend,
         &filtered,
@@ -1803,9 +2356,12 @@ pub fn run_from_args() {
             stream_mode,
             kernel_param_overrides: &kernel_param_overrides,
             verify: verify_cfg,
+            sdc_event_sink: sdc_sink,
+            telemetry: Some(&sdc_telemetry),
         },
         vulkan_abort,
     );
+    sdc_sampler_stop.store(true, std::sync::atomic::Ordering::SeqCst);
 
     for res in &results {
         if res.first_error.is_some() && res.supported {
@@ -1840,9 +2396,60 @@ pub fn run_from_args() {
         overall_passed = false;
     }
 
+    // Stop the video sidecar and collect its counters for the verdict.
+    #[cfg(feature = "video")]
+    let video_stats: Option<VideoStats> = if let Some(mut engine) = video_engine {
+        if engine
+            .get_error_flag_arc()
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            eprintln!(
+                "{}",
+                stylize("[FATAL] Video engine reported an error", true)
+            );
+            overall_passed = false;
+        }
+        match engine.stop() {
+            Ok(stats) => Some(stats),
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("[FATAL] Video engine stop failed: {err}"), true)
+                );
+                overall_passed = false;
+                Some(engine.stats())
+            }
+        }
+    } else {
+        None
+    };
+
+    #[cfg(feature = "video")]
+    if let Some(stats) = &video_stats {
+        println!(
+            "{}",
+            stylize(
+                &format!(
+                    "[Video] summary: encoded={} decoded={} crc_mismatches={} encode={:.1} Mbps decode={:.1} fps",
+                    stats.encoded_frames,
+                    stats.decoded_frames,
+                    stats.crc_mismatches,
+                    stats.encode_mbps,
+                    stats.decode_fps
+                ),
+                false
+            )
+        );
+        if stats.crc_mismatches > 0 {
+            overall_passed = false;
+        }
+    }
+    #[cfg(not(feature = "video"))]
+    let video_stats: Option<serde_json::Value> = None;
+
     // Machine-readable verdict (P0#4): one stdout line + optional --json-out.
-    let verify_totals: cli_stressor_cuda_rs::DetectorStats = {
-        let mut totals = cli_stressor_cuda_rs::DetectorStats::default();
+    let verify_totals: cli_stressor_rs::DetectorStats = {
+        let mut totals = cli_stressor_rs::DetectorStats::default();
         for r in &results {
             totals.merge(&r.detectors);
         }
@@ -1877,7 +2484,7 @@ pub fn run_from_args() {
     // communicates how much of the produced workload the detectors observed.
     let confidence_pct = (100.0 * coverage * (1.0 - (detector_errors as f64).min(1.0))) as u32;
     let verdict = serde_json::json!({
-        "stressor": "cli-stressor-cuda-rs",
+        "stressor": "cli-stressor-rs",
         "result": if class == VerdictClass::None && overall_passed { "pass" } else { "fail" },
         "classification": class.as_str(),
         "device": info.name,
@@ -1899,6 +2506,14 @@ pub fn run_from_args() {
             "intalu_samples": verify_cfg.intalu_samples,
             "int8_validate_size": verify_cfg.int8_validate_size,
         },
+        "mem_mode": format!("{mem_mode:?}").to_lowercase(),
+        "l2_cache_bytes": backend.device_info().l2_cache_bytes,
+        "resident_words": backend.resident_words(),
+        "resident_ticks": backend.verify_tick_stats().0,
+        "resident_mib_compared": backend.verify_tick_stats().1 / 1024 / 1024,
+        "sdc_events": sdc_event_count.load(std::sync::atomic::Ordering::SeqCst),
+        "telemetry_enabled": sdc_telemetry.available(),
+        "video": video_stats,
     });
     emit_verdict(verdict, &args.json_out);
 
@@ -1909,7 +2524,55 @@ pub fn run_from_args() {
 
 #[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
 pub fn run_from_args() {
+    if invoked_without_args() {
+        println!("{}", render_grouped_help());
+        return;
+    }
     let args = Args::parse();
+    if args.get_vulkan_index {
+        handle_get_vulkan_index(&args);
+    }
+    #[cfg(not(feature = "cuda"))]
+    if args.get_cuda_uuid_list {
+        eprintln!(
+            "{}",
+            stylize("--get-cuda-uuid-list requires --features cuda", true)
+        );
+        std::process::exit(2);
+    }
+
+    // Video-only mode works without CUDA (the video engine owns its own
+    // CUDA context via the driver API).
+    if args.video_only {
+        #[cfg(feature = "video")]
+        {
+            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+                Ok(config) => config,
+                Err(err) => {
+                    eprintln!(
+                        "{}",
+                        stylize(&format!("Invalid video configuration: {err}"), true)
+                    );
+                    std::process::exit(2);
+                }
+            };
+            std::process::exit(run_video_for_duration(
+                args.duration,
+                config,
+                args.json_out.as_ref(),
+            ));
+        }
+
+        #[cfg(not(feature = "video"))]
+        {
+            eprintln!(
+                "{}",
+                stylize("--video-only requires building with --features video", true)
+            );
+            std::process::exit(2);
+        }
+    }
+
     if vulkan_stress_enabled(&args) || args.vulkan_only {
         let selection = match build_vulkan_device_selection(&args) {
             Ok(sel) => sel,
@@ -1937,7 +2600,54 @@ pub fn run_from_args() {
 
 #[cfg(all(not(feature = "cuda"), not(feature = "vulkan")))]
 pub fn run_from_args() {
-    let _ = Args::parse();
+    if invoked_without_args() {
+        println!("{}", render_grouped_help());
+        return;
+    }
+    let args = Args::parse();
+    if args.get_vulkan_index {
+        handle_get_vulkan_index(&args);
+    }
+    if args.get_cuda_uuid_list {
+        eprintln!(
+            "{}",
+            stylize("--get-cuda-uuid-list requires --features cuda", true)
+        );
+        std::process::exit(2);
+    }
+
+    // Video-only mode is the one engine that runs without the cuda/vulkan
+    // features (the video feature loads its own driver libraries).
+    if args.video_only {
+        #[cfg(feature = "video")]
+        {
+            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+                Ok(config) => config,
+                Err(err) => {
+                    eprintln!(
+                        "{}",
+                        stylize(&format!("Invalid video configuration: {err}"), true)
+                    );
+                    std::process::exit(2);
+                }
+            };
+            std::process::exit(run_video_for_duration(
+                args.duration,
+                config,
+                args.json_out.as_ref(),
+            ));
+        }
+
+        #[cfg(not(feature = "video"))]
+        {
+            eprintln!(
+                "{}",
+                stylize("--video-only requires building with --features video", true)
+            );
+            std::process::exit(2);
+        }
+    }
+
     eprintln!(
         "{}",
         stylize(

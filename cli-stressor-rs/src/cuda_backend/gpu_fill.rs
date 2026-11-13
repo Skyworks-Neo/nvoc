@@ -14,7 +14,7 @@ use cudarc::driver::{CudaContext, CudaFunction, CudaModule};
 
 use cudarc::nvrtc::compile_ptx;
 
-use cli_stressor_cuda_rs::BackendError;
+use cli_stressor_rs::BackendError;
 
 use super::backend::CudaBackend;
 

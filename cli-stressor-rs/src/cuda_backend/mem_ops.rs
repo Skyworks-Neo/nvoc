@@ -12,7 +12,7 @@ use std::time::Instant;
 use cudarc::cublas::{Asum, AsumConfig, sys as cublas_sys};
 use cudarc::driver::{DevicePtr, DevicePtrMut, PushKernelArg};
 
-use cli_stressor_cuda_rs::{
+use cli_stressor_rs::{
     BackendError, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig, make_random_host_matrix,
 };
 

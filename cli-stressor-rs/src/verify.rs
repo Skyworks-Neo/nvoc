@@ -54,13 +54,47 @@ pub struct VerifyReport {
     pub done: u32,
 }
 
+/// One recorded SDC event (op-level: the faulting burst-op or resident-tick
+/// with its first-fault details), enriched with the telemetry snapshot taken
+/// at detection time. Emitted to the `--sdc-log` JSONL stream.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SdcEvent {
+    /// `"burst_op"` (pattern/GEMM/IntAlu detector) or `"resident_tick"`
+    /// (retention/disturbance check on the L2-sized resident block).
+    pub kind: &'static str,
+    pub unix_ms: u64,
+    /// Milliseconds since the stress run started.
+    pub t_rel_ms: u64,
+    pub op: String,
+    pub seed: Option<u64>,
+    pub total_errors: Option<u64>,
+    pub idx_min: Option<u64>,
+    pub idx_max: Option<u64>,
+    pub first_expected: Option<u32>,
+    pub first_actual: Option<u32>,
+    /// The detector's first-error detail line (label + counts + bits summary).
+    pub detail: Option<String>,
+    pub telemetry: Option<crate::telemetry::TelemetrySample>,
+}
+
+/// Structured resident-tick fault record crossing the [`crate::Backend`]
+/// trait (host-side only; the kernel keeps writing the aggregate report).
+#[derive(Debug, Clone)]
+pub struct SdcTickEvent {
+    pub total_errors: u64,
+    pub idx_min: u64,
+    pub idx_max: u64,
+    pub first_expected: u32,
+    pub first_actual: u32,
+    pub unix_ms: u64,
+}
+
 impl VerifyReport {
     pub const MAGIC: u32 = 0xADBA_0000;
     /// The injection self-test constants (HYDRA heritage): the known error is
     /// injected at element 0xADBA with bit 22 flipped.
     pub const SELF_TEST_IDX: u32 = 0xADBA;
     pub const SELF_TEST_BIT: u32 = 22;
-
     pub fn init() -> Self {
         Self {
             magic: Self::MAGIC,

@@ -98,7 +98,7 @@ For autoscan-specific GPU generation support, see [Supported GPU Generations](#s
 |------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Windows 10/11 or any Linux distribution                          | The tool is invoked via NVAPI/NVML and supports Windows 10/11 and *any Linux distribution using nvidia-open-dkms* (theoretically, ArchLinux + KDE, Ubuntu 22.04, Debian 12/13 tested). |
 | NVIDIA Driver (≥ 537, nvidia-open-dkms or proprietary for Linux) | Must support NVAPI/NVML interface for target GPU. Version 395 known not to work; hard to support Kepler and earlier GPUs with old drivers.                                             |
-| CUDA runtime libraries                                           | Required by the bundled `cli-stressor-cuda-rs` worker. The optimizer launches it as an isolated subprocess.                                                                            |
+| CUDA runtime libraries                                           | Required by the bundled `cli-stressor-rs` worker. The optimizer launches it as an isolated subprocess.                                                                            |
 | Administrator/Sudo privileges                                    | OC parameter writing requires admin privileges; most reads do not.                                                                                                                     |
 
 ### Integrated workflow
@@ -113,7 +113,7 @@ Use `--mode ultrafast` or `--mode legacy`, and `--fresh` to discard resumable sc
 - Build tools for target architecture
 - The default `stressor-bundled` feature builds CUDA and Vulkan support into the optimizer.
 - `stressor-external` is an optional fallback that launches a standalone
-  `cli-stressor-cuda-rs` executable with structured arguments, without a shell wrapper.
+  `cli-stressor-rs` executable with structured arguments, without a shell wrapper.
 
 ---
 

@@ -64,9 +64,9 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache: "true"
-      # cli-stressor-cuda-rs links against CUDA even without --all-features; exclude it here.
+      # cli-stressor-rs links against CUDA even without --all-features; exclude it here.
       # The Rust stressor is compiled separately in ci.yml when files change.
-      - run: cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings
+      - run: cargo clippy --workspace --exclude cli-stressor-rs --all-targets -- -D warnings
 
   changes:
     name: detect changed components
@@ -127,7 +127,7 @@ jobs:
             gui:
               - 'gui/**'
             stressor_cuda_rs:
-              - 'cli-stressor-cuda-rs/**'
+              - 'cli-stressor-rs/**'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
 
@@ -253,7 +253,7 @@ jobs:
         run: cargo build --package nvoc-srv --all-targets --all-features
 
   rust-stressor-cuda-rs:
-    name: cli-stressor-cuda-rs (non-CUDA)
+    name: cli-stressor-rs (non-CUDA)
     needs: changes
     if: >-
       needs.changes.outputs.ci_config == 'true' ||
@@ -268,9 +268,9 @@ jobs:
         with:
           cache: "true"
       - name: Clippy
-        run: cargo clippy --package cli-stressor-cuda-rs --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --package cli-stressor-rs --all-targets --no-default-features -- -D warnings
       - name: Test
-        run: cargo test --package cli-stressor-cuda-rs --all-targets --no-default-features
+        run: cargo test --package cli-stressor-rs --all-targets --no-default-features
       # The release matrix (release.yml) is the only workflow that compiles
       # these crates for aarch64-linux, where core::ffi::c_char is u8
       # instead of the i8 seen on every other release target. Type errors
@@ -282,7 +282,7 @@ jobs:
       - name: Cross-check aarch64-linux (c_char is u8 there)
         run: |
           rustup target add aarch64-unknown-linux-gnu
-          cargo check --package nvoc-cli --package nvoc-auto-optimizer --package cli-stressor-cuda-rs --package pynvoc --features cuda12,vulkan --target aarch64-unknown-linux-gnu
+          cargo check --package nvoc-cli --package nvoc-auto-optimizer --package cli-stressor-rs --package pynvoc --features cuda12,vulkan --target aarch64-unknown-linux-gnu
 
   python-tui:
     name: tui (${{ matrix.os }} / py${{ matrix.python-version }})

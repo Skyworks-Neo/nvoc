@@ -99,7 +99,7 @@ jobs:
             auto_optimizer:
               - 'auto-optimizer/**'
             stressor_cuda_rs:
-              - 'cli-stressor-cuda-rs/**'
+              - 'cli-stressor-rs/**'
             stressor_opencl:
               - 'cli-stressor-opencl/**'
 
@@ -172,9 +172,9 @@ jobs:
           cache: "true"
           cache-workspaces: . -> target
       - name: build CUDA stressor
-        run: cargo build --release --package cli-stressor-cuda-rs --features cuda
+        run: cargo build --release --package cli-stressor-rs --features cuda
       - name: short stress run
-        run: cargo run --release --package cli-stressor-cuda-rs --features cuda -- --duration 10 --precisions fp32 --matrix-sizes 2048 --kernel-types gemm --disable-fp8
+        run: cargo run --release --package cli-stressor-rs --features cuda -- --duration 10 --precisions fp32 --matrix-sizes 2048 --kernel-types gemm --disable-fp8
 
   opencl-stressor-windows:
     needs: changes

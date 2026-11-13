@@ -144,7 +144,7 @@ is known the controller writes no cap at all — never a guessed one.
 | Caller | Mechanism | Session lifecycle |
 |---|---|---|
 | `nvoc-auto-optimizer --target-temp N` (formal) | probe `/status` -> adopt, else spawn `nvoc-srv --foreground` as child | session spans the whole scan (every stress round); `cleanup_autoscan_exit` restores fans and stops only a *spawned* child |
-| `cli-stressor-cuda-rs --target-temp N` (debug) | same probe/spawn logic, self-contained | session = one stress run; torn down on completion and Ctrl-C; a hard crash leaves the spawned srv orphaned-but-safe (it keeps controlling; reuse next run or `/restore` via the web UI) |
+| `cli-stressor-rs --target-temp N` (debug) | same probe/spawn logic, self-contained | session = one stress run; torn down on completion and Ctrl-C; a hard crash leaves the spawned srv orphaned-but-safe (it keeps controlling; reuse next run or `/restore` via the web UI) |
 | manual (curl / web console / MCP later) | the HTTP API directly | you own it |
 
 `--target-temp` on the stressor is **ignored in optimizer-worker mode** —

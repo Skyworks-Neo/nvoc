@@ -23,7 +23,7 @@ use rand::{RngExt, SeedableRng};
 use cudarc::driver::{CudaContext, CudaFunction, CudaModule, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::{CompileOptions, compile_ptx_with_opts};
 
-use cli_stressor_cuda_rs::{
+use cli_stressor_rs::{
     BackendError, DeviceInfo, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig,
     fill_random_i32, intalu_ref_element,
 };

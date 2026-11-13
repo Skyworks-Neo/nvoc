@@ -12,7 +12,7 @@
 
 这是一个基于 OpenCL 的 GPU 核心域稳定性压力测试工具。它通过时间驱动、随机化的通用矩阵乘法（GEMM）工作负载，结合旁路校验机制来对显卡进行压力测试，能够有效检测显卡的静默计算错误（Silent Data Corruption）或硬件稳定性问题。
 
-> **提示**：本目录只维护 OpenCL stressor。CUDA stressor 已迁移到 Rust crate：`cli-stressor-cuda-rs/`。
+> **提示**：本目录只维护 OpenCL stressor。CUDA stressor 已迁移到 Rust crate：`cli-stressor-rs/`。
 >
 > **警告**：OpenCL stressor 的压力不足以作为最终超频稳定性判据。OpenCL-only 通过可能得到高于真实稳定上限的 autoscan / V-F 曲线结果；直接长期使用这些偏高结果可能导致驱动重置、系统不稳定、数据损坏或硬件故障。请仅将 OpenCL 结果视为初筛，并使用 CUDA stressor 或更重的真实负载重新验证。
 
@@ -22,7 +22,7 @@
 - **随机化工作负载**：动态改变矩阵尺寸（包含非对齐的尺寸），制造冷热交替的计算阶段，对显卡供电和内存分配器施加压力。
 - **跨平台支持**：允许您在非 CUDA 平台环境（如某些核显等）免庞大依赖进行压力测试。
 - **旁路数据校验**：周期性中断压力测试，并使用 CPU 上 FP64 参考算法进行确定性计算校验，捕获静默错误。
-- **骑载校验回路（ride-on-load verify）**：校验器直接检查压力负载正在读写的真实缓冲——GEMM 输出全量扫描（non-finite/统计）+ 采样点双算互检（索引现算期望，零 golden 缓冲）+ 常驻 pattern 块周期校验（显存域）；启动时注入自检门（HYDRA 式 idx=0xADBA/bit22）证明检测管线可信；`VERDICT_JSON` 结构化输出（`--json-out`）。详见 `verify_opencl.py` 与 CUDA 版指南 `../cli-stressor-cuda-rs/VERIFY-TESTING-GUIDE.md`。
+- **骑载校验回路（ride-on-load verify）**：校验器直接检查压力负载正在读写的真实缓冲——GEMM 输出全量扫描（non-finite/统计）+ 采样点双算互检（索引现算期望，零 golden 缓冲）+ 常驻 pattern 块周期校验（显存域）；启动时注入自检门（HYDRA 式 idx=0xADBA/bit22）证明检测管线可信；`VERDICT_JSON` 结构化输出（`--json-out`）。详见 `verify_opencl.py` 与 CUDA 版指南 `../cli-stressor-rs/VERIFY-TESTING-GUIDE.md`。
 - **持续高压执行**：可自定义执行时长，对 GPU 持续平缓或剧烈施压。
 
 ### 环境要求
@@ -98,7 +98,7 @@ python test.py [参数]
 
 This is an OpenCL-based GPU core-stability stress tool. It drives randomized generalized matrix multiplication (GEMM) workloads over time, combined with a sidecar validation path, to stress the GPU and help detect silent data corruption or hardware stability issues.
 
-> **Note**: this directory maintains only the OpenCL stressor. The CUDA stressor lives in the Rust crate: `cli-stressor-cuda-rs/`.
+> **Note**: this directory maintains only the OpenCL stressor. The CUDA stressor lives in the Rust crate: `cli-stressor-rs/`.
 >
 > **Warning**: the OpenCL stressor is not high-pressure enough to be a final overclocking stability gate. OpenCL-only passes can produce autoscan / V-F curve results higher than the hardware can actually sustain; using those inflated results long term may cause driver resets, system instability, data corruption, or hardware failure. Treat OpenCL results as a first-pass screen and revalidate with the CUDA stressor or heavier real workloads.
 

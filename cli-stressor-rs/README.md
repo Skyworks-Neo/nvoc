@@ -1,4 +1,4 @@
-# cli-stressor-cuda-rs
+# cli-stressor-rs
 
 > Language switch / 语言切换: [中文](#中文) | [English](#english)
 >
@@ -35,7 +35,7 @@
 
 ### 概述
 
-`cli-stressor-cuda-rs` 是一个用 Rust 编写的 CUDA 计算压力测试工具。它通过随机化 GEMM / 整数 ALU / 访存 / 原子操作负载和周期性的 CPU 侧校验，帮助发现静默数据损坏和硬件稳定性问题。
+`cli-stressor-rs` 是一个用 Rust 编写的 CUDA 计算压力测试工具。它通过随机化 GEMM / 整数 ALU / 访存 / 原子操作负载和周期性的 CPU 侧校验，帮助发现静默数据损坏和硬件稳定性问题。
 
 ### 功能特点
 
@@ -51,7 +51,7 @@
 - 多流提交模式：`single` / `dual` / `triple`
 - Vulkan 图形压力侧车：渲染负载 `--vulkan`（默认无头 offscreen，`--vulkan-window` 出窗，仅 Windows）；需 `--features vulkan`
 - `--vulkan-only` 是纯 Vulkan 路径：在 CUDA 初始化之前处理，GPU 直接按 `--gpu-uuid` / `--pci-bus` / `--gpu-index`（Vulkan 侧 PCI 排序索引，选中前打印完整映射表）选择，无需可用 CUDA 驱动。注意 Vulkan 枚举包含非 NVIDIA 设备，精确选择优先用 UUID 或 PCI 地址
-- PCI 总线 / UUID / 排序索引 GPU 选择；`--list-gpus` 枚举设备
+- PCI 总线 / UUID / 排序索引 GPU 选择；`--get-cuda-uuid-list` 枚举 CUDA 设备（含 UUID），`--get-vulkan-index` 打印选中 GPU 的 Vulkan 排序 index
 
 ### 支持精度一览
 
@@ -99,24 +99,24 @@
 CUDA 支持通过 feature flag 控制。
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
+cargo run -p cli-stressor-rs --features cuda -- --duration 30 --precisions fp16,tf32
 ```
 
 ```bash
 # 混合 FP + 整数压力（推荐）
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions fp16,bf16,int8,int32 \
   --kernel-types gemm,intalu,memcpy
 
 # INT16 压力（仅 intalu）
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions int16 \
   --kernel-types intalu
 
 # INT8 cuBLAS GEMM + INT32 intalu 混合
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions int8,int32 \
   --kernel-types gemm,intalu
@@ -125,19 +125,19 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- \
 若启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
 
 ```bash
-cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
+cargo build --release -p cli-stressor-rs --features cuda,vulkan
 ```
 
 可选：通过配置文件运行（所有选项都可放入 config）。
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
+cargo run -p cli-stressor-rs --features cuda -- --config ./stressor.toml
 ```
 
 ### 配置文件
 
 - 参数优先级：`命令行显式传入 > config 文件 > 内置默认值`
-- 内置 autoscan profile 位于 `cli-stressor-cuda-rs/profiles/`：
+- 内置 autoscan profile 位于 `cli-stressor-rs/profiles/`：
   - `40-50.toml`：面向 NVIDIA GeForce RTX 40/50 系显卡，由 auto-optimizer 自动选择。
   - `standard.toml`：默认配置，面向 8G+ 显存显卡。
   - `low-vram.toml`：较低显存配置，面向 6G-8G 显存显卡。
@@ -232,7 +232,7 @@ burst_iters = 64
 
 ### Overview
 
-`cli-stressor-cuda-rs` is a Rust-based CUDA compute stress tool. It uses randomized GEMM / integer ALU / memory / atomic workloads and periodic CPU-side validation to help detect silent data corruption and hardware stability issues.
+`cli-stressor-rs` is a Rust-based CUDA compute stress tool. It uses randomized GEMM / integer ALU / memory / atomic workloads and periodic CPU-side validation to help detect silent data corruption and hardware stability issues.
 
 ### Features
 
@@ -248,7 +248,7 @@ burst_iters = 64
 - Multi-stream submission: `single` / `dual` / `triple`
 - Optional Vulkan graphics stress sidecar: render load `--vulkan` (headless offscreen by default, `--vulkan-window` to present a window, Windows only); requires `--features vulkan`
 - `--vulkan-only` is a pure-Vulkan path handled before any CUDA init: the GPU is selected directly via `--gpu-uuid` / `--pci-bus` / `--gpu-index` (Vulkan-side PCI-sorted index; the full mapping is printed before selection), so no working CUDA driver is required. Note the Vulkan enumeration includes non-NVIDIA devices; prefer UUID or PCI address for exact selection
-- PCI bus / UUID / sorted-index GPU selection; `--list-gpus` to enumerate devices
+- PCI bus / UUID / sorted-index GPU selection; `--get-cuda-uuid-list` to enumerate CUDA devices, `--get-vulkan-index` to print the Vulkan-sorted index
 
 ### Precision Matrix
 
@@ -296,24 +296,24 @@ Enforced at startup; incompatible combos exit with an error:
 CUDA support is behind a feature flag.
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --duration 30 --precisions fp16,tf32
+cargo run -p cli-stressor-rs --features cuda -- --duration 30 --precisions fp16,tf32
 ```
 
 ```bash
 # Mixed FP + integer stress (recommended)
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions fp16,bf16,int8,int32 \
   --kernel-types gemm,intalu,memcpy
 
 # INT16 stress (intalu only)
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions int16 \
   --kernel-types intalu
 
 # INT8 cuBLAS GEMM + INT32 intalu mixed
-cargo run -p cli-stressor-cuda-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda -- \
   --duration 60 \
   --precisions int8,int32 \
   --kernel-types gemm,intalu
@@ -322,19 +322,19 @@ cargo run -p cli-stressor-cuda-rs --features cuda -- \
 When enabling Vulkan graphics stress, build with both features:
 
 ```bash
-cargo build --release -p cli-stressor-cuda-rs --features cuda,vulkan
+cargo build --release -p cli-stressor-rs --features cuda,vulkan
 ```
 
 Optional: run with a config file (all options can be provided in config).
 
 ```bash
-cargo run -p cli-stressor-cuda-rs --features cuda -- --config ./stressor.toml
+cargo run -p cli-stressor-rs --features cuda -- --config ./stressor.toml
 ```
 
 ### Config File
 
 - Precedence: `explicit CLI value > config file > built-in default`
-- Built-in autoscan profiles are under `cli-stressor-cuda-rs/profiles/`:
+- Built-in autoscan profiles are under `cli-stressor-rs/profiles/`:
   - `40-50.toml`: tuned for NVIDIA GeForce RTX 40/50-series GPUs and selected automatically by auto-optimizer.
   - `standard.toml`: default profile for cards with 8G+ VRAM.
   - `low-vram.toml`: lower-VRAM profile for cards with 6G-8G VRAM.

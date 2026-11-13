@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cudarc::cublas::CudaBlas;
 use cudarc::driver::CudaStream;
 
-use cli_stressor_cuda_rs::StreamMode;
+use cli_stressor_rs::StreamMode;
 
 use super::backend::CudaBackend;
 

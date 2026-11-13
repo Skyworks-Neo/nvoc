@@ -29,7 +29,7 @@ pub fn fix_all() -> Res<()> {
             "clippy",
             "--workspace",
             "--exclude",
-            "cli-stressor-cuda-rs",
+            "cli-stressor-rs",
             "--all-targets",
             "--fix",
             "--allow-dirty",
@@ -37,13 +37,13 @@ pub fn fix_all() -> Res<()> {
         .current_dir(&root);
     nvapi_cache::run_guarded(&root, &mut clippy)?;
 
-    util::step("auto-fix: clippy --fix (cli-stressor-cuda-rs, no default features)");
+    util::step("auto-fix: clippy --fix (cli-stressor-rs, no default features)");
     let mut stressor = Command::new("cargo");
     stressor
         .args([
             "clippy",
             "-p",
-            "cli-stressor-cuda-rs",
+            "cli-stressor-rs",
             "--all-targets",
             "--no-default-features",
             "--fix",
@@ -80,7 +80,7 @@ pub fn check() -> Res<()> {
             "clippy",
             "--workspace",
             "--exclude",
-            "cli-stressor-cuda-rs",
+            "cli-stressor-rs",
             "--all-targets",
             "--",
             "-D",
@@ -91,13 +91,13 @@ pub fn check() -> Res<()> {
 
     cross_clippy_mirror(&root)?;
 
-    util::step("clippy: cli-stressor-cuda-rs (no default features)");
+    util::step("clippy: cli-stressor-rs (no default features)");
     let mut stressor = Command::new("cargo");
     stressor
         .args([
             "clippy",
             "-p",
-            "cli-stressor-cuda-rs",
+            "cli-stressor-rs",
             "--all-targets",
             "--no-default-features",
             "--",
@@ -168,7 +168,7 @@ fn cross_clippy_mirror(root: &std::path::Path) -> Res<()> {
             "clippy",
             "--workspace",
             "--exclude",
-            "cli-stressor-cuda-rs",
+            "cli-stressor-rs",
             "--all-targets",
             "--target",
             target,
@@ -183,7 +183,7 @@ fn cross_clippy_mirror(root: &std::path::Path) -> Res<()> {
 /// Cross-checks every crate the release matrix natively compiles for
 /// aarch64-linux — the one release target where `core::ffi::c_char` is `u8`
 /// rather than `i8`: the release.yml Rust build line (nvoc-cli /
-/// nvoc-auto-optimizer / cli-stressor-cuda-rs) plus pynvoc, which the
+/// nvoc-auto-optimizer / cli-stressor-rs) plus pynvoc, which the
 /// GUI/TUI onefile jobs compile through maturin. A c_char-skewed buffer
 /// (e.g. `[i8]` passed to cudarc's `*mut c_char` APIs) passes every host
 /// gate and only explodes in the arm64 release cell (E0308, the failed
@@ -214,7 +214,7 @@ fn cross_check_arm64_release(root: &std::path::Path) -> Res<()> {
             "-p",
             "nvoc-auto-optimizer",
             "-p",
-            "cli-stressor-cuda-rs",
+            "cli-stressor-rs",
             "-p",
             "pynvoc",
             "--features",

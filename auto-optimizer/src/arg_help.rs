@@ -98,7 +98,7 @@ fn optimize_command() -> Command {
             Arg::new("test_exe")
                 .long("test-exe")
                 .value_name("PATH")
-                .default_value("cli-stressor-cuda-rs"),
+                .default_value("cli-stressor-rs"),
         );
     }
 
@@ -115,7 +115,7 @@ fn optimize_command() -> Command {
                 Arg::new("test_exe")
                     .long("test-exe")
                     .value_name("PATH")
-                    .default_value("cli-stressor-cuda-rs"),
+                    .default_value("cli-stressor-rs"),
             );
     }
 
@@ -341,8 +341,8 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
                 .short('w')
                 .long("test-exe")
                 .num_args(1)
-                .default_value("cli-stressor-cuda-rs")
-                .help("External cli-stressor-cuda-rs executable path"),
+                .default_value("cli-stressor-rs")
+                .help("External cli-stressor-rs executable path"),
         );
     }
 
@@ -363,8 +363,8 @@ fn vfp_autoscan_command(legacy: bool) -> Command {
                     .short('w')
                     .long("test-exe")
                     .num_args(1)
-                    .default_value("cli-stressor-cuda-rs")
-                    .help("External cli-stressor-cuda-rs executable path"),
+                    .default_value("cli-stressor-rs")
+                    .help("External cli-stressor-rs executable path"),
             );
     }
 

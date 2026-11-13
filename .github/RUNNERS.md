@@ -54,7 +54,7 @@ GitHub's concurrency).
    - `uv` (https://docs.astral.sh/uv/).
    - Git for Windows.
    - CUDA Toolkit compatible with the Rust CUDA stressor in
-     `cli-stressor-cuda-rs/`.
+     `cli-stressor-rs/`.
    - OpenCL ICD loader (ships with the NVIDIA driver).
 3. Apply `auto-optimizer/GpuTdrRecovery.reg` and reboot.
 4. Create a low-privilege local user `gha-runner`. Grant it
@@ -131,6 +131,6 @@ Configure on `main` (Settings → Branches → Rules):
 - **Wedged after a CI run**: post-job hook should have caught it. If not,
   reboot and add the failing test to the `--skip` list while you debug.
 - **CUDA / driver upgrade**: drain the runner (Settings → Runners →
-  pause), upgrade, reboot, run `cli-stressor-cuda-rs` manually, un-pause.
+  pause), upgrade, reboot, run `cli-stressor-rs` manually, un-pause.
 - **Adding a new GPU generation**: register a new runner with an extra label
   (e.g. `gpu-rtx50`) and add a job in `gpu-ci.yml` that targets that label.

@@ -15,11 +15,11 @@
 ## Rust workspace
 
 - Build (exclude CUDA-Rust stressor):
-  `cargo build --workspace --exclude cli-stressor-cuda-rs`
+  `cargo build --workspace --exclude cli-stressor-rs`
 - Format check:
   `cargo fmt --all -- --check`
 - Lint:
-  `cargo clippy --workspace --exclude cli-stressor-cuda-rs --all-targets -- -D warnings`
+  `cargo clippy --workspace --exclude cli-stressor-rs --all-targets -- -D warnings`
 - Core tests:
   `cargo test --package nvoc-core --all-targets`
 

@@ -105,7 +105,7 @@ autoscan 专用的 GPU 世代支持请见[支持的 GPU 世代](#支持的-gpu-�
 |:------------------------------------------------------|:----------------------------------------------------------------------------------------------------------------------------|
 | Windows 10/11 或任一 Linux 发行版                           | 工具通过 NVAPI/NVML 调用，支持 Windows 10/11 和*任何使用 nvidia-open-dkms 的 linux 发行版*（理论上，已测试 ArchLinux + KDE、Ubuntu22.04 、Debian 12/13） |
 | NVIDIA 驱动（≥ 537，Linux用nvidia-open-dkms 或 proprietary） | 需支持目标 GPU 的 NVAPI/NVML 接口，已知395版本完全不行，因此难以支持驱动太老的kepler和之前的GPU                                                              |
-| CUDA 运行库                                                | 内置 `cli-stressor-cuda-rs` worker 需要；优化器会将其作为隔离子进程启动。                                                                    |
+| CUDA 运行库                                                | 内置 `cli-stressor-rs` worker 需要；优化器会将其作为隔离子进程启动。                                                                    |
 | Administrator权限/Sudo权限                                | 超频参数写入接口需要管理权限，而大部分读取不需要                                                                                                    |
 
 ### 集成工作流
@@ -120,7 +120,7 @@ autoscan 专用的 GPU 世代支持请见[支持的 GPU 世代](#支持的-gpu-�
 - 目标架构对应构建工具
 - 默认 `stressor-bundled` feature 会把 CUDA/Vulkan stressor 编入优化器。
 - 可选 `stressor-external` fallback 会用结构化参数启动独立的
-  `cli-stressor-cuda-rs`，不经过 shell wrapper。
+  `cli-stressor-rs`，不经过 shell wrapper。
 
 ---
 
@@ -341,7 +341,7 @@ nvoc-auto-optimizer.exe autoscan-vfp -u -b aggressive
 | 参数            | 简写   | 默认                  | 说明                                                          |
 |---------------|------|---------------------|-------------------------------------------------------------|
 | `--ultrafast` | `-u` | 关                   | 启用超快速模式（仅扫 4 个关键点，其余插值）                                     |
-| `--test-exe <路径>` | `-w` | `cli-stressor-cuda-rs`（仅 external feature） | 外部 stressor 可执行文件路径；默认 build 使用内置子进程 |
+| `--test-exe <路径>` | `-w` | `cli-stressor-rs`（仅 external feature） | 外部 stressor 可执行文件路径；默认 build 使用内置子进程 |
 | `--log <路径>` | `-l` | `./ws/vfp.jsonl`    | 结构化扫描日志路径                                                  |
 | `-q <序列>`     | —    | `-`                 | 自定义扫描点序列（`-` 为自动）                                           |
 | `-t <次数>`     | —    | `30`                | CLI 压力测试时长/重试循环次数；封装脚本会据此设置压力测试 duration                    |

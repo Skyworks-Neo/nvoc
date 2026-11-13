@@ -9,7 +9,7 @@
 
 1. 构建 release：
    ```
-   cargo build --release -p cli-stressor-cuda-rs --features cuda12
+   cargo build --release -p cli-stressor-rs --features cuda12
    ```
 2. **NVRTC DLL 必须在 exe 旁**（`target/release/`）：
    - `nvrtc64_120_0.dll`（**12.9 版，约 90MB**；44MB/2024 日期的是 12.4 旧版，会让检测器静默禁用）
@@ -110,19 +110,19 @@ detectors: ops=6550 checked=1781232966 errors=0 mismatch=0 nonfinite=0
 
 ```bat
 :: 自检门 + memcpy 域（2s 内应有 detectors 行、coverage≈1）
-cli-stressor-cuda-rs.exe --duration 5 --precisions fp32 --kernel-types memcpy --matrix-sizes 4096 --validate-interval 0 --json-out v-memcpy.json
+cli-stressor-rs.exe --duration 5 --precisions fp32 --kernel-types memcpy --matrix-sizes 4096 --validate-interval 0 --json-out v-memcpy.json
 
 :: memset 域（注意第 8 个迭代起才出现 fill+verify）
-cli-stressor-cuda-rs.exe --duration 5 --precisions fp32 --kernel-types memset --matrix-sizes 4096 --validate-interval 0
+cli-stressor-rs.exe --duration 5 --precisions fp32 --kernel-types memset --matrix-sizes 4096 --validate-interval 0
 
 :: GEMM 域（stats + 512 点采样互检）
-cli-stressor-cuda-rs.exe --duration 10 --precisions fp32 --kernel-types gemm --matrix-sizes 2048,4096 --validate-interval 0
+cli-stressor-rs.exe --duration 10 --precisions fp32 --kernel-types gemm --matrix-sizes 2048,4096 --validate-interval 0
 
 :: FP64（回归验证：double 累加修复后必须 0 mismatch；双转置最苛刻）
-cli-stressor-cuda-rs.exe --duration 25 --precisions fp64 --kernel-types gemm --burst-iters 20 --matrix-sizes 4096 --minor-mixture-rate 0 --validate-interval 8
+cli-stressor-rs.exe --duration 25 --precisions fp64 --kernel-types gemm --burst-iters 20 --matrix-sizes 4096 --minor-mixture-rate 0 --validate-interval 8
 
 :: IntAlu 参考域（INT32 链逐位对照）
-cli-stressor-cuda-rs.exe --duration 5 --precisions int32 --kernel-types intalu --matrix-sizes 1024 --validate-interval 0
+cli-stressor-rs.exe --duration 5 --precisions int32 --kernel-types intalu --matrix-sizes 1024 --validate-interval 0
 ```
 
 每条命令判读：`self-test` 两行 OK + summary `OK` + `detectors: ops>0` + VERDICT `result=pass`。
@@ -142,9 +142,9 @@ cli-stressor-cuda-rs.exe --duration 5 --precisions int32 --kernel-types intalu -
 **A/B 对照协议（关键：除 verify 外全同）**：
 ```
 :: ON 侧（同 seed、同 duration、同尺寸）
-cli-stressor-cuda-rs.exe --seed 777 --duration 30 --precisions fp32 --kernel-types gemm --matrix-sizes 4096 --minor-mixture-rate 0 --validate-interval 0 --json-out on.json
+cli-stressor-rs.exe --seed 777 --duration 30 --precisions fp32 --kernel-types gemm --matrix-sizes 4096 --minor-mixture-rate 0 --validate-interval 0 --json-out on.json
 :: OFF 侧
-cli-stressor-cuda-rs.exe --no-verify --seed 777 --duration 30 --precisions fp32 --kernel-types gemm --matrix-sizes 4096 --minor-mixture-rate 0 --validate-interval 0 --json-out off.json
+cli-stressor-rs.exe --no-verify --seed 777 --duration 30 --precisions fp32 --kernel-types gemm --matrix-sizes 4096 --minor-mixture-rate 0 --validate-interval 0 --json-out off.json
 ```
 
 **在每个频率点上记录**：

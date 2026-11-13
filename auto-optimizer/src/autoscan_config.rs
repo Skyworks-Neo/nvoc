@@ -339,7 +339,7 @@ mod tests {
         ]);
         let cfg = GpuBoostAutoscanConfig::from_autoscan_matches(&matches).unwrap();
 
-        assert_eq!(cfg.common.test_exe, "cli-stressor-cuda-rs");
+        assert_eq!(cfg.common.test_exe, "cli-stressor-rs");
     }
 
     #[test]
