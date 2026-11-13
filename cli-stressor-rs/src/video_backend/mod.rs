@@ -1547,7 +1547,7 @@ unsafe extern "system" fn sequence_callback(
     if state.decoder.is_null() {
         // SAFETY: cuvidCreateDecoder fills the out-handle; the info struct
         // mirrors CUVIDDECODECREATEINFO's header layout exactly.
-        let surfaces = (format.min_num_decode_surfaces as u32).max(4);
+        let surfaces = nv::TcuUlong::from(format.min_num_decode_surfaces).max(4);
         let mut info = nv::CUVIDDECODECREATEINFO {
             ul_width: format.coded_width as nv::TcuUlong,
             ul_height: format.coded_height as nv::TcuUlong,
