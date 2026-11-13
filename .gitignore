@@ -56,6 +56,10 @@ nvppe.dll
 GPU-Z.exe
 GPU-Z_unpacked.exe
 
+# Reverse-engineering workspace: binaries, captures, notes — local analysis
+# only, never enters the repository (user ruling 2026-11-14)
+/reverse/
+
 # RE scratch tables / probe output
 *_unknown_ids.txt
 gpuz_ids_observed.txt
