@@ -10,13 +10,14 @@ Use the canonical component inventory in [`README.md` → "Components (canonical
 
 ### Submodule Forks
 
-The `nvapi-rs` URL in `.gitmodules` is intentionally relative. If you fork NVOC,
-also fork `nvapi-rs` into the same account or organization so the relative URL
-resolves to your fork. If you only fork NVOC, override the submodule URL locally
+The `nvapi-rs` URL in `.gitmodules` points at the upstream fork repository
+(`https://github.com/physicsdolphin/nvapi-rs.git`, branch `v0.2.x`). Forks of
+NVOC that keep the pinned submodule source need no extra configuration. To build
+against your own `nvapi-rs` fork instead, override the submodule URL locally
 before initializing it:
 
 ```bash
-git config submodule.nvapi-rs.url git@github.com:Skyworks-Neo/nvapi-rs.git
+git config submodule.nvapi-rs.url https://github.com/<your-account>/nvapi-rs.git
 git submodule update --init
 ```
 
@@ -57,12 +58,13 @@ NVOC 是一个 Rust 与 Python 混合的单仓库项目。请将修改范围限�
 
 ### 子模块 fork
 
-`.gitmodules` 中的 `nvapi-rs` URL 特意使用相对路径。fork NVOC 时，请同时将
-`nvapi-rs` fork 到同一用户或组织下，使相对 URL 指向你的 fork。如果只 fork
-NVOC，请在初始化子模块前于本地覆盖其 URL：
+`.gitmodules` 中的 `nvapi-rs` URL 指向上游 fork 仓库
+（`https://github.com/physicsdolphin/nvapi-rs.git`，分支 `v0.2.x`）。fork NVOC
+并沿用主仓库 pin 定的子模块源时，无需任何额外配置。若要改用你自己的
+`nvapi-rs` fork，请在初始化子模块前于本地覆盖其 URL：
 
 ```bash
-git config submodule.nvapi-rs.url git@github.com:Skyworks-Neo/nvapi-rs.git
+git config submodule.nvapi-rs.url https://github.com/<your-account>/nvapi-rs.git
 git submodule update --init
 ```
 
