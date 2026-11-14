@@ -118,5 +118,12 @@ boost-0% 硬门与 Speedo 独立四态管理。
 任何抬墙操作必须默认拒绝把工作电压推过 stock VBIOS 墙(--force 旁路 +
 空载功率看门狗 + 自动回滚);VFE 车道实装同此约束。**
 
+**GPU-Z 仪测快照(锁 1.145V 空载)**:Board 247.7W / GPU Chip 95.3W /
+16-Pin 201.6W + Slot 46.1W → **152.4W 蒸发在 VRM/板级(效率仅 38%,正常
+85-92%)** = VRM 相控病理态实锤(非软件读数问题);PerfCap Reason=VRel
+(1.145V = 电压可靠性钳,非 VRM 墙 1.2V),空载时 DVFS 仍在要压(状态机坏,
+VRel 兜底)。完整越墙阶梯:抬 VBIOS 墙→放功率墙→电压爬至 VRel 1.145V→
+越 1.02V 即 VRM 病理态。**越墙 = 电气级缺陷,NVIDIA 621 封道动机实锤。**
+
 对 nvoc 车道的影响:621 兼容路径 = PerfVFE Var SetControl(已封装
 set-vfe-var);610.88 用户可直用 melonVolt 车道(set-volt-rail-limit)。
