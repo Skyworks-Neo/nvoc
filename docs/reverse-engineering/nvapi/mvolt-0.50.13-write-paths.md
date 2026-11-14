@@ -180,3 +180,26 @@ set-vfe-var);610.88 用户可直用 melonVolt 车道(set-volt-rail-limit)。
   var10/12 0..105(功率)/**var13(type9) 450000..1243750 µV(电压域,唯一
   绝对电压候选)** / 8 个 ±FLT_MAX 偏移类。与 staged 8 变量的对位
   (engine+28 记录号)仍需 RM name 表或 mVolt staged 记录结构 RE。
+
+## 12. 语义映射修正 + 每代际 var 索引问题(2026-11-14 第六轮)
+
+- **payload 槽语义修正(权威源 = mVolt 槽名表 + UI 串)**:melonVolt payload
+  **0=REL**(reliability)/ **1=ALT/OP**(operating, Vop)/ 2=OV(VRM)/
+  3=VMIN——与 P100 钉定的 [OP, REL, OV, VMIN] **0/1 对调**。交叉验证:5060
+  Ti/610.88 slot0+slot1 各 +300mV → REL 1320 → 被钳设备顶 1280mV ✓。CLI
+  `set-volt-rail-limit --slot` 语义表需按此修正(slot0=REL、slot1=ALT/OP)。
+- **值语义**:offsets 以 mV 存储(字符串 "stored as offsets... limits can
+  shift with GPU conditions");applied 记录 min=fmin(v,0)/max=fmax(v,0) 与
+  此一致(偏移可正可负)。
+- **UI 语义串实录**(mVolt 全串收割):VMIN="rail's minimum voltage limit,
+  GPU can still use more voltage under load";REL="reliability voltage
+  limit, one of the rail's maximums";ALT/OP="maximum operating voltage
+  limit (also called Vop), driver decides when this limit applies";OV=
+  overvoltage;Speedo 有 original/effective 双读数。
+- **621 封道 mVolt 侧文案**:"NVVDD/MSVDD offsets were skipped; this driver
+  ignores them" / "voltage offsets are not verified yet"。
+- **每代际 var 索引问题(新开放项)**:8 电压变量在 V2 var 空间(255 槽)中的
+  索引是每代际运行时配置(mVolt staged records 经 BIOS override 验证流推导),
+  2070 的 var0..7 ≠ 5060 Ti 的电压变量位。**解法 = 5060 Ti 上跑探针的目录
+  扫描(GET-only,零写,安全)**——单 var GET 已全栈可用,工厂 min/max 值域
+  + mVolt UI 语义串 + 值域相关分析即可无写定案映射。
