@@ -125,5 +125,9 @@ boost-0% 硬门与 Speedo 独立四态管理。
 VRel 兜底)。完整越墙阶梯:抬 VBIOS 墙→放功率墙→电压爬至 VRel 1.145V→
 越 1.02V 即 VRM 病理态。**越墙 = 电气级缺陷,NVIDIA 621 封道动机实锤。**
 
+**显存排除(用户 P5 实验)**:显存锁 P5 后功耗与比例完全不变 → 152W 损失
+不在 GDDR7/MSVDD 侧,定案**核心 VRM 相控病理态**(芯片 95.3W + 相控损失
+152W + 时钟停高位 = 「疯狂空跑」的完整机理)。
+
 对 nvoc 车道的影响:621 兼容路径 = PerfVFE Var SetControl(已封装
 set-vfe-var);610.88 用户可直用 melonVolt 车道(set-volt-rail-limit)。
