@@ -56,3 +56,35 @@
 ## 6. 方法复现
 
 idalib 打开 exe 后按戳常量字节搜定位实现区：`C8 0A 02 00`(0x200AC8 control) / `20 16 02 00`(0x21620 status) / `4C 18 02 00`(0x2184C info) → 命中 0x140204xxx–0x140207xxx → 沿 xref 找 apply/调用方。splitmix 常量在本版未以立即数出现（0x10AC8/0x10ACC V1 面整体缺席），旧 decode_ids.py 的表基址已漂移（compat 表 @0x140374xxx），未再花时间重定位——写路径经戳常量路线已全覆盖。
+
+## 7. 车道二真身定案:PerfVFE 方程/变量引擎(2026-11-14 第二轮,六 ID 全破)
+
+- **解码器**:0.50.13 把接口 ID 加密为 18B splitmix64 密钥流 VM 程序
+  (`sub_1401D2EE0`:seed = key|0x891F610E00000000,ks(p)=fm64(seed+GG·p)>>56,
+  opcode 0xC1=MOV/0x02=XOR/0x43=ADD/0x84=ROL/0x4F=RET,imm32 逐字节同流)。
+  破解脚本 `reverse/mvolt+/decode_override_ids.py`(自检:slot 161 必解出
+  0x2C73AFDC,精确命中)。**坑:0x84+0x3D=0xC1 是 MOV,首版手算 0xBF 白跑一轮。**
+- **填充点 `sub_14028B190`**(引擎构造):六槽 = QueryInterface(解码 ID):
+
+| slot | ID | NVAPI 名(nvid.rs 已注册) | RM cmd | mVolt+ 用途 |
+|---|---|---|---|---|
+| +1248 | 0xB9DA41D6 | PerfVfe**VarGetInfo** | 0x2080A0B1 | 2,856,296B 变量表(BIOS limit 真身) |
+| +1256 | 0x5D387298 | PerfVfe**VarGetControl** | 0x2080A0B3 | 40,904B 变量控制态 |
+| +1264 | 0x79FA23A2 | PerfVfe**VarSetControl** | **0x2080E0B0** | **override 推送道(EXEC)** |
+| +1272 | 0x8D49471C | PerfVfe**EquGetInfo** | 0x2080A0B5 | 623,684B 方程表 |
+| +1280 | 0x4C75C9FE | PerfVfe**EquGetControl** | 0x2080A0B6 | 1,410,116B(+1024B 身份) |
+| +1288 | 0x2C73AFDC | VoltVoltRailsGetInfo | — | 6,220B 轨描述符(已知) |
+
+- **传输层 `sub_14028AEF0`**(通用 blob 传输):buffer+64B 头,0xCD 毒签填充;
+  a4=0 走 GET 直调,a4=1 走 `sub_1401D32C0(cmd=28, fnptr, handle, buf+64, len)`
+  参数化 SET;调用后毒签校验(完整性哨兵)。**`sub_14028A6C0` 是纯校验器**
+  (132B 记录比对+步进窗插值+OV 顶 1.15/1.25V),非传输。
+- **收敛循环 `sub_14028C390`**:Var/Equ 表读-改-推,连续 2 次读回一致才算成,
+  50ms/轮,≤12 轮。**"verified BIOS override" 门 = 表身份校验**
+  (sub_1402898B0/BE0,1024B 身份块匹配,不符报 "installed voltage offsets do
+  not match this GPU")。
+- **结论**:mVolt+ 的 621.01+ "BIOS override" = **PerfVFE Var/Equ 表改写**——
+  驱动侧 vBIOS 策略镜像(与 core/src/vbios/vfe.rs 的 vBIOS 侧 VFE 脚本同族,
+  语义可对照);乘 boost-0% 门与毒签/身份/收敛三重防护。**5060 Ti 抬墙的
+  用户态可行道 = Var SetControl(0x79FA23A2/RM 0x2080E0B0)——nvapi-rs 已注册
+  ID、读三件套已封装,唯一缺口 = SET 写封装 + mVolt+ 协议(64B 头/毒签/收敛)。**
