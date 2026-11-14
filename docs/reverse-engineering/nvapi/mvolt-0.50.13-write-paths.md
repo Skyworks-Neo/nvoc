@@ -14,9 +14,13 @@
     | mVolt+ 抽象槽 | melonVolt payload dword | 我方 P100/582.41 钉定语义 | 一致性 |
     |---|---|---|---|
     | VMIN (a3[0]) | **slot 3** | VMIN/min-hold（status[5] 跟随） | ✓ |
-    | ALT/OP (a3[1]) | **slot 0** | µV operating offset | ✓ |
-    | REL (a3[2]) | **slot 1** | VBIOS max wall offset | ✓ |
+    | ALT/OP (a3[1]) | **slot 0** | µV operating offset | ✗ 勘误见 §12 |
+    | REL (a3[2]) | **slot 1** | VBIOS max wall offset | ✗ 勘误见 §12 |
     | OV (a3[3]) | **slot 2** | VRM max wall offset | ✓ |
+    > **§12/§13 勘误**：本表构造时假设 a3 序 = [VMIN, ALT/OP, REL, OV]；round-5/6
+    > 槽名表 off_14037ADF0 + CLI `--offsets VMIN,REL,ALT[,OV]` 定案 staged 序 =
+    > **[VMIN, REL, ALT/OP, OV]**，patch 循环 `value[j]→payload[map[j]]` 下
+    > **payload0=REL / payload1=ALT/OP / payload2=OV / payload3=VMIN**（0/1 对调）。
     一次 SET 写多 slot；`a9=0` 时只写 OV（起点 3）；reset 模式全写。
   - **失败态即我方症状**："The driver did not retain the requested rail offsets, or changed another voltage setting."——mVolt+ 也靠读回验证，驱动丢写时同样可见。
   - OV 顶：默认 **1150000 µV (1.15 V)**；`a5`(XOC range) 时 **1250000 (1.25 V)**；`rail ≥ 2` 直接拒（"OV adjustment requires a writable voltage-rail record"）。收尾窗检："The resulting voltage limits exceed the active mode ceiling or conflict with VMIN."。
@@ -203,3 +207,68 @@ set-vfe-var);610.88 用户可直用 melonVolt 车道(set-volt-rail-limit)。
   2070 的 var0..7 ≠ 5060 Ti 的电压变量位。**解法 = 5060 Ti 上跑探针的目录
   扫描(GET-only,零写,安全)**——单 var GET 已全栈可用,工厂 min/max 值域
   + mVolt UI 语义串 + 值域相关分析即可无写定案映射。
+
+## 13. 5060 Ti 目录扫描 + var→role 映射定案(2026-11-15 第七/八轮,全 GET-only)
+
+探针 `vfe_v2_tier_probe` 第七轮(45648f6)/第八轮(7374909):5060 Ti 与 2070/621.01
+双机 GET-only 对照。**零写入**;5060 Ti 采样时活体墙 = melonVolt payload 面
++200mV 已消费态(VBIOS 墙 1220/ceiling 200mV/min-hold 625),VFE override 面
+全部 applied=0。
+
+### 13.1 几何定案(双机互证)
+
+- **160B 工厂记录层 @104+160·idx(round-4 SET 配方几何)跨代际成立**:单
+  var+身份 GET 中选中 var 的 type@+0/min@+4/max@+8 回填 round-4 位置
+  ——2070 var0@104(type7/max127)、var1@264(7/54/67)、var2@424(7/31) 三点
+  实锤,5060 Ti var0@104(type13/max127) 同构。**50 系工厂 type=13(=SET
+  请求型),2070=7 → 50 系 GET 回的记录天然 SET-ready**。
+- **76B 活值槽层 @136+76·k 内嵌于记录区**(与 160B 网格字节共存、字段不冲
+  突):槽字段 [type@0, min@4, max@8, value@44];0xFFFFFFFF=空槽。var k 的
+  槽=k2k/k2k+1(var0→k0,k1;var1→k2,k3;…var5→k10,k11)。**2070 全部空槽
+  (NaN);5060 Ti k0-k6 有实值**:810000/900000/0/900000..1100000(type6)/
+  20000/700000/1200000(+k7 ±FLT、k9 51000、k10 -FLT..0)——值集=工厂快照
+  语义(900000=VRM default、700000=descriptor B、20000=stock ceiling 20mV、
+  1200000=OV 墙),**墙现值(1220/1020/625/635)不在 VFE 层**。
+- 身份块 @100/176/252/328/404 各授权不同槽基(@188+76k 等,2070 上全空);
+  ident@0(=small[0..1024]) 为唯一 rich 形态(5060 Ti 58/821,2070 28/701)。
+- info 层掩码语义不同:零掩码 GET 回显 populated 位掩码(2070=0x7FFFF=19
+  位,5060 Ti=76 位);掩码位不影响条目集。RM name ID:2070 entry5+0xF0=
+  0x1613/entry6+0x0=0x1614(reproduced),5060 Ti entry5+0xF0=0xD0A(3338)。
+- bare V2 GET @36 单 dword:2070=200/0xC8,5060 Ti=20/0x14(含义未决)。
+
+### 13.2 var→role 映射定案(mVolt 模型 + 界值代际互证)
+
+mVolt slot→var 模型 `var_slot = 4·rail + map[3,0,1,2]`(staged 序
+[VMIN,REL,ALT/OP,OV])+ 界值跨代际比对:
+
+| var | role | 2070 界(type7) | 5060 Ti 界(type13) | 判据 |
+|---|---|---|---|---|
+| **var0** | **NVVDD REL offset(VBIOS 墙 ↑)** | 0..127 | 0..127 | 界代际稳定;2070 SET var0=6250µV 影响活体电压(dec4617) |
+| var1 | NVVDD ALT/OP offset | 54..67 | 0..511 | 界漂移,角色一致 |
+| var2 | NVVDD OV offset | 0..31 | 0..31 | 界代际稳定 |
+| **var3** | **NVVDD VMIN offset(±,降压道)** | ±FLT | ±FLT | ±无界=offset 类 |
+| var4 | MSVDD REL offset | 0..0 | 0..0 | 零余量=无头寸 |
+| var5 | MSVDD ALT/OP offset | 0..0 | 0..0 | 同上 |
+| var6 | MSVDD OV offset | 60..60 | 0..5 | 有界小顶 |
+| var7 | MSVDD VMIN offset | 1981..2335(freq,2070 异常位) | ±FLT | 50 系归位 |
+| var13/var45 | OV 包络(绝对 µV) | 450000..1243750 | 450000..1250000 | 1250000=1.25V=XOC OV 顶 |
+
+- var13/var45(type9 µV)**不在 8 变量组**=OV 包络变量(绝对电压域)。
+- type=8 百分比类:2070 var10/12(0..105,extra +0x78/+0x7C=0x500);
+  5060 Ti var15/16/22/44/54/73(−5..105,extra=0x100)——50 系多 4 个。
+- 5060 Ti populated=76/255,频率=var14(2049.34..2292.46)。
+
+### 13.3 621 写实验设计(待执行,单变量单会话)
+
+- **首个写 = var0(NVVDD REL offset)applied=1 value=+20000µV(+20mV)**:
+  RE 论证链 = mVolt 模型 var0=REL + 界代际稳定 + 2070 SET var0 活体消费
+  实证 + +20mV 与 stock ceiling 语义对齐。验证 = `get-volt-rail-info`
+  VBIOS 墙 1020→1040 + status[1] 跟动 + var0 记录回读 applied/value。
+  还原 = applied=0 或工厂记录 SET 回。
+- **降压道 = var3(VMIN offset)负值**——不触 VRM 缺陷态(工作电压只降不升),
+  可作 621 消费面的零风险先行验证。
+- 红线不变:50 系不把工作电压推过 stock 墙 1.02V(--force + 空载功率看门狗
+  + 自动回滚);还原≠安全(异步求值竞争,§10)。
+- **前置悬项:5060 Ti 当前驱动版本未打印**(v7 无此臂;walls 1220+payload
+  消费为 610.88 特征)——v8 已加 V8-0 驱动版本打印,若机器在 610.88 须切
+  回 621 再做写实验(610.88 上 melonVolt 直写已够,VFE 道只对 621 有意义)。
