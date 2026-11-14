@@ -283,3 +283,47 @@ mVolt slot→var 模型 `var_slot = 4·rail + map[3,0,1,2]`(staged 序
   `NVOC_ALLOW_VFE_WRITE` 永不共门;流程=工厂记录 base→patch
   min/max/applied/value→SET→读回+墙值三查(before/mid/after)→工厂 SET 回
   →还原复核。
+
+## 14. offsets 车道全链 RE + 621.24 写实验(2026-11-15 第九轮,commits 5ed7a67)
+
+### 14.1 621.24 写实验判决(实机,GET-only + var0 单写)
+
+- **621.24(r621_20)VFE Var SET = RETAINED**(applied=1/value=20000µV 读回一致
+  ——621 策略门不挡 VFE override 面,只挡 melonVolt payload 面);**但 var0
+  override 未被消费**(墙 [1000/1020/1200/635] 全 stock 纹丝不动,且未越权)。
+- 621 GET 层差异:**全掩码 Var V2 GET 返回 −1 但槽表内容仍写入缓冲**;Equ
+  rich GET 821→56 塌缩(深层方程区被拒);工厂目录/单 bit GET/槽表内容与
+  610.88 完全一致,621 槽表更完整(r6 type 回填/r8=510000 出现于 Var 层)。
+- 切 621 后 melonVolt +200mV 消失(walls 回 stock)——610.88 态不跨驱动。
+
+### 14.2 mVolt apply 流全链 RE(93c20dca session,C6F0/B700/9BE0/C390/A6C0)
+
+- **收敛轮询 C390**:B700(读)→ memcmp 目标 → A6C0(校验)→ 50ms×≤12 轮
+  → 连续 2 次一致才算成。**A6C0 = 逐 dword 校验器**(132B 步进 staged 记录,
+  4 dword payload @+68..84,只允许全局 dword 偏移 4·ID+idx 一处变动,步进
+  量化界,OV 顶 1150000/1250000)。
+- **B700(读)**:VarGetControl(171976,**请求带 32B 身份@4,来自 mVolt 对象
+  +184**) + 第二对象 137292(6220B) 双 GET → **98B0 身份校验**("The installed
+  voltage offsets do not match this GPU.");深模式加 VarInfo/EquInfo/
+  EquControl(1024B 身份@4)→ 9BE0 全表校验;boost 状态检查("require Voltage
+  Boost at 0 %",比较 6220B 对象 +4)。
+- **C6F0(写)**:逐 slot 串行(每轮 B700 GET → 单 var patch → SET → C390
+  收敛)。**patch 几何 = float* 索引 40·v+27/28/37/38 = 字节 160·v+108(min)/
+  112(max)/148(applied)/152(value)**——与 round-4 配方逐字节一致!掩码同样
+  @4+v/8;min/max=本步增量(±clamp),value=累计 offset。**var 索引来自运行
+  时表(对象 +28 步进 20×8 字节,enable@+40 同步距)**,由安装/验证流锚定。
+- **9BE0(全表校验)暴露的 VarGetInfo 真结构**:**255 条 × 11200B @296**
+  (296+255×11200=2856296 整);电压 offset var 签名 = **type==13 &&
+  byte[+1620]==7 && byte[+1621]==8**,+260 起 336B = per-var 特征区(同 rail
+  var 互相比对),info+4 与 control+4 32B 互证;EquControl @76·equ+1092 的
+  +4/+6 u16 = var 关联对,@172·equ+1092 有 (min,max,0,1,0) float 组。
+  早期"19 条目 @296 步进 276"解析 = 在第 0 条记录内部打转(误读)。
+
+### 14.3 待办(下一段)
+
+1. **5060 Ti 跑 V9-1 扫描**(GET-only)→ 按签名+关联对定 8 个 offset var
+   的真实索引与顺序(2070 端 rec13=type9 与 var13 1:1 已证 info↔control
+   索引同构)。
+2. 用正确 var 索引重做写实验;若仍存而不消费 → 复刻 mVolt 全链(身份版 GET
+   → verbatim SET → 收敛轮询),重点补 **32B 身份@4**。
+3. var 索引表锚定流(install 时谁填对象+28)待挖(28AE30/28A900/28AA10)。
