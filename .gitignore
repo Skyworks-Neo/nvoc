@@ -57,6 +57,7 @@ GPU-Z.exe
 GPU-Z_unpacked.exe
 
 /kmd-volt-policy-*.json
+/vfe_*.json
 /kmd-volt-ramscan.json
 
 # Reverse-engineering workspace: binaries, captures, notes — local analysis
