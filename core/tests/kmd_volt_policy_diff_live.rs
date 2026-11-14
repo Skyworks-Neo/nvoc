@@ -29,7 +29,7 @@ use nvapi::PhysicalGpu;
 use nvoc_core::kmd::board::{BoardLiveValues, locate_board_window_candidates};
 use nvoc_core::kmd::layout_probe::probe as probe_layout;
 use nvoc_core::kmd::pagewalk::{
-    PhysicalMemory, PeFingerprint, discover_root, find_loaded_module, is_kernel_pointer,
+    PeFingerprint, PhysicalMemory, discover_root, find_loaded_module, is_kernel_pointer,
     read_virtual, translate,
 };
 use nvoc_core::kmd::pmxdrv::{PmxDrv, PmxDrvPhysMem};
@@ -47,13 +47,24 @@ fn ram_ranges() -> Vec<(u64, u64)> {
         HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
     };
     const PATH: &str = r"HARDWARE\RESOURCEMAP\System Resources\Physical Memory";
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     let mut buf = vec![0u8; 65536];
     let mut size = buf.len() as u32;
     let mut value_type: u32 = 0;
     let mut hkey: *mut std::ffi::c_void = std::ptr::null_mut();
-    let status =
-        unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, wide(PATH).as_ptr(), 0, KEY_READ, &mut hkey) };
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            wide(PATH).as_ptr(),
+            0,
+            KEY_READ,
+            &mut hkey,
+        )
+    };
     if status != 0 {
         println!("  warning: Physical Memory key open failed 0x{status:X}, whitelist degraded");
         return Vec::new();
@@ -75,7 +86,7 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     }
     buf.truncate(size as usize);
     let le = |b: &[u8]| u64::from_le_bytes(b[..8].try_into().unwrap());
-    let mut ranges = Vec::new();
+    let ranges = Vec::new();
     if buf.len() < 4 {
         return ranges;
     }
@@ -100,7 +111,11 @@ fn ram_ranges() -> Vec<(u64, u64)> {
                 }
                 if buf[off] == 3 {
                     let start = le(&buf[off + union_off..off + union_off + 8]);
-                    let len = u32::from_le_bytes(buf[off + union_off + 8..off + union_off + 12].try_into().unwrap()) as u64;
+                    let len = u32::from_le_bytes(
+                        buf[off + union_off + 8..off + union_off + 12]
+                            .try_into()
+                            .unwrap(),
+                    ) as u64;
                     if len > 0 {
                         rs.push((start, start + len));
                     }
@@ -110,7 +125,11 @@ fn ram_ranges() -> Vec<(u64, u64)> {
         }
         let total: u64 = rs.iter().map(|(s, e)| e - s).sum();
         let covers_low = rs.iter().any(|(s, e)| 0x20000 >= *s && 0x20000 < *e);
-        println!("  RAM layout {label}: {} segments, {:.2} GiB, covers_low={covers_low}", rs.len(), total as f64 / (1 << 30) as f64);
+        println!(
+            "  RAM layout {label}: {} segments, {:.2} GiB, covers_low={covers_low}",
+            rs.len(),
+            total as f64 / (1 << 30) as f64
+        );
         if covers_low && total > (1 << 30) {
             best = match &best {
                 None => Some((rs, label)),
@@ -133,6 +152,7 @@ fn ram_ranges() -> Vec<(u64, u64)> {
     }
 }
 
+#[allow(dead_code)]
 struct CachedPhys<'a> {
     inner: &'a PmxDrvPhysMem<'a>,
     cache: RefCell<HashMap<u64, [u8; 4096]>>,
@@ -154,7 +174,10 @@ impl<'a> CachedPhys<'a> {
     }
     fn in_ram(&self, frame: u64) -> bool {
         self.ram_ranges.is_empty()
-            || self.ram_ranges.iter().any(|(s, e)| frame >= *s && frame < *e)
+            || self
+                .ram_ranges
+                .iter()
+                .any(|(s, e)| frame >= *s && frame < *e)
     }
 }
 
@@ -191,12 +214,23 @@ impl PhysicalMemory for CachedPhys<'_> {
     }
 }
 
-fn connect_walk() -> (nvoc_core::kmd::pagewalk::LoadedModule, CachedPhys<'static>, u64, &'static PmxDrv) {
+fn connect_walk() -> (
+    nvoc_core::kmd::pagewalk::LoadedModule,
+    CachedPhys<'static>,
+    u64,
+    &'static PmxDrv,
+) {
     let module = find_loaded_module("nvlddmkm.sys").expect("nvlddmkm.sys not in module list");
-    println!("nvlddmkm: base 0x{:016X}, image {}", module.base, module.path.display());
+    println!(
+        "nvlddmkm: base 0x{:016X}, image {}",
+        module.base,
+        module.path.display()
+    );
     let disk_head = std::fs::read(&module.path).expect("failed to read disk image");
     let fingerprint = PeFingerprint::from_image(&disk_head).expect("disk image not PE32+");
-    let drv: &'static PmxDrv = Box::leak(Box::new(PmxDrv::connect().expect("PMXDRV connect failed (service running?)")));
+    let drv: &'static PmxDrv = Box::leak(Box::new(
+        PmxDrv::connect().expect("PMXDRV connect failed (service running?)"),
+    ));
     let pm: &'static PmxDrvPhysMem<'static> = Box::leak(Box::new(PmxDrvPhysMem::new(drv)));
     let phys = CachedPhys::new(pm);
     let discovery = discover_root(&phys, module.base, &fingerprint);
@@ -209,7 +243,13 @@ fn connect_walk() -> (nvoc_core::kmd::pagewalk::LoadedModule, CachedPhys<'static
 }
 
 /// 逐页读一段内核 VA(缺页记洞)。
-fn read_range(phys: &dyn PhysicalMemory, root: u64, va: u64, len: usize, holes: &mut Vec<u64>) -> Vec<u8> {
+fn read_range(
+    phys: &dyn PhysicalMemory,
+    root: u64,
+    va: u64,
+    len: usize,
+    holes: &mut Vec<u64>,
+) -> Vec<u8> {
     let mut out = vec![0u8; len];
     let mut done = 0usize;
     while done < len {
@@ -229,6 +269,7 @@ fn read_range(phys: &dyn PhysicalMemory, root: u64, va: u64, len: usize, holes: 
 
 // ---------------- 活体 nvapi 读数 ----------------
 
+#[allow(dead_code)]
 struct LiveRails {
     name: String,
     status_values: Vec<i32>,
@@ -240,12 +281,9 @@ struct LiveRails {
 fn read_live(gpu: &PhysicalGpu) -> LiveRails {
     let name = gpu.full_name().unwrap_or_default();
     let rails = gpu.volt_rails().expect("volt_rails");
-    let status = rails.status.first().expect("no volt-rail status entry").clone();
-    let control = rails.control.first().expect("no volt-rail control entry").clone();
-    let boost = gpu
-        .core_voltage_boost()
-        .ok()
-        .map(|p| p.0 as i32);
+    let status = *rails.status.first().expect("no volt-rail status entry");
+    let control = *rails.control.first().expect("no volt-rail control entry");
+    let boost = gpu.core_voltage_boost().ok().map(|p| p.0 as i32);
     println!(
         "live [{name}]: status{:?} control(rail{}){:?} boost={boost:?}",
         status.values, control.rail_bit, control.values
@@ -289,6 +327,7 @@ fn writable_sections(phys: &dyn PhysicalMemory, root: u64, base: u64) -> Vec<(St
     out
 }
 
+#[allow(dead_code)]
 fn hexdump(buf: &[u8], center: usize, span: usize) -> String {
     let lo = center.saturating_sub(span);
     let hi = (center + span + 4).min(buf.len());
@@ -316,7 +355,9 @@ fn scan_phase() {
     let vbios = live.status_values[2] as u32;
     let target = live.status_values[1] as u32;
     let boost = live.boost.unwrap_or(0).max(0) as u32;
-    println!("scan anchors: vrm={vrm} minhold={minhold} vbios={vbios} target={target} boost={boost}");
+    println!(
+        "scan anchors: vrm={vrm} minhold={minhold} vbios={vbios} target={target} boost={boost}"
+    );
 
     let sections = writable_sections(&phys, root, module.base);
     let mut candidates: Vec<(u64, Vec<u8>)> = Vec::new(); // (page_va, page bytes)
@@ -364,7 +405,10 @@ fn scan_phase() {
                     .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                     .collect();
                 if td.contains(&vrm) && td.contains(&minhold) {
-                    println!("HOP-HIT page 0x{page_va:016X} +0x{o:X} -> 0x{:016X}", p & !0xFFF);
+                    println!(
+                        "HOP-HIT page 0x{page_va:016X} +0x{o:X} -> 0x{:016X}",
+                        p & !0xFFF
+                    );
                     hop_hits.push((p & !0xFFF, tp));
                 }
             }
@@ -379,7 +423,8 @@ fn scan_phase() {
     gpu.set_core_voltage_boost(nvapi::Percentage(perturb_boost))
         .expect("boost perturb write");
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let mut report = json!({"live": {"name": live.name, "status": live.status_values, "boost": orig_boost}});
+    let mut report =
+        json!({"live": {"name": live.name, "status": live.status_values, "boost": orig_boost}});
     let mut moved_report = Vec::new();
     for (page_va, before) in &candidates {
         let after = read_range(&phys, root, *page_va, 4096, &mut holes);
@@ -397,7 +442,10 @@ fn scan_phase() {
             }
         }
         if !diffs.is_empty() {
-            println!("MOVED page 0x{page_va:016X}: {} dwords changed", diffs.len());
+            println!(
+                "MOVED page 0x{page_va:016X}: {} dwords changed",
+                diffs.len()
+            );
             for (o, a, b) in &diffs {
                 println!("    +{o:04x}: {a} -> {b}");
             }
@@ -416,10 +464,19 @@ fn scan_phase() {
         rails_after.status.first().map(|s| s.values),
         target
     );
-    report["candidates"] = json!(candidates.iter().map(|(va, _)| format!("0x{va:016X}")).collect::<Vec<_>>());
+    report["candidates"] = json!(
+        candidates
+            .iter()
+            .map(|(va, _)| format!("0x{va:016X}"))
+            .collect::<Vec<_>>()
+    );
     report["moved"] = json!(moved_report);
     report["holes"] = json!(holes.len());
-    std::fs::write("kmd-volt-policy-scan.json", serde_json::to_vec_pretty(&report).unwrap()).ok();
+    std::fs::write(
+        "kmd-volt-policy-scan.json",
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .ok();
     println!("report -> kmd-volt-policy-scan.json");
     let _ = drv;
 }
@@ -430,12 +487,20 @@ fn write_phase() {
     let mut gpus = nvoc_gpu_list();
     let gpu = gpus.pop().expect("no gpu");
     let va = u64::from_str_radix(
-        env::var("NVOC_VOLT_WRITE_VA").expect("needs NVOC_VOLT_WRITE_VA").trim_start_matches("0x"),
+        env::var("NVOC_VOLT_WRITE_VA")
+            .expect("needs NVOC_VOLT_WRITE_VA")
+            .trim_start_matches("0x"),
         16,
     )
     .unwrap();
-    let old: u32 = env::var("NVOC_VOLT_WRITE_OLD").expect("needs NVOC_VOLT_WRITE_OLD").parse().unwrap();
-    let new: u32 = env::var("NVOC_VOLT_WRITE_NEW").expect("needs NVOC_VOLT_WRITE_NEW").parse().unwrap();
+    let old: u32 = env::var("NVOC_VOLT_WRITE_OLD")
+        .expect("needs NVOC_VOLT_WRITE_OLD")
+        .parse()
+        .unwrap();
+    let new: u32 = env::var("NVOC_VOLT_WRITE_NEW")
+        .expect("needs NVOC_VOLT_WRITE_NEW")
+        .parse()
+        .unwrap();
     if env::var("NVOC_VOLT_WRITE_ARM").as_deref() != Ok("YES") {
         panic!("write arm not armed (NVOC_VOLT_WRITE_ARM=YES)");
     }
@@ -447,7 +512,9 @@ fn write_phase() {
     let before = read_range(&phys, root, va & !0xFFF, 4096, &mut Vec::new());
     let cur = u32::from_le_bytes(before[off..off + 4].try_into().unwrap());
     if cur != old {
-        panic!("identity gate failed: current value {cur} != expected {old} — object drifted, redo scan");
+        panic!(
+            "identity gate failed: current value {cur} != expected {old} — object drifted, redo scan"
+        );
     }
     let mapped = drv.map_physical(frame, 1).expect("frame map failed");
     unsafe {
@@ -460,9 +527,14 @@ fn write_phase() {
     println!("readback: same-window={w1} pagetable={w3} (expect {new})");
     // nvapi 随动验证:status 六值 vs 写前
     let rails = gpu.volt_rails().expect("volt_rails after write");
-    println!("nvapi status after write: {:?}", rails.status.first().map(|s| s.values));
+    println!(
+        "nvapi status after write: {:?}",
+        rails.status.first().map(|s| s.values)
+    );
     // 还原
-    let mapped2 = drv.map_physical(frame, 1).expect("frame map failed (restore)");
+    let mapped2 = drv
+        .map_physical(frame, 1)
+        .expect("frame map failed (restore)");
     unsafe {
         ((mapped2 + off as u64) as *mut u32).write_volatile(old);
     }
@@ -478,7 +550,7 @@ fn write_phase() {
 fn nvoc_gpu_list() -> Vec<PhysicalGpu> {
     let mut gpus = PhysicalGpu::enumerate().expect("enumerate");
     // 本机 2070 是唯一 dGPU;若枚举多卡,取第一块有电压轨的
-    gpus.drain(..).collect()
+    std::mem::take(&mut gpus)
 }
 
 fn rd_u64(phys: &dyn PhysicalMemory, root: u64, va: u64) -> Option<u64> {
@@ -517,7 +589,7 @@ fn major_phase() {
         layout.major_root_off
     );
 
-    let state = rd_u64(&phys, root, module.base + u64::from(layout.global_slot_rva))
+    let state = rd_u64(&phys, root, module.base + layout.global_slot_rva)
         .filter(|v| is_kernel_pointer(*v))
         .expect("state slot invalid");
     let table = rd_u64(&phys, root, state + u64::from(layout.state_table_off))
@@ -542,10 +614,11 @@ fn major_phase() {
         let Some(major) = rd_u64(
             &phys,
             root,
-            table + u64::from(layout.entry_major_off) + u64::from(layout.entry_stride) * u64::from(i),
+            table
+                + u64::from(layout.entry_major_off)
+                + u64::from(layout.entry_stride) * u64::from(i),
         )
-        .filter(|v| is_kernel_pointer(*v))
-        else {
+        .filter(|v| is_kernel_pointer(*v)) else {
             println!("  entry {i}: major invalid");
             continue;
         };
@@ -556,7 +629,9 @@ fn major_phase() {
         }
         println!(
             "    scanned={} unreadable={} candidates={}",
-            scan.pages_scanned, scan.pages_unreadable, scan.candidates.len()
+            scan.pages_scanned,
+            scan.pages_unreadable,
+            scan.candidates.len()
         );
         for c in &scan.candidates {
             println!(
@@ -568,14 +643,16 @@ fn major_phase() {
     }
 
     if all_hits.is_empty() {
-        println!("NO tuple hits from any Major — policy object unreachable from Major ±1 hop; extend anchors next");
+        println!(
+            "NO tuple hits from any Major — policy object unreachable from Major ±1 hop; extend anchors next"
+        );
         return;
     }
 
     // 扰动前快照(候选页字节)
     let mut holes = Vec::new();
     let mut pre: Vec<(u64, Vec<u8>)> = Vec::new();
-    for (page_va, _) in &all_hits {
+    for page_va in all_hits.keys() {
         let page = read_range(&phys, root, *page_va, 4096, &mut holes);
         pre.push((*page_va, page));
     }
@@ -621,7 +698,11 @@ fn major_phase() {
         "hits": all_hits.iter().map(|(va, vals)| json!({"page_va": format!("0x{va:016X}"),
             "values": vals.iter().map(|(v, offs)| json!({"value": v, "offs": offs})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "moved": moved});
-    std::fs::write("kmd-volt-policy-major.json", serde_json::to_vec_pretty(&report).unwrap()).ok();
+    std::fs::write(
+        "kmd-volt-policy-major.json",
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .ok();
     println!("report -> kmd-volt-policy-major.json");
 }
 
@@ -629,7 +710,8 @@ fn major_phase() {
 /// diff 直接定位内核墙存储。两连击:①slot2(VRM 墙偏移 +6250µV)→ vrm/
 /// effective 相关字段现形;②boost 0→100 → boost/target 字段现形。全部扰动
 /// 即改即还原 + nvapi/kernel 双侧终验。
-fn diff2_phase() {    nvapi::initialize().expect("nvapi init");
+fn diff2_phase() {
+    nvapi::initialize().expect("nvapi init");
     let mut gpus = nvoc_gpu_list();
     let gpu = gpus.pop().expect("no gpu");
     let live = read_live(&gpu);
@@ -647,21 +729,24 @@ fn diff2_phase() {    nvapi::initialize().expect("nvapi init");
     // A: 621 RE 链直探:v4 = *(Major+0x2440),v5 = *(v4+0x6C0)(idalib 定案)
     let img = std::fs::read(&module.path).expect("disk image read");
     let layout = probe_layout(&img).expect("layout probe failed");
-    let state = rd_u64(&phys, root, module.base + u64::from(layout.global_slot_rva))
+    let state = rd_u64(&phys, root, module.base + layout.global_slot_rva)
         .filter(|v| is_kernel_pointer(*v))
         .expect("state slot invalid");
     let table = rd_u64(&phys, root, state + u64::from(layout.state_table_off))
         .filter(|v| is_kernel_pointer(*v))
         .expect("table ptr invalid");
-    let count = rd_u32(&phys, root, table + u64::from(layout.table_count_off)).unwrap_or(0).clamp(1, 8);
+    let count = rd_u32(&phys, root, table + u64::from(layout.table_count_off))
+        .unwrap_or(0)
+        .clamp(1, 8);
     for i in 0..count {
         let Some(major) = rd_u64(
             &phys,
             root,
-            table + u64::from(layout.entry_major_off) + u64::from(layout.entry_stride) * u64::from(i),
+            table
+                + u64::from(layout.entry_major_off)
+                + u64::from(layout.entry_stride) * u64::from(i),
         )
-        .filter(|v| is_kernel_pointer(*v))
-        else {
+        .filter(|v| is_kernel_pointer(*v)) else {
             continue;
         };
         let v4 = rd_u64(&phys, root, major + 0x2440).filter(|v| is_kernel_pointer(*v));
@@ -694,11 +779,19 @@ fn diff2_phase() {    nvapi::initialize().expect("nvapi init");
                     .map(|(i, _)| i * 4)
                     .collect();
                 if !offs.is_empty() {
-                    found.push(format!("{label}({v})@{:?}", offs.iter().map(|x| format!("0x{x:X}")).collect::<Vec<_>>()));
+                    found.push(format!(
+                        "{label}({v})@{:?}",
+                        offs.iter().map(|x| format!("0x{x:X}")).collect::<Vec<_>>()
+                    ));
                 }
             }
             if !found.is_empty() {
-                println!("    v5{}0x{:X} page 0x{pg:016X}: {}", if k >= 0 { "+" } else { "-" }, k.abs() * 4, found.join(" "));
+                println!(
+                    "    v5{}0x{:X} page 0x{pg:016X}: {}",
+                    if k >= 0 { "+" } else { "-" },
+                    k.abs() * 4,
+                    found.join(" ")
+                );
             }
         }
     }
@@ -717,10 +810,19 @@ fn diff2_phase() {    nvapi::initialize().expect("nvapi init");
     println!("snapshot done: {} pages", snap.len());
 
     let perturb = |gpu: &PhysicalGpu, rail: u32, slot: usize, delta: i32| {
-        let cur = gpu.volt_rails().expect("rails").control.first().unwrap().values[slot];
+        let cur = gpu
+            .volt_rails()
+            .expect("rails")
+            .control
+            .first()
+            .unwrap()
+            .values[slot];
         let want = cur.wrapping_add(delta);
         match gpu.set_volt_rail_slot(rail, slot, want) {
-            Ok(retained) => println!("perturb slot{slot}: {} -> {} (retained {retained})", cur, want),
+            Ok(retained) => println!(
+                "perturb slot{slot}: {} -> {} (retained {retained})",
+                cur, want
+            ),
             Err(e) => println!("perturb slot{slot} REFUSED: {e}"),
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -729,7 +831,10 @@ fn diff2_phase() {    nvapi::initialize().expect("nvapi init");
     println!("=== slot2 (VRM wall offset +step) diff ===");
     perturb(&gpu, 0, 2, step);
     let rails_now = gpu.volt_rails().expect("rails");
-    println!("nvapi status now: {:?}", rails_now.status.first().map(|s| s.values));
+    println!(
+        "nvapi status now: {:?}",
+        rails_now.status.first().map(|s| s.values)
+    );
     let mut hits2 = Vec::new();
     for (page_va, before) in &snap {
         let after = read_range(&phys, root, *page_va, 4096, &mut holes);
@@ -748,16 +853,27 @@ fn diff2_phase() {    nvapi::initialize().expect("nvapi init");
         }
     }
     // 还原 slot2
-    let cur = gpu.volt_rails().expect("rails").control.first().unwrap().values[2];
+    let cur = gpu
+        .volt_rails()
+        .expect("rails")
+        .control
+        .first()
+        .unwrap()
+        .values[2];
     let _ = gpu.set_volt_rail_slot(0, 2, cur.wrapping_sub(step));
     std::thread::sleep(std::time::Duration::from_millis(200));
     println!(
         "slot2 restored, nvapi status: {:?}",
-        gpu.volt_rails().expect("rails").status.first().map(|s| s.values)
+        gpu.volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .map(|s| s.values)
     );
 
     println!("=== boost 0->100 diff ===");
-    gpu.set_core_voltage_boost(nvapi::Percentage(100)).expect("boost 100");
+    gpu.set_core_voltage_boost(nvapi::Percentage(100))
+        .expect("boost 100");
     std::thread::sleep(std::time::Duration::from_millis(300));
     for (page_va, before) in &snap {
         let after = read_range(&phys, root, *page_va, 4096, &mut holes);
@@ -775,16 +891,28 @@ fn diff2_phase() {    nvapi::initialize().expect("nvapi init");
             }
         }
     }
-    gpu.set_core_voltage_boost(nvapi::Percentage(0)).expect("boost restore");
+    gpu.set_core_voltage_boost(nvapi::Percentage(0))
+        .expect("boost restore");
     std::thread::sleep(std::time::Duration::from_millis(300));
     println!(
         "boost restored, nvapi status: {:?}",
-        gpu.volt_rails().expect("rails").status.first().map(|s| s.values)
+        gpu.volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .map(|s| s.values)
     );
 
     let report = json!({"hits": hits2.iter().map(|(va, a, b)| json!({"va": va, "old": a, "new": b})).collect::<Vec<_>>()});
-    std::fs::write("kmd-volt-policy-diff2.json", serde_json::to_vec_pretty(&report).unwrap()).ok();
-    println!("report -> kmd-volt-policy-diff2.json ({} changed sites)", hits2.len());
+    std::fs::write(
+        "kmd-volt-policy-diff2.json",
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .ok();
+    println!(
+        "report -> kmd-volt-policy-diff2.json ({} changed sites)",
+        hits2.len()
+    );
 }
 
 /// ramscan 阶段:diff2 判定策略状态不在镜像节(池内存)→ 物理全 RAM 扫描。
@@ -807,29 +935,51 @@ fn ramscan_phase() {
     let needle = vrm.wrapping_add(step as u32);
     println!("perturb needle: vrm {vrm} -> {needle} (minhold co-anchor {minhold})");
 
-    let (module, phys, root, drv) = connect_walk();
+    let (module, _phys, root, drv) = connect_walk();
     let _ = (module, root);
 
     // 扰动 slot2
-    let cur_slot2 = gpu.volt_rails().expect("rails").control.first().unwrap().values[2];
+    let cur_slot2 = gpu
+        .volt_rails()
+        .expect("rails")
+        .control
+        .first()
+        .unwrap()
+        .values[2];
     let st = gpu
         .set_volt_rail_slot(0, 2, cur_slot2.wrapping_add(step))
         .expect("slot2 perturb refused");
     println!("slot2 perturbed (retained {st})");
-    let st_now = gpu.volt_rails().expect("rails").status.first().unwrap().values[3];
-    assert_eq!(st_now as u32, needle, "nvapi vrm wall did not follow perturbation");
+    let st_now = gpu
+        .volt_rails()
+        .expect("rails")
+        .status
+        .first()
+        .unwrap()
+        .values[3];
+    assert_eq!(
+        st_now as u32, needle,
+        "nvapi vrm wall did not follow perturbation"
+    );
     println!("nvapi vrm wall now {st_now} — needle live");
 
     let ranges = ram_ranges();
     let total: u64 = ranges.iter().map(|(s, e)| e - s).sum();
-    println!("RAM whitelist: {} segments, {:.2} GiB total", ranges.len(), total as f64 / (1 << 30) as f64);
-    assert!(!ranges.is_empty(), "no usable RAM ranges — abort (blind scan = BSOD risk)");
+    println!(
+        "RAM whitelist: {} segments, {:.2} GiB total",
+        ranges.len(),
+        total as f64 / (1 << 30) as f64
+    );
+    assert!(
+        !ranges.is_empty(),
+        "no usable RAM ranges — abort (blind scan = BSOD risk)"
+    );
 
     const CHUNK_PAGES: u32 = 512; // 2 MiB
     let chunk_bytes = CHUNK_PAGES as u64 * 4096;
     let mut frames: Vec<(u64, usize)> = Vec::new(); // (frame pa, page offset of needle)
     let mut map_failures = 0usize;
-    let mut consecutive_fail = 0usize;
+    let _consecutive_fail = 0usize;
     let mut scanned_bytes = 0u64;
     for (seg_start, seg_end) in &ranges {
         let mut off = 0u64;
@@ -840,8 +990,9 @@ fn ramscan_phase() {
             match drv.map_physical(pa, CHUNK_PAGES) {
                 Ok(va) if va != 0 && va != 0xBEEF => {
                     seg_fail = 0;
-                    let slice =
-                        unsafe { std::slice::from_raw_parts(va as *const u8, chunk_bytes as usize) };
+                    let slice = unsafe {
+                        std::slice::from_raw_parts(va as *const u8, chunk_bytes as usize)
+                    };
                     for (i, w) in slice.chunks_exact(4).enumerate() {
                         if w == needle.to_le_bytes().as_slice() {
                             let frame = pa + (i * 4 / 4096 * 4096) as u64;
@@ -857,7 +1008,9 @@ fn ramscan_phase() {
                     map_failures += 1;
                     seg_fail += 1;
                     if seg_fail >= 32 {
-                        println!("  segment 0x{seg_start:X}: 32 consecutive chunk failures, skipping rest");
+                        println!(
+                            "  segment 0x{seg_start:X}: 32 consecutive chunk failures, skipping rest"
+                        );
                         break;
                     }
                 }
@@ -873,6 +1026,7 @@ fn ramscan_phase() {
     );
 
     // 同页 minhold 共现过滤 + 全锚值偏移
+    #[allow(clippy::type_complexity)]
     let mut strong: Vec<(u64, Vec<(String, u32, Vec<usize>)>)> = Vec::new();
     for (frame, _) in &frames {
         let Ok(va) = drv.map_physical(*frame, 1) else {
@@ -902,15 +1056,30 @@ fn ramscan_phase() {
         let fields = vec![
             ("vrm_perturbed".into(), needle, find(needle)),
             ("minhold".into(), minhold, mh),
-            ("target".into(), live.status_values[1] as u32, find(live.status_values[1] as u32)),
-            ("vbios".into(), live.status_values[2] as u32, find(live.status_values[2] as u32)),
-            ("minhold6".into(), live.status_values[5] as u32, find(live.status_values[5] as u32)),
+            (
+                "target".into(),
+                live.status_values[1] as u32,
+                find(live.status_values[1] as u32),
+            ),
+            (
+                "vbios".into(),
+                live.status_values[2] as u32,
+                find(live.status_values[2] as u32),
+            ),
+            (
+                "minhold6".into(),
+                live.status_values[5] as u32,
+                find(live.status_values[5] as u32),
+            ),
         ];
         println!(
             "STRONG pa 0x{frame:X}: {}",
             fields
                 .iter()
-                .map(|(l, v, o)| format!("{l}({v})@{:?}", o.iter().map(|x| format!("0x{x:X}")).collect::<Vec<_>>()))
+                .map(|(l, v, o)| format!(
+                    "{l}({v})@{:?}",
+                    o.iter().map(|x| format!("0x{x:X}")).collect::<Vec<_>>()
+                ))
                 .collect::<Vec<_>>()
                 .join("  ")
         );
@@ -922,29 +1091,47 @@ fn ramscan_phase() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     println!(
         "restored, nvapi status: {:?}",
-        gpu.volt_rails().expect("rails").status.first().map(|s| s.values)
+        gpu.volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .map(|s| s.values)
     );
     for (frame, _) in &strong {
-        if let Ok(va) = drv.map_physical(*frame, 1) {
-            if va != 0 && va != 0xBEEF {
-                let page = unsafe { std::slice::from_raw_parts(va as *const u8, 4096) };
-                let still = page.chunks_exact(4).filter(|c| *c == needle.to_le_bytes().as_slice()).count();
-                let back = page.chunks_exact(4).filter(|c| *c == vrm.to_le_bytes().as_slice()).count();
-                println!("post-restore pa 0x{frame:X}: perturbed-value copies={still}, vrm-value copies={back}");
-                drv.unmap_physical(va).ok();
-            }
+        if let Ok(va) = drv.map_physical(*frame, 1)
+            && va != 0
+            && va != 0xBEEF
+        {
+            let page = unsafe { std::slice::from_raw_parts(va as *const u8, 4096) };
+            let still = page
+                .chunks_exact(4)
+                .filter(|c| *c == needle.to_le_bytes().as_slice())
+                .count();
+            let back = page
+                .chunks_exact(4)
+                .filter(|c| *c == vrm.to_le_bytes().as_slice())
+                .count();
+            println!(
+                "post-restore pa 0x{frame:X}: perturbed-value copies={still}, vrm-value copies={back}"
+            );
+            drv.unmap_physical(va).ok();
         }
     }
     let report = json!({"needle": needle, "frames": frames.iter().map(|(f, o)| json!({"pa": format!("0x{f:X}"), "off": o})).collect::<Vec<_>>(),
         "strong": strong.iter().map(|(f, fields)| json!({"pa": format!("0x{f:X}"),
             "fields": fields.iter().map(|(l, v, o)| json!({"label": l, "value": v, "offs": o})).collect::<Vec<_>>()})).collect::<Vec<_>>()});
-    std::fs::write("kmd-volt-ramscan.json", serde_json::to_vec_pretty(&report).unwrap()).ok();
+    std::fs::write(
+        "kmd-volt-ramscan.json",
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .ok();
     println!("report -> kmd-volt-ramscan.json");
 }
 
 #[test]
 #[ignore = "requires PMXDRV service + elevated shell; phase via NVOC_VOLT_KMD_PHASE"]
-fn kmd_volt_policy_diff() {    let phase = env::var("NVOC_VOLT_KMD_PHASE").unwrap_or_else(|_| "scan".into());
+fn kmd_volt_policy_diff() {
+    let phase = env::var("NVOC_VOLT_KMD_PHASE").unwrap_or_else(|_| "scan".into());
     match phase.as_str() {
         "scan" => scan_phase(),
         "major" => major_phase(),

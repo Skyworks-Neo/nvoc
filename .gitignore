@@ -56,6 +56,9 @@ nvppe.dll
 GPU-Z.exe
 GPU-Z_unpacked.exe
 
+/kmd-volt-policy-*.json
+/kmd-volt-ramscan.json
+
 # Reverse-engineering workspace: binaries, captures, notes — local analysis
 # only, never enters the repository (user ruling 2026-11-14)
 /reverse/

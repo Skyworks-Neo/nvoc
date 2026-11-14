@@ -10,7 +10,8 @@ use super::result::{
     OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus,
     PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
     TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading, ThrottleReason,
-    ViolationEntry, ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
+    VfeTablesState, VfeVarWrite, ViolationEntry, ViolationStatusReport, VoltageBoostState,
+    VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -1780,6 +1781,64 @@ impl GpuOperation for SetVoltageBoost {
         Ok(AppliedValue {
             requested: self.boost,
             applied: self.boost,
+        })
+    }
+}
+
+/// Read the full PerfVFE surface (the mVolt+ "BIOS override" lane): variable
+/// directory + control, equation directory + control. Each side degrades to
+/// None where the family is absent (pre-Turing / old drivers).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiVfeTables;
+
+impl GpuOperation for QueryNvapiVfeTables {
+    type Output = VfeTablesState;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiVfeTables
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        Ok(VfeTablesState {
+            var_info: gpu.vfe_var_info()?,
+            var_control: gpu.vfe_var_control()?,
+            equ_info: gpu.vfe_equ_info()?,
+            equ_control: gpu.vfe_equ_control()?,
+        })
+    }
+}
+
+/// One typed PerfVfeVar write — snapshot → patch → SET → converge → rollback
+/// (mVolt+ protocol). `index` picks the 88-byte variable record, `dword` the
+/// 4-byte word within it (0..21, payload starts at word 1). The writable
+/// surface spans every policy the VFE engine consumes (voltage walls, power
+/// and current limits, offset ranges, Speedo calibrations) — consult
+/// `get-vfe-tables` for entry semantics; non-writable fields are reported
+/// honestly via the converge-readback failure.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiVfeVarEntry {
+    pub index: usize,
+    pub dword: usize,
+    pub value: u32,
+}
+
+impl GpuOperation for SetNvapiVfeVarEntry {
+    type Output = VfeVarWrite;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiVfeVarEntry
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let old = target
+            .nvapi()?
+            .set_vfe_var_entry(self.index, self.dword, self.value)?;
+        Ok(VfeVarWrite {
+            index: self.index,
+            dword: self.dword,
+            old_value: old,
+            new_value: self.value,
         })
     }
 }

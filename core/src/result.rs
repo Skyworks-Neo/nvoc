@@ -55,6 +55,8 @@ pub enum OperationKind {
     SetNvapiOvervolt,
     QueryVoltageBoost,
     SetVoltageBoost,
+    QueryNvapiVfeTables,
+    SetNvapiVfeVarEntry,
     SetNvapiPowerLimits,
     SetNvapiSensorLimits,
     SetNvapiDynamicBoost,
@@ -396,6 +398,7 @@ impl OperationKind {
                 | SetPublicVftableRangeOffset
                 | SetDomainVfpDeltas
                 | SetVoltageBoost
+                | SetNvapiVfeVarEntry
                 | SetNvapiPowerLimits
                 | SetNvapiSensorLimits
                 | SetNvapiDynamicBoost
@@ -748,6 +751,26 @@ pub struct PstateBaseVoltage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoltageBoostState {
     pub voltage_boost: Option<::nvapi::hi::Percentage>,
+}
+
+/// PerfVFE table snapshot (the "BIOS override" surface, mVolt+ lane):
+/// variable directory + variable control + equation directory + equation
+/// control, each degrading to None where the family is absent.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VfeTablesState {
+    pub var_info: Option<::nvapi::VfeVarInfo>,
+    pub var_control: Option<::nvapi::VfeVarControl>,
+    pub equ_info: Option<::nvapi::VfeEquInfo>,
+    pub equ_control: Option<::nvapi::VfeEquControl>,
+}
+
+/// One typed PerfVfeVar write outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VfeVarWrite {
+    pub index: usize,
+    pub dword: usize,
+    pub old_value: u32,
+    pub new_value: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -121,6 +121,7 @@ fn tag_str(tag: &[u8; 4]) -> String {
 // ---- PTE 页缓存物理读(抄 power.rs::CachedPhys 思路:8 字节读全缓存,
 //      走查的 PTE 重复访问压到零)
 
+#[allow(dead_code)]
 struct CachedPhys<'a> {
     drv: &'a PmxDrv,
     cache: std::cell::RefCell<HashMap<u64, [u8; PAGE]>>,
@@ -229,6 +230,7 @@ fn va_lookup(pages: &[(u64, u64, Vec<u8>)], frame: u64, off: usize) -> String {
     "n/a".into()
 }
 
+#[allow(dead_code)]
 struct LiveRails {
     name: String,
     status_values: Vec<i32>,
@@ -237,7 +239,7 @@ struct LiveRails {
 fn read_live(gpu: &nvapi::PhysicalGpu) -> LiveRails {
     let name = gpu.full_name().unwrap_or_default();
     let rails = gpu.volt_rails().expect("volt_rails");
-    let status = rails.status.first().expect("no volt-rail status entry").clone();
+    let status = *rails.status.first().expect("no volt-rail status entry");
     println!("live [{name}]: status{:?}", status.values);
     LiveRails {
         name,
@@ -251,7 +253,7 @@ fn read_live(gpu: &nvapi::PhysicalGpu) -> LiveRails {
 /// → 报告 VA/PA。x64 四级页表手走,大页(2MB/1GB)按块映射扫。
 fn ptscan_phase() {
     nvapi::initialize().expect("nvapi init");
-    let Some(mut gpu) = nvapi::PhysicalGpu::enumerate()
+    let Some(gpu) = nvapi::PhysicalGpu::enumerate()
         .ok()
         .and_then(|g| g.into_iter().next())
     else {
@@ -312,12 +314,12 @@ fn ptscan_phase() {
     let mut all_hits: Vec<(u64, usize)> = Vec::new();
     let mut chunks = 0u64;
     {
-        let mut scan_chunk = |va: u64,
-                              phys_base: u64,
-                              npages: u32,
-                              needles: &[u32],
-                              total_hits: &mut Vec<(u64, usize)>,
-                              chunks: &mut u64| {
+        let scan_chunk = |va: u64,
+                          phys_base: u64,
+                          npages: u32,
+                          needles: &[u32],
+                          total_hits: &mut Vec<(u64, usize)>,
+                          chunks: &mut u64| {
             if phys_base == 0 || phys_base >= MAX_PHYS {
                 return;
             }
@@ -327,9 +329,8 @@ fn ptscan_phase() {
             if mapped == 0 || mapped == 0xBEEF {
                 return;
             }
-            let bytes = unsafe {
-                std::slice::from_raw_parts(mapped as *const u8, npages as usize * 4096)
-            };
+            let bytes =
+                unsafe { std::slice::from_raw_parts(mapped as *const u8, npages as usize * 4096) };
             for (i, w) in bytes.chunks_exact(4).enumerate() {
                 for (ni, &nd) in needles.iter().enumerate() {
                     if w == nd.to_le_bytes().as_slice() {
@@ -375,15 +376,13 @@ fn ptscan_phase() {
                 if e3 & 1 == 0 {
                     continue;
                 }
-                let va3 = 0xFFFF_8000_0000_0000u64
-                    | ((i4 as u64) << 39)
-                    | ((i3 as u64) << 30);
+                let va3 = 0xFFFF_8000_0000_0000u64 | ((i4 as u64) << 39) | ((i3 as u64) << 30);
                 if e3 & (1 << 7) != 0 {
                     let gb_frame = (e3 >> 30) & 0x3F_FFFF;
                     for k in 0..512u64 {
                         scan_chunk(
                             va3 | (k << 21),
-                            ((gb_frame as u64) << 30) + k * 0x20_0000,
+                            (gb_frame << 30) + k * 0x20_0000,
                             512,
                             &needles,
                             &mut all_hits,
@@ -403,7 +402,7 @@ fn ptscan_phase() {
                     let va2 = va3 | ((i2 as u64) << 21);
                     if e2 & (1 << 7) != 0 {
                         let f2 = (e2 >> 21) & 0x7F_FFFF;
-                        scan_chunk(va2, ((f2 as u64) << 21), 512, &needles, &mut all_hits, &mut chunks);
+                        scan_chunk(va2, f2 << 21, 512, &needles, &mut all_hits, &mut chunks);
                     } else {
                         let Some(pt) = read_page((e2 >> 12) & 0xF_FFFF_FFFF) else {
                             continue;
@@ -426,7 +425,7 @@ fn ptscan_phase() {
                             if contiguous {
                                 scan_chunk(
                                     va2 | ((i1 as u64) << 12),
-                                    (f0 as u64) << 12,
+                                    f0 << 12,
                                     run as u32,
                                     &needles,
                                     &mut all_hits,
@@ -437,7 +436,7 @@ fn ptscan_phase() {
                                     let f = (entry(&pt, i1 + k) >> 12) & 0xF_FFFF_FFFF;
                                     scan_chunk(
                                         va2 | ((i1 + k) as u64) << 12,
-                                        (f as u64) << 12,
+                                        f << 12,
                                         1,
                                         &needles,
                                         &mut all_hits,
@@ -452,7 +451,8 @@ fn ptscan_phase() {
             }
             // 区域级即时验证:还原 slot2 → 逐命中复扫(回 vrm = 活体字段)→ 再扰动
             if !all_hits.is_empty() {
-                gpu.set_volt_rail_slot(0, 2, 0).expect("region verify reset");
+                gpu.set_volt_rail_slot(0, 2, 0)
+                    .expect("region verify reset");
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 let mut live_sites: Vec<(u64, usize)> = Vec::new();
                 for (va, off) in &all_hits {
@@ -483,41 +483,57 @@ fn ptscan_phase() {
                 // +100000 µV(+100 mV)→ nvapi status 随动验证 → 还原 0
                 if !live_sites.is_empty() {
                     // patch 全部 → 100000
-                    for &(va, off) in &live_sites {
+                    for &(va, _off) in &live_sites {
                         if let Ok(pa) = translate(&phys, root, va) {
                             let va_m = drv.map_physical(pa & !0xFFF, 1).expect("poke map");
                             unsafe {
-                                ((va_m + (va & 0xFFF) as u64) as *mut u32)
-                                    .write_volatile(100000u32);
+                                ((va_m + (va & 0xFFF)) as *mut u32).write_volatile(100000u32);
                             }
                             let _ = drv.unmap_physical(va_m);
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(300));
-                    let st_p = gpu.volt_rails().expect("rails").status.first().unwrap().values;
+                    let st_p = gpu
+                        .volt_rails()
+                        .expect("rails")
+                        .status
+                        .first()
+                        .unwrap()
+                        .values;
                     let raised = st_p[3] as i64 == vrm as i64 + 100000;
                     eprintln!(
                         "POKE: all live sites -> 100000 µV; nvapi vrm wall = {} (expect {}) — {}",
                         st_p[3],
                         vrm + 100000,
-                        if raised { "LANE CONFIRMED" } else { "no follow — copies insufficient or wrong field" }
+                        if raised {
+                            "LANE CONFIRMED"
+                        } else {
+                            "no follow — copies insufficient or wrong field"
+                        }
                     );
                     eprintln!("POKE full status: {st_p:?}");
                     // 还原 0
-                    for &(va, off) in &live_sites {
+                    for &(va, _off) in &live_sites {
                         if let Ok(pa) = translate(&phys, root, va) {
                             let va_m = drv.map_physical(pa & !0xFFF, 1).expect("restore map");
                             unsafe {
-                                ((va_m + (va & 0xFFF) as u64) as *mut u32).write_volatile(0u32);
+                                ((va_m + (va & 0xFFF)) as *mut u32).write_volatile(0u32);
                             }
                             let _ = drv.unmap_physical(va_m);
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(300));
-                    let st_r = gpu.volt_rails().expect("rails").status.first().unwrap().values[3];
+                    let st_r = gpu
+                        .volt_rails()
+                        .expect("rails")
+                        .status
+                        .first()
+                        .unwrap()
+                        .values[3];
                     eprintln!("POKE restored → vrm wall = {st_r} (expect {vrm})");
                 }
-                gpu.set_volt_rail_slot(0, 2, step).expect("region verify reperturb");
+                gpu.set_volt_rail_slot(0, 2, step)
+                    .expect("region verify reperturb");
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         }
@@ -527,7 +543,12 @@ fn ptscan_phase() {
     println!(
         "ptscan done: {chunks} chunks, {} needle sites; final status {:?}",
         all_hits.len(),
-        gpu.volt_rails().expect("rails").status.first().unwrap().values
+        gpu.volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values
     );
     eprintln!("ptscan: ALL needle VAs: {:?}", all_hits);
 }
@@ -538,14 +559,12 @@ fn kmd_volt_ptscan_live() {
     ptscan_phase();
 }
 
-
 #[test]
 #[ignore = "requires embedded pmxdrv + elevated shell; patch ALL live offset-field copies (NVOC_VOLT_POKE6_VAS=comma VAs, NVOC_VOLT_POKE6=1)"]
 fn kmd_volt_offset_patch_live() {
-    let list = std::env::var("NVOC_VOLT_POKE6_VAS")
-        .expect("NVOC_VOLT_POKE6_VAS=va1,va2,...");
+    let list = std::env::var("NVOC_VOLT_POKE6_VAS").expect("NVOC_VOLT_POKE6_VAS=va1,va2,...");
     nvapi::initialize().expect("nvapi init");
-    let Some(mut gpu) = nvapi::PhysicalGpu::enumerate()
+    let Some(gpu) = nvapi::PhysicalGpu::enumerate()
         .ok()
         .and_then(|g| g.into_iter().next())
     else {
@@ -570,7 +589,12 @@ fn kmd_volt_offset_patch_live() {
         .split(',')
         .filter_map(|x| u64::from_str_radix(x.trim().trim_start_matches("0x"), 16).ok())
         .collect();
-    println!("patch targets: {:?} (vrm base {vrm})", vasp.iter().map(|v| format!("0x{v:016X}")).collect::<Vec<_>>());
+    println!(
+        "patch targets: {:?} (vrm base {vrm})",
+        vasp.iter()
+            .map(|v| format!("0x{v:016X}"))
+            .collect::<Vec<_>>()
+    );
 
     let rd = |va: u64| -> Option<u32> {
         let pa = translate(&phys, walk_root, va).ok()?;
@@ -588,7 +612,7 @@ fn kmd_volt_offset_patch_live() {
         let pa = translate(&phys, walk_root, va).expect("translate");
         let mapped = drv.map_physical(pa & !0xFFF, 1).expect("map");
         unsafe {
-            ((mapped + (va & 0xFFF) as u64) as *mut u32).write_volatile(v);
+            ((mapped + (va & 0xFFF)) as *mut u32).write_volatile(v);
         }
         let _ = drv.unmap_physical(mapped);
     };
@@ -603,17 +627,26 @@ fn kmd_volt_offset_patch_live() {
         .values[2] as u32;
     for &va in &vasp {
         let d = rd(va).unwrap_or_else(|| panic!("site 0x{va:016X} unreadable"));
-        assert_eq!(d, cur_off, "site 0x{va:016X} = {d}, expected {cur_off} — state drifted, redo scan");
+        assert_eq!(
+            d, cur_off,
+            "site 0x{va:016X} = {d}, expected {cur_off} — state drifted, redo scan"
+        );
     }
     println!("identity OK: all sites = {cur_off} (= nvapi slot2 offset)");
 
-    for &delta_uV in &[43750u32, 100000] {
-        let target_val = cur_off.wrapping_add(delta_uV);
+    for &delta_uv in &[43750u32, 100000] {
+        let target_val = cur_off.wrapping_add(delta_uv);
         for &va in &vasp {
             wr(va, target_val);
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let st = gpu.volt_rails().expect("rails").status.first().unwrap().values;
+        let st = gpu
+            .volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values;
         println!(
             "patch ALL sites -> {target_val}: nvapi vrm wall = {} (expect {})",
             st[3],
@@ -628,7 +661,13 @@ fn kmd_volt_offset_patch_live() {
             wr(va, cur_off);
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let back = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+        let back = gpu
+            .volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values[3] as u32;
         println!("restored -> {back} (expect {vrm})");
         assert_eq!(back, vrm, "restore failed — patch manually!");
     }
@@ -640,7 +679,7 @@ fn kmd_volt_offset_patch_live() {
 fn kmd_volt_ptscan_verify_live() {
     let list = std::env::var("NVOC_PTSCAN_VERIFY").expect("NVOC_PTSCAN_VERIFY=va1,va2,...");
     nvapi::initialize().expect("nvapi init");
-    let Some(mut gpu) = nvapi::PhysicalGpu::enumerate()
+    let Some(gpu) = nvapi::PhysicalGpu::enumerate()
         .ok()
         .and_then(|g| g.into_iter().next())
     else {
@@ -678,12 +717,21 @@ fn kmd_volt_ptscan_verify_live() {
         .split(',')
         .filter_map(|s| u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
         .collect();
-    println!("verify {} candidate VAs (vrm base = {vrm})", candidates.len());
+    println!(
+        "verify {} candidate VAs (vrm base = {vrm})",
+        candidates.len()
+    );
     for phase in [0u32, 6250, 0] {
         gpu.set_volt_rail_slot(0, 2, phase as i32)
             .expect("slot2 write");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let st = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+        let st = gpu
+            .volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values[3] as u32;
         println!("--- slot2 offset = {phase}, nvapi vrm wall = {st} ---");
         for &va in &candidates {
             match rd_va(va) {
@@ -691,7 +739,11 @@ fn kmd_volt_ptscan_verify_live() {
                     let follows = d == vrm + phase;
                     println!(
                         "  0x{va:016X} = {d} {}",
-                        if follows { "<— FOLLOWS nvapi write (execution-layer!)" } else { "" }
+                        if follows {
+                            "<— FOLLOWS nvapi write (execution-layer!)"
+                        } else {
+                            ""
+                        }
                     );
                 }
                 None => println!("  0x{va:016X} = <unreadable>"),
@@ -705,7 +757,7 @@ fn kmd_volt_ptscan_verify_live() {
 #[ignore = "requires embedded pmxdrv + elevated shell; kernel-pool sweep for the voltage policy block (run with --release)"]
 fn gsp_pool_value_sweep_live() {
     // ---- 活体电压值(slot2 扰动出活诱饵,静态副本不动)
-    let Some(mut gpu) = nvapi::PhysicalGpu::enumerate()
+    let Some(gpu) = nvapi::PhysicalGpu::enumerate()
         .ok()
         .and_then(|g| g.into_iter().next())
     else {
@@ -713,8 +765,8 @@ fn gsp_pool_value_sweep_live() {
     };
     nvapi::initialize().expect("nvapi init");
     let rails = gpu.volt_rails().expect("volt_rails");
-    let status = rails.status.first().expect("no status entry").clone();
-    let control = rails.control.first().expect("no control entry").clone();
+    let status = *rails.status.first().expect("no status entry");
+    let control = *rails.control.first().expect("no control entry");
     let step: i32 = gpu
         .volt_devices()
         .ok()
@@ -739,8 +791,18 @@ fn gsp_pool_value_sweep_live() {
     let retained = gpu
         .set_volt_rail_slot(0, 2, cur_slot2.wrapping_add(step))
         .expect("slot2 perturb refused");
-    println!("slot2 perturbed: {} -> {} (retained {retained}); needle live", cur_slot2, cur_slot2.wrapping_add(step));
-    let st_now = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+    println!(
+        "slot2 perturbed: {} -> {} (retained {retained}); needle live",
+        cur_slot2,
+        cur_slot2.wrapping_add(step)
+    );
+    let st_now = gpu
+        .volt_rails()
+        .expect("rails")
+        .status
+        .first()
+        .unwrap()
+        .values[3] as u32;
     assert_eq!(st_now, needle, "nvapi vrm wall did not follow");
 
     // ---- 传输 + 走查根(VA→PA 需要它;服务由外部拉起)
@@ -760,7 +822,15 @@ fn gsp_pool_value_sweep_live() {
 
     // ---- 池枚举 + 标签直方图
     let all_blocks = query_big_pool();
-    let mut blocks: Vec<PoolBlock> = all_blocks.iter().map(|b| PoolBlock { va: b.va, nonpaged: b.nonpaged, size: b.size, tag: b.tag }).collect();
+    let mut blocks: Vec<PoolBlock> = all_blocks
+        .iter()
+        .map(|b| PoolBlock {
+            va: b.va,
+            nonpaged: b.nonpaged,
+            size: b.size,
+            tag: b.tag,
+        })
+        .collect();
     blocks.retain(|b| b.size >= PAGE as u64 && b.va != 0);
     let total_gb: f64 =
         blocks.iter().map(|b| b.size as f64).sum::<f64>() / 1024.0 / 1024.0 / 1024.0;
@@ -947,7 +1017,10 @@ fn gsp_pool_value_sweep_live() {
                     .map(|(i, _)| i * 4)
                     .collect();
                 if !offs.is_empty() {
-                    found.push(format!("{v}@{:?}", offs.iter().map(|o| format!("{o:#x}")).collect::<Vec<_>>()));
+                    found.push(format!(
+                        "{v}@{:?}",
+                        offs.iter().map(|o| format!("{o:#x}")).collect::<Vec<_>>()
+                    ));
                 }
             }
             if !found.is_empty() {
@@ -984,44 +1057,51 @@ fn gsp_pool_value_sweep_live() {
             if f == 0 {
                 continue;
             }
-            if let Ok(mapped) = drv.map_physical(f, 1) {
-                if mapped != 0 && mapped != 0xBEEF {
-                    let mut page = vec![0u8; PAGE];
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(mapped as *const u8, page.as_mut_ptr(), PAGE);
-                    }
-                    let _ = drv.unmap_physical(mapped);
-                    pages.push((k, page));
+            if let Ok(mapped) = drv.map_physical(f, 1)
+                && mapped != 0
+                && mapped != 0xBEEF
+            {
+                let mut page = vec![0u8; PAGE];
+                unsafe {
+                    std::ptr::copy_nonoverlapping(mapped as *const u8, page.as_mut_ptr(), PAGE);
                 }
+                let _ = drv.unmap_physical(mapped);
+                pages.push((k, page));
             }
         }
-        gpu.set_volt_rail_slot(0, 2, 43750 as i32).expect("slot2 +43750");
+        gpu.set_volt_rail_slot(0, 2, 43750_i32)
+            .expect("slot2 +43750");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let st = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+        let st = gpu
+            .volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values[3] as u32;
         println!("FIXEDREGION: slot2=+43750, nvapi vrm wall = {st} (base {vrm})");
         let mut any = 0usize;
         for (k, before) in &pages {
             let f = (frame0 as i64 + k * 0x1000) as u64;
-            if let Ok(mapped) = drv.map_physical(f, 1) {
-                if mapped != 0 && mapped != 0xBEEF {
-                    let page = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
-                    for (o, (a, b)) in before
-                        .chunks_exact(4)
-                        .zip(page.chunks_exact(4))
-                        .enumerate()
-                        .map(|(i, (a, b))| (i * 4, (a, b)))
-                    {
-                        let va32 = u32::from_le_bytes(a.try_into().unwrap());
-                        let vb32 = u32::from_le_bytes(b.try_into().unwrap());
-                        if va32 != vb32 {
-                            println!(
-                                "    DELTA page {k:+} (0x{f:X})+0x{o:03X}: {va32} -> {vb32}"
-                            );
-                            any += 1;
-                        }
+            if let Ok(mapped) = drv.map_physical(f, 1)
+                && mapped != 0
+                && mapped != 0xBEEF
+            {
+                let page = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
+                for (o, (a, b)) in before
+                    .chunks_exact(4)
+                    .zip(page.chunks_exact(4))
+                    .enumerate()
+                    .map(|(i, (a, b))| (i * 4, (a, b)))
+                {
+                    let va32 = u32::from_le_bytes(a.try_into().unwrap());
+                    let vb32 = u32::from_le_bytes(b.try_into().unwrap());
+                    if va32 != vb32 {
+                        println!("    DELTA page {k:+} (0x{f:X})+0x{o:03X}: {va32} -> {vb32}");
+                        any += 1;
                     }
-                    let _ = drv.unmap_physical(mapped);
                 }
+                let _ = drv.unmap_physical(mapped);
             }
         }
         // 还原 slot2 并复扫
@@ -1030,31 +1110,37 @@ fn gsp_pool_value_sweep_live() {
         let mut reverted = 0usize;
         for (k, orig) in &pages {
             let f = (frame0 as i64 + k * 0x1000) as u64;
-            if let Ok(mapped) = drv.map_physical(f, 1) {
-                if mapped != 0 && mapped != 0xBEEF {
-                    let page = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
-                    for (o, (a, b)) in orig
-                        .chunks_exact(4)
-                        .zip(page.chunks_exact(4))
-                        .enumerate()
-                        .map(|(i, (a, b))| (i * 4, (a, b)))
-                    {
-                        let va32 = u32::from_le_bytes(a.try_into().unwrap());
-                        let vb32 = u32::from_le_bytes(b.try_into().unwrap());
-                        if va32 != vb32 && vb32.wrapping_sub(va32) == 43750 {
-                            reverted += 1;
-                            println!(
-                                "    RESTORE-FOLLOW page {k:+} (0x{f:X})+0x{o:03X}: {va32} vs {vb32} — offset field!"
-                            );
-                        }
+            if let Ok(mapped) = drv.map_physical(f, 1)
+                && mapped != 0
+                && mapped != 0xBEEF
+            {
+                let page = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
+                for (o, (a, b)) in orig
+                    .chunks_exact(4)
+                    .zip(page.chunks_exact(4))
+                    .enumerate()
+                    .map(|(i, (a, b))| (i * 4, (a, b)))
+                {
+                    let va32 = u32::from_le_bytes(a.try_into().unwrap());
+                    let vb32 = u32::from_le_bytes(b.try_into().unwrap());
+                    if va32 != vb32 && vb32.wrapping_sub(va32) == 43750 {
+                        reverted += 1;
+                        println!(
+                            "    RESTORE-FOLLOW page {k:+} (0x{f:X})+0x{o:03X}: {va32} vs {vb32} — offset field!"
+                        );
                     }
-                    let _ = drv.unmap_physical(mapped);
                 }
+                let _ = drv.unmap_physical(mapped);
             }
         }
         println!(
             "FIXEDREGION VERDICT: {any} deltas during perturbation, {reverted} restore-following offset fields; final status {:?}",
-            gpu.volt_rails().expect("rails").status.first().unwrap().values
+            gpu.volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values
         );
     }
 
@@ -1097,9 +1183,7 @@ fn gsp_pool_value_sweep_live() {
                 if let Ok(pa) = translate(&phys, walk_root, *va) {
                     let frame = pa & !0xFFF;
                     if let Ok(mapped) = drv.map_physical(frame, 1) {
-                        let page = unsafe {
-                            std::slice::from_raw_parts(mapped as *const u8, PAGE)
-                        };
+                        let page = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
                         for (o, (a, b)) in before
                             .chunks_exact(4)
                             .zip(page.chunks_exact(4))
@@ -1131,7 +1215,10 @@ fn gsp_pool_value_sweep_live() {
             .iter()
             .filter(|(v, o, _, _)| s1.contains(&(*v, *o)))
             .collect();
-        println!("STEPDIFF cross (delta 1 then 7, same site): {}", cross.len());
+        println!(
+            "STEPDIFF cross (delta 1 then 7, same site): {}",
+            cross.len()
+        );
         for (va, o, old, new) in &cross {
             println!("  STEP-FIELD va 0x{va:016X}+0x{o:03X}: {old} -> {new}");
         }
@@ -1147,7 +1234,13 @@ fn gsp_pool_value_sweep_live() {
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
-            let st = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+            let st = gpu
+                .volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values[3] as u32;
             println!(
                 "STEPDIFF patch steps->9: nvapi vrm wall = {st} (expect {} if execution-layer = base + 9*6250)",
                 vrm + 9 * 6250
@@ -1167,7 +1260,12 @@ fn gsp_pool_value_sweep_live() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         println!(
             "STEPDIFF done; final status {:?}",
-            gpu.volt_rails().expect("rails").status.first().unwrap().values
+            gpu.volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values
         );
     }
 
@@ -1205,8 +1303,17 @@ fn gsp_pool_value_sweep_live() {
         }
         let _ = drv.unmap_physical(mapped);
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let after = gpu.volt_rails().expect("rails").status.first().unwrap().values;
-        println!("nvapi status after poke: {after:?} (values[2] expect {})", vbios_wall + 50000);
+        let after = gpu
+            .volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values;
+        println!(
+            "nvapi status after poke: {after:?} (values[2] expect {})",
+            vbios_wall + 50000
+        );
         let followed = after[2] as u32 == vbios_wall + 50000;
         // 还原
         let mapped = drv.map_physical(frame, 1).expect("restore map failed");
@@ -1215,7 +1322,13 @@ fn gsp_pool_value_sweep_live() {
         }
         let _ = drv.unmap_physical(mapped);
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let back = gpu.volt_rails().expect("rails").status.first().unwrap().values;
+        let back = gpu
+            .volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values;
         println!("nvapi status after restore: {back:?}");
         println!(
             "POKE VERDICT: {}",
@@ -1236,7 +1349,13 @@ fn gsp_pool_value_sweep_live() {
         gpu.set_volt_rail_slot(0, 2, odd as i32)
             .expect("slot2 odd perturb");
         std::thread::sleep(std::time::Duration::from_millis(200));
-        let st_now = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+        let st_now = gpu
+            .volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values[3] as u32;
         println!(
             "POKE2: slot2={odd}, nvapi vrm wall now {st_now} (base {base_vrm} + odd = {})",
             base_vrm + odd
@@ -1248,6 +1367,7 @@ fn gsp_pool_value_sweep_live() {
             (target_wall, "target_wall".into()),
             (vbios_wall, "vbios_wall".into()),
         ];
+        #[allow(clippy::type_complexity)]
         let mut site_pages: Vec<(u64, Vec<(u32, String, Vec<usize>)>)> = Vec::new();
         for b in &blocks {
             let pages = (b.size as usize) / PAGE;
@@ -1270,7 +1390,10 @@ fn gsp_pool_value_sweep_live() {
                             .iter()
                             .map(|(v, name, offs)| format!(
                                 "{name}({v})@{:?}",
-                                offs.iter().take(6).map(|o| format!("{o:#x}")).collect::<Vec<_>>()
+                                offs.iter()
+                                    .take(6)
+                                    .map(|o| format!("{o:#x}"))
+                                    .collect::<Vec<_>>()
                             ))
                             .collect::<Vec<_>>()
                             .join("  ")
@@ -1292,7 +1415,13 @@ fn gsp_pool_value_sweep_live() {
                 }
                 let _ = drv.unmap_physical(mapped);
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                let st = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+                let st = gpu
+                    .volt_rails()
+                    .expect("rails")
+                    .status
+                    .first()
+                    .unwrap()
+                    .values[3] as u32;
                 println!(
                     "POKE2 patch pa {frame:#012x}+{off:#04x}: offset 54321 -> 100000; nvapi vrm wall = {st} (expect 2125000 if execution-layer)"
                 );
@@ -1303,7 +1432,13 @@ fn gsp_pool_value_sweep_live() {
                 }
                 let _ = drv.unmap_physical(mapped);
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                let back = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+                let back = gpu
+                    .volt_rails()
+                    .expect("rails")
+                    .status
+                    .first()
+                    .unwrap()
+                    .values[3] as u32;
                 if back == base_vrm + odd {
                     println!("  restored ({back})");
                     if st == base_vrm + 100000 {
@@ -1319,7 +1454,12 @@ fn gsp_pool_value_sweep_live() {
         std::thread::sleep(std::time::Duration::from_millis(200));
         println!(
             "POKE2 VERDICT: {verified} execution-layer offset-field site(s); final status {:?}",
-            gpu.volt_rails().expect("rails").status.first().unwrap().values
+            gpu.volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values
         );
     }
 
@@ -1361,8 +1501,17 @@ fn gsp_pool_value_sweep_live() {
         gpu.set_volt_rail_slot(0, 2, delta as i32)
             .expect("slot2 +43750 refused");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let st = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
-        println!("POKE4: slot2=+{delta}, nvapi vrm wall = {st} (expect {} if unclamped)", vrm + delta);
+        let st = gpu
+            .volt_rails()
+            .expect("rails")
+            .status
+            .first()
+            .unwrap()
+            .values[3] as u32;
+        println!(
+            "POKE4: slot2=+{delta}, nvapi vrm wall = {st} (expect {} if unclamped)",
+            vrm + delta
+        );
 
         // 重扫 + delta 过滤
         let mut sites: Vec<(u64, usize, u32, u32)> = Vec::new();
@@ -1398,7 +1547,13 @@ fn gsp_pool_value_sweep_live() {
             }
             let _ = drv.unmap_physical(mapped);
             std::thread::sleep(std::time::Duration::from_millis(250));
-            let st = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+            let st = gpu
+                .volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values[3] as u32;
             println!(
                 "POKE4 patch pa {frame:#012x}+{off:#04x}: {old} -> {patched}; nvapi vrm wall = {st}"
             );
@@ -1409,7 +1564,13 @@ fn gsp_pool_value_sweep_live() {
             }
             let _ = drv.unmap_physical(mapped);
             std::thread::sleep(std::time::Duration::from_millis(250));
-            let back = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
+            let back = gpu
+                .volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values[3] as u32;
             let expect = vrm.wrapping_add(delta);
             if st == vrm.wrapping_add(8 * 6250) && back == expect {
                 verified += 1;
@@ -1422,7 +1583,12 @@ fn gsp_pool_value_sweep_live() {
         std::thread::sleep(std::time::Duration::from_millis(200));
         println!(
             "POKE4 VERDICT: {verified} execution-layer site(s); final status {:?}",
-            gpu.volt_rails().expect("rails").status.first().unwrap().values
+            gpu.volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values
         );
     }
 
@@ -1474,7 +1640,7 @@ fn gsp_pool_value_sweep_live() {
                 .expect("slot2 step perturb");
             std::thread::sleep(std::time::Duration::from_millis(300));
             let mut out: HashMap<(u64, usize), (u32, u32)> = HashMap::new();
-            for (va, frame, before) in &pages {
+            for (_va, frame, before) in &pages {
                 if let Ok(mapped) = drv.map_physical(*frame, 1) {
                     let page = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
                     for (o, (a, b)) in before
@@ -1503,7 +1669,12 @@ fn gsp_pool_value_sweep_live() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         println!(
             "STEPDIFF final status: {:?}",
-            gpu.volt_rails().expect("rails").status.first().unwrap().values
+            gpu.volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values
         );
 
         // 交叉:两轮同站点
@@ -1513,7 +1684,10 @@ fn gsp_pool_value_sweep_live() {
             .map(|(k, (a, b))| (*k, *a, *b, run7[k]))
             .collect();
         both.sort_by_key(|((frame, off), _, _, _)| (*frame, *off));
-        println!("STEPDIFF cross-hits (both rounds, same site): {}", both.len());
+        println!(
+            "STEPDIFF cross-hits (both rounds, same site): {}",
+            both.len()
+        );
         for ((frame, off), a1, b1, (_, b7)) in &both {
             let kind = if b7.wrapping_sub(*a1) == 37500 {
                 "µV-offset field (6250→43750)"
@@ -1528,7 +1702,9 @@ fn gsp_pool_value_sweep_live() {
             );
         }
         if both.is_empty() {
-            println!("STEPDIFF: no cross-hits — executed state is in MDL carveout / VRAM / other encoding");
+            println!(
+                "STEPDIFF: no cross-hits — executed state is in MDL carveout / VRAM / other encoding"
+            );
         }
 
         // ---- poke5(NVOC_VOLT_POKE5=1):对交叉命中站点做单位探针 + 定向抬墙。
@@ -1562,7 +1738,13 @@ fn gsp_pool_value_sweep_live() {
             // +1 单位探针
             wr_site(base_val + 1);
             std::thread::sleep(std::time::Duration::from_millis(300));
-            let st1 = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as i64;
+            let st1 = gpu
+                .volt_rails()
+                .expect("rails")
+                .status
+                .first()
+                .unwrap()
+                .values[3] as i64;
             let unit = st1 - vrm as i64;
             println!("POKE5 +1 unit → nvapi vrm wall {st1} (base {vrm}) — unit = {unit} µV");
             wr_site(base_val);
@@ -1577,7 +1759,13 @@ fn gsp_pool_value_sweep_live() {
                 let raised = base_val + units as u32;
                 wr_site(raised);
                 std::thread::sleep(std::time::Duration::from_millis(300));
-                let st2 = gpu.volt_rails().expect("rails").status.first().unwrap().values;
+                let st2 = gpu
+                    .volt_rails()
+                    .expect("rails")
+                    .status
+                    .first()
+                    .unwrap()
+                    .values;
                 println!(
                     "POKE5 +{units} units (site {base_val}->{raised}) → status {st2:?} (vrm wall expect {})",
                     vrm + 50000
@@ -1586,14 +1774,26 @@ fn gsp_pool_value_sweep_live() {
                 gpu.set_core_voltage_boost(nvapi::Percentage(100))
                     .expect("boost 100");
                 std::thread::sleep(std::time::Duration::from_millis(400));
-                let st3 = gpu.volt_rails().expect("rails").status.first().unwrap().values;
+                let st3 = gpu
+                    .volt_rails()
+                    .expect("rails")
+                    .status
+                    .first()
+                    .unwrap()
+                    .values;
                 println!("POKE5 boost 100% → status {st3:?} (target/effective walls follow?)");
                 // 全部还原
                 gpu.set_core_voltage_boost(nvapi::Percentage(0))
                     .expect("boost restore");
                 wr_site(base_val);
                 std::thread::sleep(std::time::Duration::from_millis(300));
-                let st4 = gpu.volt_rails().expect("rails").status.first().unwrap().values;
+                let st4 = gpu
+                    .volt_rails()
+                    .expect("rails")
+                    .status
+                    .first()
+                    .unwrap()
+                    .values;
                 println!("POKE5 restored → status {st4:?}");
                 let ok = st4[3] as i64 == vrm as i64 && rd_site() == Some(base_val);
                 println!(
@@ -1613,10 +1813,14 @@ fn gsp_pool_value_sweep_live() {
     // ---- slot2 还原 + needle 页跟随验证(活体字段实锤)
     let _ = gpu.set_volt_rail_slot(0, 2, cur_slot2);
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let st_back = gpu.volt_rails().expect("rails").status.first().unwrap().values[3] as u32;
-    println!(
-        "slot2 restored → nvapi vrm wall {st_back} (expect {vrm}); needle pages:"
-    );
+    let st_back = gpu
+        .volt_rails()
+        .expect("rails")
+        .status
+        .first()
+        .unwrap()
+        .values[3] as u32;
+    println!("slot2 restored → nvapi vrm wall {st_back} (expect {vrm}); needle pages:");
     for (frame, off) in needle_only_pages
         .iter()
         .take(16)
@@ -1627,20 +1831,21 @@ fn gsp_pool_value_sweep_live() {
                 .and_then(|(_, _, offs)| offs.first().map(|o| (*f, *o)))
         }))
     {
-        if let Ok(va) = drv.map_physical(frame, 1) {
-            if va != 0 && va != 0xBEEF {
-                let page = unsafe { std::slice::from_raw_parts(va as *const u8, PAGE) };
-                let d = u32::from_le_bytes(page[off..off + 4].try_into().unwrap());
-                let tag: &str = if d == vrm {
-                    "REVERTED to stock vrm — LIVE FIELD (patch target)"
-                } else if d == needle {
-                    "still perturbed — static copy or untracked"
-                } else {
-                    "other value"
-                };
-                println!("  pa {frame:#012x}+{off:#04x}: {d} — {tag}");
-                let _ = drv.unmap_physical(va);
-            }
+        if let Ok(va) = drv.map_physical(frame, 1)
+            && va != 0
+            && va != 0xBEEF
+        {
+            let page = unsafe { std::slice::from_raw_parts(va as *const u8, PAGE) };
+            let d = u32::from_le_bytes(page[off..off + 4].try_into().unwrap());
+            let tag: &str = if d == vrm {
+                "REVERTED to stock vrm — LIVE FIELD (patch target)"
+            } else if d == needle {
+                "still perturbed — static copy or untracked"
+            } else {
+                "other value"
+            };
+            println!("  pa {frame:#012x}+{off:#04x}: {d} — {tag}");
+            let _ = drv.unmap_physical(va);
         }
     }
     let _ = PmxDrvPhysMem::new(&drv);

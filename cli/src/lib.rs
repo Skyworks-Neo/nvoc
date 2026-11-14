@@ -25,12 +25,12 @@ use nvoc_core::{
     QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiRegisterThermals,
     QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
     QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
-    QueryNvapiTopRelsRatio, QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits,
-    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage,
-    QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus,
-    QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
-    ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices, QueryNvapiVoltRails,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations,
+    QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion,
+    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
+    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
     ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
     ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
     ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
@@ -43,7 +43,7 @@ use nvoc_core::{
     SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
     SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfpPointPrivate,
+    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry, SetNvapiVfpPointPrivate,
     SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
     SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
     SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
@@ -216,7 +216,9 @@ pub enum Command {
     SetPowerCommand,
     GetTopRelsRatio,
     SetTopRelsRatio,
+    GetVfeTables,
     GetVoltRailInfo,
+    SetVfeVarEntry,
     SetVoltRailLimit,
     ResetVoltRailLimit,
     GetCoreVoltageControl,
@@ -851,6 +853,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     options: Box::leak(Box::new(["out", "dump", "verbose", "input"])),
                     formatter: Some(output::format_maxwell_vftable_output),
                     ..CommandSpec::new("get-vbios", Group::Info, "Read and decode a VBIOS image. -i/--input <file> parses a local ROM dump OFFLINE (no GPU/NvAPI needed — works on Linux); without it the live image is read via NvAPI_GPU_GetVbiosImage (0xFC13EE11, escape 0x0700004F, Windows-only). Live: --out <file> writes the raw image; --dump prints the full BIT token table + Fermi-model raw blocks. Both modes: --verbose runs the full detail decoder — Pascal+ Virtual P-State ladder + profiles + footers, Maxwell/Kepler GPU Boost 2.0 ladder (BIT 'P'+0x34), power/thermal/fan tables, DCB display map + pointer subtables (I2C PMGR ports/GPIO named lines/EXTDEV devices/CONN), BIT 'P' v2 power budget/sense/base-clock, BIT token directory with 'M'/'I'/'C'/'d' tables, memory tables, falcon ucode inventory + FWSEC DMEM interface/FRTS mapper, board identity, plus the structural layer (PCIR/EFI header details) (PCI/NPDS image chain, per-family power policy/channels, rail/VFE voltage limits, clock ranges, fan tables; GB20x SHA384 object-directory integrity and override profiles). --verbose merges the retired --enable-detail-parser / --maxwell-vftable-decode")
+                },
+            ),
+            (
+                Command::GetVfeTables,
+                CommandSpec {
+                    arity: (0, 0),
+                    ..CommandSpec::new("get-vfe-tables", Group::Voltage, "Read the full PerfVFE surface (the mVolt+ 'BIOS override' lane): variable directory (0xB9DA41D6) + variable control (0x5D387298) + equation directory (0x8D49471C) + equation control (0x4C75C9FE). Var entries are the policy variables the driver consumes (voltage walls REL/OP/OV/VMIN, power/current limits, offset ranges, Speedo calibrations); the writable surface maps 1:1 onto set-vfe-var indexes")
                 },
             ),
             (
@@ -1732,6 +1741,18 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "Fake temperature in Celsius the driver will see (DANGEROUS research tool)",
                 )])),
                     ..CommandSpec::new("set-temp-sim", Group::Thermal, "Fake the driver-visible GPU temperature in Celsius (DANGEROUS research tool; Extended->basic fallback; Secured-Overrides gated)")
+                },
+            ),
+            (
+                Command::SetVfeVarEntry,
+                CommandSpec {
+                    arity: (3, 3),
+                    positionals: Box::leak(Box::new([
+                        PositionalArg::free("arg_index", "INDEX", "VFE variable record index (see get-vfe-tables var_control)"),
+                        PositionalArg::free("arg_dword", "DWORD", "4-byte word within the 88-byte record (0..21; payload starts at 1)"),
+                        PositionalArg::free("arg_value", "VALUE", "raw u32 value (`0x` prefix = hex)"),
+                    ])),
+                    ..CommandSpec::new("set-vfe-var", Group::Voltage, "Write one dword of one PerfVFE variable record — the mVolt+ 'BIOS override' push lane (PerfVfeVarSetControl 0x79FA23A2 with snapshot->patch->SET->converge->rollback). Generic surface: voltage walls, power/current limits, offset ranges, Speedo calibrations are all var entries. Non-writable fields are refused honestly via the converge-readback (driver did not retain)")
                 },
             ),
             (
@@ -5308,6 +5329,45 @@ fn execute_target(
                 Some(()) => json!({"applied": true, "disabled": true}),
                 None => json!({"supported": false}),
             })
+        }
+        Command::GetVfeTables => {
+            let t = run(target, QueryNvapiVfeTables)?.output;
+            Ok(json!({
+                "var_info": t.var_info,
+                "var_control": t.var_control,
+                "equ_info": t.equ_info,
+                "equ_control": t.equ_control,
+                "note": "var records are 88B {type u32, payload…}; writable via set-vfe-var <index> <dword> <value>; entries absent on pre-VFE drivers report null",
+            }))
+        }
+        Command::SetVfeVarEntry => {
+            let index = parse_usize(&invocation.positionals[0], "vfe var index")?;
+            let dword = parse_usize(&invocation.positionals[1], "vfe var dword")?;
+            let raw = invocation.positionals[2].trim();
+            let value =
+                if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+                    u32::from_str_radix(hex, 16)
+                } else {
+                    raw.parse::<u32>()
+                }
+                .map_err(|e| CliError::Message(format!("invalid vfe value {raw:?}: {e}")))?;
+            let w = run(
+                target,
+                SetNvapiVfeVarEntry {
+                    index,
+                    dword,
+                    value,
+                },
+            )?
+            .output;
+            Ok(json!({
+                "index": w.index,
+                "dword": w.dword,
+                "old_value": w.old_value,
+                "new_value": w.new_value,
+                "old_value_hex": format!("0x{:08X}", w.old_value),
+                "new_value_hex": format!("0x{:08X}", w.new_value),
+            }))
         }
         Command::GetVoltRailInfo => {
             let verbose = option_bool(invocation, "verbose", false)?;
@@ -11708,6 +11768,19 @@ mod tests {
     }
 
     #[test]
+    fn vfe_commands_parse() {
+        // get-vfe-tables: no args
+        let inv = parse_args(["get-vfe-tables"]).unwrap();
+        assert_eq!(inv.command, Some(Command::GetVfeTables));
+        // set-vfe-var: index/dword/value, hex accepted
+        let inv = parse_args(["set-vfe-var", "5", "1", "0x3D0900"]).unwrap();
+        assert_eq!(inv.command, Some(Command::SetVfeVarEntry));
+        assert_eq!(inv.positionals, ["5", "1", "0x3D0900"]);
+        // arity: missing value refused
+        assert!(parse_args(["set-vfe-var", "5", "1"]).is_err());
+    }
+
+    #[test]
     fn commands_listed_in_lexicographic_order() {
         let names: Vec<&str> = all_commands().map(|c| c.name()).collect();
         let mut sorted = names.clone();
@@ -11777,6 +11850,8 @@ mod tests {
             | Command::SetPowerCommand
             | Command::GetTopRelsRatio
             | Command::SetTopRelsRatio
+            | Command::GetVfeTables
+            | Command::SetVfeVarEntry
             | Command::GetVoltRailInfo
             | Command::SetVoltRailLimit
             | Command::ResetVoltRailLimit
