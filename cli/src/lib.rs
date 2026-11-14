@@ -1630,7 +1630,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "PERCENT",
                     "Voltage boost percentage",
                 )])),
-                    ..CommandSpec::new("set-public-gpc-rail-volt-boost", Group::Voltage, "Set NVAPI voltage boost percent")
+                    ..CommandSpec::new("set-public-gpc-rail-volt-boost", Group::Voltage, "Set NVAPI voltage boost percent — maps the rail target wall along ceiling = StandardMax + (BoostMax−StandardMax)·% (5060 Ti/621.01 live: 100% pins the target wall at the VBIOS wall, 1020 mV; the CONSUMED voltage lane on Blackwell/621 where set-volt-rail-limit payload writes are accepted-but-dropped)")
                 },
             ),
             (

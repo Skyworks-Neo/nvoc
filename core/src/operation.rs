@@ -1757,6 +1757,13 @@ impl GpuOperation for QueryVoltageBoost {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Legacy volt boost percent (0xB9306D9B, 40B/0x10028). Semantics pinned
+/// 2026-11-14 on RTX 5060 Ti / 621.01 (previously unknown): the percent
+/// maps the rail TARGET wall along
+/// `ceiling = StandardMax + (BoostMax − StandardMax) · percent/100`;
+/// 100 % pinned the target wall at the VBIOS wall (1020 mV). This is the
+/// CONSUMED voltage lane on Blackwell/621 — melonVolt payload-offset
+/// writes (set-volt-rail-limit) are accepted-but-dropped there.
 pub struct SetVoltageBoost {
     pub boost: Percentage,
 }
