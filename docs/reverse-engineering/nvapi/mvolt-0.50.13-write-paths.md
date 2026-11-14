@@ -133,3 +133,12 @@ VRel 兜底)。完整越墙阶梯:抬 VBIOS 墙→放功率墙→电压爬至 VR
 
 对 nvoc 车道的影响:621 兼容路径 = PerfVFE Var SetControl(已封装
 set-vfe-var);610.88 用户可直用 melonVolt 车道(set-volt-rail-limit)。
+
+## 9. V2 大戳层协议破译（2026-11-14 第三轮，probe vfe_v2_tier_probe 2070/621.01 实机）
+
+- **戳阶梯定案**：171976=0x29FC8=(v2<<16)|40904（VarGetControl 大层，此前手误作 0x2A008）；五 blob 戳全部落在 sys 层已记录的 magic 阶梯上（mVolt 用最大 tier：VarGetInfo 3118440/2856296B、EquGetInfo 885828/623684B、EquGetControl 1410116B）。
+- **Var V2 请求布局**：stamp@0 + **32B 选择掩码@+4**（非身份！mVolt SET 组包 `byte(4+idx/8)|=1<<idx%8`，restore 函数同款单 bit）+ 记录区@36（**160B/记录，按 RM 位号索引**，非线性）；记录内 float[27]=min(+108) / float[28]=max(+112) / byte[148]=applied / float[38]=value(+152)——与第一轮 40B 条目 RE 完全互证。
+- **slot→var 映射表 dword_1403C5D60=[3,0,1,2]**（4 项，后接 "Cannot enable the protected inte…" 串）：`var_slot = 4*rail + map[slot]` → NVVDD={3,0,1,2}、MSVDD={7,4,5,6}，8 变量 ✓（restore 的 v17<8 门）。
+- **SET 保留前置 = 身份块**：零身份 GET/SET 全部骨架/接受即弃（256 位盲扫全不保留）；**小戳 EquGetControl(85016) 响应的 1024B 区块（@+0 起）回喂 V2 → EquGetControl 1410116B 丰富度 701 dword（vs 零身份 0）**——V2 大层是有身份门控的真实消费面，GET 通路已打通。
+- **未决**：①Var V2 用 32B 身份切片仅 richness 9（弱信号）——Var 的身份形式/粒度待定；②SET 通路的身份携带方式（SET 请求 +4 是掩码，身份在哪个区？）；③small-tier 响应里身份块的精确边界（@+0 起 1024B 是粗定位）。
+- **下一步**：①medium 层加身份自举（small-tier → identity → V2 GET）→ 身份认证版 get-vfe-tables；②2070 上对身份版 Equ V2 dump 做墙值对齐（1125/1093.75/1068.75/712.5mV）→ 语义图；③SET 带身份重试保留实验。
