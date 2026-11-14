@@ -164,3 +164,19 @@ set-vfe-var);610.88 用户可直用 melonVolt 车道(set-volt-rail-limit)。
   µV = 电压类候选;var10/12 0..105 功率类;var7 1981.23..2335.54 频率类;
   ±FLT_MAX 8 个 = 偏移类)、SET 保留配方(完整工厂记录 base)、身份自举、
   协议公式全链。
+
+## 11. 槽名表定案 + INFO 层名字 ID(2026-11-14 第五轮,纯 RE 路线)
+
+- **staged 槽名序 = [VMIN, REL, ALT/OP, OV]**(off_14037ADF0 宽字符表,与 mVolt
+  CLI "--offsets VMIN,REL,ALT[,OV]" 参数序一致;sub_1401EF1E0 验证链
+  effective=min(OP, REL, OV, mode-limit) 逐槽报错同序佐证)。
+- **VarGetInfo 大层(0x2F9568)掩码版 GET**:+4=掩码(0x7FFFF=19 位回显),
+  目录 19 记录 @296 stride 276;entry5/6 携带 **RM 名字 ID 0x1613/0x1614**
+  (5651/5652,u16,与 Equ name 0xFF0B/0x2413 同族)——**var→函数映射的权威键
+  = RM name ID**,映射表在 RM 侧(nvlddmkm/envytools),为下一段 RE 目标;
+  无 ASCII 名字(整 2.86MB 零字符串)。
+- 工厂目录 19 变量(2070/621.01):var0 0..127 / var1 54..67 / var2 0..31 /
+  var3 ±FLT_MAX / var6 60..60 / var7 1981.23..2335.54(频率域 float)/
+  var10/12 0..105(功率)/**var13(type9) 450000..1243750 µV(电压域,唯一
+  绝对电压候选)** / 8 个 ±FLT_MAX 偏移类。与 staged 8 变量的对位
+  (engine+28 记录号)仍需 RM name 表或 mVolt staged 记录结构 RE。
