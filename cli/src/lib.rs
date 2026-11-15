@@ -217,9 +217,7 @@ pub enum Command {
     GetBoostLocks,
     GetThermalChannels,
     ResetThermalInputs,
-    ResetThermalPolicyLimit,
     SetThermalInput,
-    SetThermalPolicyLimit,
     SetPwrCurLimit,
     SetPowerCommand,
     GetTopRelsRatio,
@@ -836,7 +834,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     adapters: &BOTH_BACKENDS,
                     preferred: BackendAdapter::Nvml,
                     formatter: Some(output::format_temperature_thresholds_output),
-                    ..CommandSpec::new("get-temp-thresholds", Group::Thermal, "Read temperature thresholds — default emits BOTH backends: NVML's classic Shutdown/Slowdown table + the NVAPI views (private target-temp policy slots 0=GPU/1=Hotspot/4=Memory on RTX50, the read-back of set-thermal-limit; documented ClientThermalPoliciesGetStatus with per-policy bRemoveTdpLimit + PFF curve, the read-back of set-temp-limit --nvapi); --nvml/--nvapi filter to the legacy single-backend flat arrays")
+                    ..CommandSpec::new("get-temp-thresholds", Group::Thermal, "Read temperature thresholds — default emits BOTH backends: NVML's classic Shutdown/Slowdown table + the NVAPI views (private target-temp policy slots 0=GPU/1=Hotspot/4=Memory on RTX50, the read-back of set-temp-limit --nvapi --slot; documented ClientThermalPoliciesGetStatus with per-policy bRemoveTdpLimit + PFF curve, the read-back of set-temp-limit --nvapi; RM-lane compact STATUS (mVolt thermal-limits readout)); --nvml/--nvapi filter to the legacy single-backend flat arrays")
                 },
             ),
             (
@@ -1130,21 +1128,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("reset-subdomain-freq-ratio", Group::Clock, "Restore the addressed TopRels relation ratio to the DRIVER-REPORTED default (GetInfo payload — 0xE660 = 0.90 on Blackwell GPC:XBAR). --src/--dst (default GPC=0 -> XBAR=1) or --index address the relation; an un-enabled ratio arm (live control record = 0) is refused unless --force")
                 },
             ),
-            (Command::ResetTempLimit, CommandSpec::new("reset-temp-limit", Group::Thermal, "Reset NVAPI sensor limits")),
+            (
+                Command::ResetTempLimit,
+                CommandSpec {
+                    options: Box::leak(Box::new(["slot"])),
+                    ..CommandSpec::new("reset-temp-limit", Group::Thermal, "Reset thermal limits — --slot N restores that thermal-policy slot's throttle curve to stock (re-derives [c+1,c,c-1,c-3] from the live temp-limit readback; companion of set-temp-limit --nvapi --slot); without --slot resets the documented NVAPI sensor limits")
+                },
+            ),
             (Command::ResetTempSim, CommandSpec::new("reset-temp-sim", Group::Thermal, "Disable temperature simulation and restore the real sensor reading")),
             (
                 Command::ResetThermalInputs,
                 CommandSpec {
                     options: Box::leak(Box::new(["channel"])),
                     ..CommandSpec::new("reset-thermal-channel-override", Group::Thermal, "Restore temperature-sim inputs to 'follow the real sensor' (applied=0 + value=0): default clears all six settable channels (0..5); --channel N clears one. Companion of set-thermal-channel-override")
-                },
-            ),
-
-            (
-                Command::ResetThermalPolicyLimit,
-                CommandSpec {
-                    options: Box::leak(Box::new(["slot"])),
-                    ..CommandSpec::new("reset-thermal-limit", Group::Thermal, "Restore one thermal-policy slot's throttle curve to stock (re-derive from the live temp-limit readback): --slot N (0=GPU wall / 1=Hotspot / 4=Memory on RTX50; default 0). Companion of set-thermal-limit")
                 },
             ),
 (
@@ -1745,13 +1741,18 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["domain", "pff-curve", "remove-tdp-limit"])),
+                    options: Box::leak(Box::new([
+                        "domain",
+                        "pff-curve",
+                        "remove-tdp-limit",
+                        "slot",
+                    ])),
                     positionals: Box::leak(Box::new([PositionalArg::hyphen(
                     "arg_celsius",
                     "CELSIUS",
                     "Temperature limit in Celsius, for example 83 or 83C; on the NVML path --domain acoustic targets the acoustic temp instead",
                 )])),
-                    ..CommandSpec::new("set-temp-limit", Group::Thermal, "Set thermal limit in Celsius: NVAPI path writes the sensor limit, optionally the PFF throttle curve with --pff-curve \"temp:freq_mhz,temp:freq_mhz,temp:freq_mhz\" (1-3 points, fan-curve style; 10/40-series lane — the documented SetStatus family; RTX 50 desktop refuses it, use set-thermal-limit there) and --remove-tdp-limit; NVML path writes the GPU max-temp threshold, or the acoustic target temp with --domain acoustic (Linux channel; Windows rejects the NVML threshold setter -- use set-private-target-temp-limit there)")
+                    ..CommandSpec::new("set-temp-limit", Group::Thermal, "Set thermal limit in Celsius — NVAPI path, two lanes: --slot N writes that thermal-policy slot's THROTTLE CURVE (TARGET RMW v2|984 quad [c+1,c,c-1,c-3], retain-verified — the only working policy write on RTX 50 desktop, live-verified 5060 Ti/621.24 AND 2070/621.01 slot 2 where it bypasses the Allowed soft wall; RTX50 slots 0=GPU/1=Hotspot/4=Memory, Turing 2=target-temp wall; HIGH RISK: raising a wall delays protective throttling — restore with reset-temp-limit --slot N); without --slot the documented SetStatus family writes the sensor limit (+ --pff-curve \"temp:freq_mhz,...\" 1-3 points fan-curve style and --remove-tdp-limit — 10/40-series lane, RTX 50 desktop refuses it); NVML path writes the GPU max-temp threshold, or the acoustic target temp with --domain acoustic (Linux channel; Windows rejects the NVML threshold setter -- use set-private-target-temp-limit there)")
                 },
             ),
             (
@@ -1777,19 +1778,6 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "Simulated reading in Celsius, for example 30 or -20; 0 is rejected (ambiguous with disabled in the sim lane) — clear with reset-thermal-channel-override instead",
                 )])),
                     ..CommandSpec::new("set-thermal-channel-override", Group::Thermal, "Arm one temperature-sim input (0x8df19fa2, mVolt+ 0.50.13 exact recipe — live-verified standalone on RTX 5060 Ti / 621.24, probe T6d: Status pinned exactly + retain verified): --channel N (0..5, default 1=GPU_AVG; 0=GPU_MAX/hotspot, 2=VRAM on RTX50) + positional celsius (negative allowed, mVolt uses -20 on an aux input). Sim temps alter DVFS/boost behavior (LN2-preset semantics: a cold-reported GPU boosts harder) — restore with reset-thermal-channel-override")
-                },
-            ),
-            (
-                Command::SetThermalPolicyLimit,
-                CommandSpec {
-                    arity: (1, 1),
-                    options: Box::leak(Box::new(["slot"])),
-                    positionals: Box::leak(Box::new([PositionalArg::free(
-                    "arg_limit_c",
-                    "LIMIT_C",
-                    "Throttle-curve limit in Celsius, for example 105 or 87; the quad [c+1, c, c-1, c-3] is written and retain-verified",
-                )])),
-                    ..CommandSpec::new("set-thermal-limit", Group::Thermal, "Write one thermal-policy slot's throttle curve (0x8DF19FA2 TARGET RMW, v2|984 curve-quad recipe — the ONLY working policy-write path on RTX 5060 Ti / 621.24, live-verified SET=0 + retain; the documented SetStatus family is dead there and the static temp dword is read-only): --slot N (default 0=GPU wall; 1=Hotspot 105C, 4=Memory 105C). HIGH RISK: raising a thermal wall delays protective throttling — restore with reset-thermal-limit")
                 },
             ),
             (
@@ -2734,7 +2722,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("slot")
             .value_name("SLOT")
             .action(ArgAction::Set)
-            .help("set-volt-rail-limit: melonVolt payload dword 0..3 (0 = the uV offset; 1 = VBIOS max wall offset, user A/B; 2 = VRM max wall offset; 3 = VMIN/min-hold offset, P100/582.41-pinned; ⚠️ 4/5 no known use — -300 crashed 4060L/610, -100..-200 observed safe, honored as-is). ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
+            .help("set/reset-temp-limit --nvapi: thermal-policy slot 0..15 whose throttle curve to write/restore (TARGET RMW lane; RTX 50: 0=GPU wall 87C / 1=Hotspot 105C / 4=Memory 105C; Turing: 2=target-temp wall [65,81,88], bypasses the Allowed soft wall). set-volt-rail-limit: melonVolt payload dword 0..3 (0 = the uV offset; 1 = VBIOS max wall offset, user A/B; 2 = VRM max wall offset; 3 = VMIN/min-hold offset, P100/582.41-pinned; ⚠️ 4/5 no known use — -300 crashed 4060L/610, -100..-200 observed safe, honored as-is). ClkDomains family (set/reset-private-freq-domain-global-offset): RAW record dword to write (0-7, never remapped; 10~40系 planes live in 0=freq/1=volt, Blackwell 50系 in 2=freq/3=volt — prefer the --freq/--volt aliases; 2-7 driver-opaque on 10~40系 — identify via A/B with get-clk-domain-freq). reset-private-vftable-offset: 0 = freq plane (mode-0 kHz offsets), 1 = volt plane (mode-1 raw values)"),
         "freq" => Arg::new("freq")
             .long("freq")
             .action(ArgAction::SetTrue)
@@ -2767,7 +2755,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("pff-curve")
             .value_name("TEMP:MHZ,...")
             .action(ArgAction::Set)
-            .help("set-temp-limit --nvapi: PFF throttle curve, fan-curve style \"temp:freq_mhz,temp:freq_mhz,temp:freq_mhz\" (1-3 points, strictly increasing temp; uiT{1,2,3}OCY — 10/40-series lane; RTX 50 desktop refuses this family, use set-thermal-limit)"),
+            .help("set-temp-limit --nvapi: PFF throttle curve, fan-curve style \"temp:freq_mhz,temp:freq_mhz,temp:freq_mhz\" (1-3 points, strictly increasing temp; uiT{1,2,3}OCY — 10/40-series lane; RTX 50 desktop refuses this family, use --slot (TARGET RMW lane))"),
         "remove-tdp-limit" => Arg::new("remove-tdp-limit")
             .long("remove-tdp-limit")
             .action(ArgAction::SetTrue)
@@ -5603,59 +5591,6 @@ fn execute_target(
                 "note": "var records are 88B {type u32, payload…}; writable via set-vfe-var <index> <dword> <value>; entries absent on pre-VFE drivers report null",
             }))
         }
-        Command::SetThermalPolicyLimit => {
-            let celsius = parse_i32_unit(&invocation.positionals[0], "c", "celsius")?;
-            if !(-40..=150).contains(&celsius) {
-                return Err(CliError::new(format!(
-                    "celsius {celsius} outside the plausible thermal-wall range (-40..150)"
-                )));
-            }
-            let slot = match option_one(invocation, "slot") {
-                Some(raw) => parse_usize(raw, "--slot")?,
-                None => 0,
-            };
-            if slot >= 16 {
-                return Err(CliError::new(format!(
-                    "--slot {slot} out of range (policy slots are 0..15; RTX50: 0=GPU 1=Hotspot 4=Memory)"
-                )));
-            }
-            run(
-                target,
-                SetNvapiThermalPolicyCurve {
-                    slot,
-                    celsius: celsius as f32,
-                },
-            )?;
-            Ok(json!({
-                "applied": true,
-                "slot": slot,
-                "limit_c": celsius,
-                "curve": [
-                    (celsius + 1) as f32,
-                    celsius as f32,
-                    (celsius - 1) as f32,
-                    (celsius - 3) as f32,
-                ],
-                "restore": "reset-thermal-limit [--slot N]",
-                "note": "thermal-policy throttle curve written (TARGET RMW v2|984, retain-verified); raising a wall delays protective throttling",
-            }))
-        }
-        Command::ResetThermalPolicyLimit => {
-            let slot = match option_one(invocation, "slot") {
-                Some(raw) => parse_usize(raw, "--slot")?,
-                None => 0,
-            };
-            if slot >= 16 {
-                return Err(CliError::new(format!("--slot {slot} out of range (0..15)")));
-            }
-            let stock = run(target, ResetNvapiThermalPolicyCurve { slot })?.output;
-            Ok(json!({
-                "applied": true,
-                "slot": slot,
-                "stock_c": stock,
-                "note": "throttle curve restored to stock (f(live temp-limit readback))",
-            }))
-        }
         Command::SetVfeVarEntry => {
             let index = parse_usize(&invocation.positionals[0], "vfe var index")?;
             let dword = parse_usize(&invocation.positionals[1], "vfe var dword")?;
@@ -7685,12 +7620,54 @@ fn execute_target(
                             "--domain is only valid on the NVML path of set-temp-limit",
                         ));
                     }
+                    // --slot N: the TARGET RMW throttle-curve lane (v2|984
+                    // quad [c+1,c,c-1,c-3], retain-verified) — the only
+                    // working policy write on RTX 50 desktop AND the lane
+                    // that bypasses the Allowed soft wall on Turing slot 2
+                    // (live-verified both). Mutually exclusive with the
+                    // documented-lane options (that family has no slot).
+                    if let Some(raw) = option_one(invocation, "slot") {
+                        if invocation.options.contains_key("pff-curve")
+                            || invocation.options.contains_key("remove-tdp-limit")
+                        {
+                            return Err(CliError::new(
+                                "--slot (TARGET RMW lane) cannot be combined with --pff-curve/--remove-tdp-limit (documented SetStatus lane; that family has no slot address)",
+                            ));
+                        }
+                        let slot = parse_usize(raw, "--slot")?;
+                        if slot >= 16 {
+                            return Err(CliError::new(format!(
+                                "--slot {slot} out of range (policy slots are 0..15; RTX50: 0=GPU 1=Hotspot 4=Memory; Turing: 2=target-temp wall)"
+                            )));
+                        }
+                        run(
+                            target,
+                            SetNvapiThermalPolicyCurve {
+                                slot,
+                                celsius: celsius as f32,
+                            },
+                        )?;
+                        return Ok(json!({
+                            "applied": true,
+                            "lane": "target-rmw",
+                            "slot": slot,
+                            "limit_c": celsius,
+                            "curve": [
+                                (celsius + 1) as f32,
+                                celsius as f32,
+                                (celsius - 1) as f32,
+                                (celsius - 3) as f32,
+                            ],
+                            "restore": "reset-temp-limit --slot N",
+                            "note": "thermal-policy throttle curve written (TARGET RMW v2|984, retain-verified); raising a wall delays protective throttling",
+                        }));
+                    }
                     // --curve: fan-curve-style temp:freq_mhz points (1-3,
                     // strictly increasing temp) — written as the policy's PFF
                     // curve (uiT{1,2,3}OCY) in the same ClientThermalPolicies
                     // SetStatus transaction as the temp limit. 10/40-series
                     // lane (the documented SetStatus family; RTX 50 desktop
-                    // refuses it — use set-thermal-limit there).
+                    // refuses it — use --slot (TARGET RMW lane) there).
                     let remove_tdp = invocation.options.contains_key("remove-tdp-limit");
                     // Preserve the currently armed flag through the temp
                     // transaction: the sensor-limits write sends the whole
@@ -8540,6 +8517,23 @@ fn execute_target(
             Ok(json!({"applied": true}))
         }
         Command::ResetTempLimit => {
+            // --slot N: restore that thermal-policy slot's throttle curve to
+            // stock (companion of set-temp-limit --nvapi --slot); without
+            // --slot reset the documented NVAPI sensor limits.
+            if let Some(raw) = option_one(invocation, "slot") {
+                let slot = parse_usize(raw, "--slot")?;
+                if slot >= 16 {
+                    return Err(CliError::new(format!("--slot {slot} out of range (0..15)")));
+                }
+                let stock = run(target, ResetNvapiThermalPolicyCurve { slot })?.output;
+                return Ok(json!({
+                    "applied": true,
+                    "lane": "target-rmw",
+                    "slot": slot,
+                    "stock_c": stock,
+                    "note": "throttle curve restored to stock (f(live temp-limit readback))",
+                }));
+            }
             run(target, ResetNvapiSensorLimits)?;
             Ok(json!({"applied": true}))
         }
@@ -12385,9 +12379,7 @@ mod tests {
             | Command::GetBoostLocks
             | Command::GetThermalChannels
             | Command::ResetThermalInputs
-            | Command::ResetThermalPolicyLimit
             | Command::SetThermalInput
-            | Command::SetThermalPolicyLimit
             | Command::SetPwrCurLimit
             | Command::SetPowerCommand
             | Command::GetTopRelsRatio
