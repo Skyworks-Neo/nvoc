@@ -3219,10 +3219,11 @@ fn cross_view_divergence_lines(nvapi: &serde_json::Map<String, Value>) -> Vec<St
     let collected: [Option<bool>; 3] = [target_flag, doc_flag, rm_flag];
     let known: Vec<bool> = collected.iter().filter_map(|f| *f).collect();
     if known.len() >= 2 && known.iter().any(|f| *f != known[0]) {
-        lines.push(format!(
+        let body = format!(
             "  ⚠ remove-TDP flag DIVERGES across views (target-temp/d14 mirror: {:?}, documented STATUS: {:?}, RM-lane C(+84): {:?}) — the lanes cache independently; the RM-lane C byte is the live truth, refresh happens on the next lane write",
             collected[0], collected[1], collected[2]
-        ));
+        );
+        lines.push(nvoc_cli_common::color::stylize_warning(&body));
     }
     // Temp walls: documented vs RM-lane slot-2 celsius (target-temp slot 2 is
     // the same wall's static readback).
@@ -3240,9 +3241,10 @@ fn cross_view_divergence_lines(nvapi: &serde_json::Map<String, Value>) -> Vec<St
         temp_of("rm_lane_policies", "slot"),
     ) {
         (Some(a), Some(b)) if (a - b).abs() >= 1.0 => {
-            lines.push(format!(
+            let body = format!(
                 "  ⚠ temp wall DIVERGES across views (documented: {a} C, RM-lane: {b} C) — per-lane cached snapshots; the RM-lane value is the armed truth"
-            ));
+            );
+            lines.push(nvoc_cli_common::color::stylize_warning(&body));
         }
         _ => {}
     }
@@ -3357,7 +3359,10 @@ fn policy_status_row(item: &Value) -> String {
     let label = nvoc_cli_common::color::stylize_title("Policy");
     let mut row = format!(
         "{} {} | Limit {} | RemoveTdpLimit {}",
-        label, name, limit, tdp
+        label,
+        name,
+        nvoc_cli_common::color::stylize(&limit, false),
+        tdp
     );
     if let Some(points) = obj
         .and_then(|o| o.get("pff_curve"))
@@ -3420,7 +3425,11 @@ fn compact_policy_row(item: &Value) -> String {
     let label = nvoc_cli_common::color::stylize_title("Slot");
     let mut row = format!(
         "{} {} | Limit {} | RemoveTdpLimit {} | Throttle {} C",
-        label, name, limit, tdp, quad
+        label,
+        name,
+        nvoc_cli_common::color::stylize(&limit, false),
+        tdp,
+        nvoc_cli_common::color::stylize(&quad, false)
     );
     if let Some(points) = obj
         .and_then(|o| o.get("pff_curve"))
