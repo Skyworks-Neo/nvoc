@@ -834,7 +834,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     adapters: &BOTH_BACKENDS,
                     preferred: BackendAdapter::Nvml,
                     formatter: Some(output::format_temperature_thresholds_output),
-                    ..CommandSpec::new("get-temp-thresholds", Group::Thermal, "Read temperature thresholds — default emits BOTH backends: NVML's classic Shutdown/Slowdown table + the NVAPI views (private target-temp policy slots 0=GPU/1=Hotspot/4=Memory on RTX50, the read-back of set-temp-limit --nvapi --slot; documented ClientThermalPoliciesGetStatus with per-policy bRemoveTdpLimit + PFF curve, the read-back of set-temp-limit --nvapi; RM-lane compact STATUS (mVolt thermal-limits readout)); --nvml/--nvapi filter to the legacy single-backend flat arrays")
+                    ..CommandSpec::new("get-temp-thresholds", Group::Thermal, "Read temperature thresholds — default emits BOTH backends: NVML's classic Shutdown/Slowdown table + the NVAPI views (private target-temp policy slots — on Turing only 0 and 2 exist and slot 0 is the READ-ONLY PROJECTION of slot 2, the writable target-temp wall: writing set-temp-limit --nvapi --slot 2 mirrors into slot 0's throttle quad; on RTX50 slots 0=GPU/1=Hotspot/4=Memory, 0/1/4 = the set-temp-limit --nvapi --slot read-back; documented ClientThermalPoliciesGetStatus with per-policy bRemoveTdpLimit + PFF curve, the read-back of set-temp-limit --nvapi; RM-lane compact STATUS (mVolt thermal-limits readout)); --nvml/--nvapi filter to the legacy single-backend flat arrays")
                 },
             ),
             (
@@ -1750,7 +1750,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     positionals: Box::leak(Box::new([PositionalArg::hyphen(
                     "arg_celsius",
                     "CELSIUS",
-                    "Temperature limit in Celsius, for example 83 or 83C; on the NVML path --domain acoustic targets the acoustic temp instead",
+                    "Temperature limit in Celsius, for example 83 or 83C. Lane decides semantics: --slot N (TARGET RMW) writes that slot's throttle-curve center (quad [c+1,c,c-1,c-3]); without --slot (documented SetStatus) it is the sensor limit; NVML path: GPU max-temp threshold, or the acoustic temp with --domain acoustic",
                 )])),
                     ..CommandSpec::new("set-temp-limit", Group::Thermal, "Set thermal limit in Celsius — NVAPI path, two lanes: --slot N writes that thermal-policy slot's THROTTLE CURVE (TARGET RMW v2|984 quad [c+1,c,c-1,c-3], retain-verified — the only working policy write on RTX 50 desktop, live-verified 5060 Ti/621.24 AND 2070/621.01 slot 2 where it bypasses the Allowed soft wall; RTX50 slots 0=GPU/1=Hotspot/4=Memory, Turing 2=target-temp wall; HIGH RISK: raising a wall delays protective throttling — restore with reset-temp-limit --slot N); without --slot the documented SetStatus family writes the sensor limit (+ --pff-curve \"temp:freq_mhz,...\" 1-3 points fan-curve style and --remove-tdp-limit — 10/40-series lane, RTX 50 desktop refuses it); NVML path writes the GPU max-temp threshold, or the acoustic target temp with --domain acoustic (Linux channel; Windows rejects the NVML threshold setter -- use set-private-target-temp-limit there)")
                 },
@@ -4813,8 +4813,17 @@ fn execute_target(
                     .iter()
                     .map(|p| {
                         let is_wall = chosen_idx == Some(p.policy_index);
+                        // Turing slot semantics (live-verified on 2070): slot
+                        // 2 is the writable target-temp wall and slot 0 is
+                        // its READ-ONLY PROJECTION — a write to 2 mirrors
+                        // into 0's throttle quad. Annotate slot 0 when slot 2
+                        // exists so the pairing is visible per-GPU.
                         let name = if is_wall {
                             format!("{} (TargetTemp)", p.policy_index)
+                        } else if p.policy_index == 0
+                            && policies.iter().any(|q| q.policy_index == 2)
+                        {
+                            "0 (projection of slot 2)".to_string()
                         } else {
                             format!("{}", p.policy_index)
                         };
