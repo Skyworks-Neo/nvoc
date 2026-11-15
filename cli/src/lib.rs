@@ -7664,18 +7664,56 @@ fn execute_target(
                             })
                             .collect::<Vec<_>>()
                     });
+                    let requested_curve = throttle
+                        .curve
+                        .as_ref()
+                        .map(|c| c.points.iter().map(|p| (p.x.get() as f32, p.y.0)).collect::<Vec<_>>());
                     run(
                         target,
                         SetNvapiSensorLimits {
                             limits: vec![throttle],
                         },
                     )?;
+                    // Honesty: SET=0 is NOT effect — some drivers accept the
+                    // transaction and drop fields (live 2070/621: PFF curve +
+                    // flags accepted, readback unchanged). Re-read the
+                    // documented STATUS table and compare what came back
+                    // against what was requested.
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let retained = run(target, QueryNvapiThermalPoliciesStatus)
+                        .ok()
+                        .map(|r| {
+                            r.output.iter().any(|p| {
+                                let temp_ok = (p.celsius - celsius as f32).abs() < 0.01;
+                                let curve_ok = match &requested_curve {
+                                    Some(want) => {
+                                        p.pff_points.len() == want.len()
+                                            && p.pff_points
+                                                .iter()
+                                                .zip(want.iter())
+                                                .all(|((t, f), (wt, wf))| {
+                                                    (*t - wt).abs() < 0.01 && f == wf
+                                                })
+                                    }
+                                    None => true,
+                                };
+                                let tdp_ok = !remove_tdp || p.remove_tdp_limit;
+                                temp_ok && curve_ok && tdp_ok
+                            })
+                        })
+                        .unwrap_or(false);
                     let mut out = json!({"applied": true, "thermal_limit_c": celsius});
                     if let Some(c) = curve_echo {
                         out["pff_curve"] = json!(c);
                     }
                     if remove_tdp {
                         out["remove_tdp_limit"] = json!(true);
+                    }
+                    out["retained"] = json!(retained);
+                    if !retained {
+                        out["warning"] = json!(
+                            "SET returned 0 but the documented STATUS readback does not reflect the written values — accepted-but-dropped by the driver (observed on RTX 2070 desktop); verify with get-temp-thresholds"
+                        );
                     }
                     Ok(out)
                 }
