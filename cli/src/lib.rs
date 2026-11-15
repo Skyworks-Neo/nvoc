@@ -1743,13 +1743,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     arity: (1, 1),
-                    options: Box::leak(Box::new(["domain"])),
+                    options: Box::leak(Box::new(["domain", "pff-curve", "remove-tdp-limit"])),
                     positionals: Box::leak(Box::new([PositionalArg::hyphen(
                     "arg_celsius",
                     "CELSIUS",
                     "Temperature limit in Celsius, for example 83 or 83C; on the NVML path --domain acoustic targets the acoustic temp instead",
                 )])),
-                    ..CommandSpec::new("set-temp-limit", Group::Thermal, "Set thermal limit in Celsius: NVAPI path writes the sensor limit; NVML path writes the GPU max-temp threshold, or the acoustic target temp with --domain acoustic (Linux channel; Windows rejects the NVML threshold setter -- use set-private-target-temp-limit there)")
+                    ..CommandSpec::new("set-temp-limit", Group::Thermal, "Set thermal limit in Celsius: NVAPI path writes the sensor limit, optionally the PFF throttle curve with --pff-curve \"temp:freq_mhz,temp:freq_mhz,temp:freq_mhz\" (1-3 points, fan-curve style; 10/40-series lane — the documented SetStatus family; RTX 50 desktop refuses it, use set-thermal-limit there) and --remove-tdp-limit; NVML path writes the GPU max-temp threshold, or the acoustic target temp with --domain acoustic (Linux channel; Windows rejects the NVML threshold setter -- use set-private-target-temp-limit there)")
                 },
             ),
             (
@@ -2761,6 +2761,15 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("IDX")
             .action(ArgAction::Set)
             .help("Fan-curve slot index (0-3; default 0)"),
+        "pff-curve" => Arg::new("pff-curve")
+            .long("pff-curve")
+            .value_name("TEMP:MHZ,...")
+            .action(ArgAction::Set)
+            .help("set-temp-limit --nvapi: PFF throttle curve, fan-curve style \"temp:freq_mhz,temp:freq_mhz,temp:freq_mhz\" (1-3 points, strictly increasing temp; uiT{1,2,3}OCY — 10/40-series lane; RTX 50 desktop refuses this family, use set-thermal-limit)"),
+        "remove-tdp-limit" => Arg::new("remove-tdp-limit")
+            .long("remove-tdp-limit")
+            .action(ArgAction::SetTrue)
+            .help("set-temp-limit --nvapi: also set bRemoveTdpLimit on the policy entry (strip the TDP-based throttle alongside the temp wall)"),
         "cooler" => Arg::new("cooler")
             .long("cooler")
             .value_name("IDX")
@@ -3015,7 +3024,8 @@ fn collect_named_options(
             | "force"
             | "kmd"
             | "ddc"
-            | "unsafe" => {
+            | "unsafe"
+            | "remove-tdp-limit" => {
                 if matches.get_flag(name) {
                     options.insert(name.to_string(), vec!["true".to_string()]);
                 }
@@ -7518,13 +7528,57 @@ fn execute_target(
                             "--domain is only valid on the NVML path of set-temp-limit",
                         ));
                     }
+                    // --curve: fan-curve-style temp:freq_mhz points (1-3,
+                    // strictly increasing temp) — written as the policy's PFF
+                    // curve (uiT{1,2,3}OCY) in the same ClientThermalPolicies
+                    // SetStatus transaction as the temp limit. 10/40-series
+                    // lane (the documented SetStatus family; RTX 50 desktop
+                    // refuses it — use set-thermal-limit there).
+                    let remove_tdp = invocation.options.contains_key("remove-tdp-limit");
+                    let throttle = match option_one(invocation, "pff-curve") {
+                        Some(raw) => {
+                            let points = parse_pff_curve_points(&raw)?;
+                            nvoc_core::SensorThrottle {
+                                value: nvoc_core::Celsius(celsius),
+                                remove_tdp_limit: remove_tdp,
+                                curve: Some(nvoc_core::PffCurve {
+                                    points: points
+                                        .iter()
+                                        .map(|&(t, mhz)| nvoc_core::PffPoint {
+                                            x: nvoc_core::CelsiusShifted(t * 256),
+                                            y: nvoc_core::Kilohertz((mhz * 1000) as u32),
+                                        })
+                                        .collect(),
+                                }),
+                            }
+                        }
+                        None => nvoc_core::Celsius(celsius).into(),
+                    };
+                    let curve_echo = throttle.curve.as_ref().map(|c| {
+                        c.points
+                            .iter()
+                            .map(|p| {
+                                json!({
+                                    "temp_c": p.x.get(),
+                                    "freq_mhz": p.y.0 / 1000,
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    });
                     run(
                         target,
                         SetNvapiSensorLimits {
-                            limits: vec![nvoc_core::Celsius(celsius).into()],
+                            limits: vec![throttle],
                         },
                     )?;
-                    Ok(json!({"applied": true, "thermal_limit_c": celsius}))
+                    let mut out = json!({"applied": true, "thermal_limit_c": celsius});
+                    if let Some(c) = curve_echo {
+                        out["pff_curve"] = json!(c);
+                    }
+                    if remove_tdp {
+                        out["remove_tdp_limit"] = json!(true);
+                    }
+                    Ok(out)
                 }
                 BackendAdapter::Nvml => {
                     // --domain picks the NVML threshold to write: gpu
@@ -11305,6 +11359,45 @@ fn parse_u32(raw: &str, label: &str) -> CliResult<u32> {
 /// Parse a fan-curve points positional (`40:800,60:1200,75:1800`) into
 /// strictly-applied `FanCurvePointReadout`s. The driver requires strictly
 /// increasing temperature AND RPM across the three points.
+/// `--curve` points for `set-temp-limit --nvapi` (PFF throttle curve,
+/// fan-curve style): `temp_c:freq_mhz` pairs, 1-3 points, strictly
+/// increasing temperature. Freq is given in MHz (rendered back as kHz —
+/// the wire format uiT{1,2,3}Y is kHz).
+fn parse_pff_curve_points(raw: &str) -> CliResult<Vec<(i32, i64)>> {
+    let pairs: Vec<&str> = raw.split(',').collect();
+    if pairs.is_empty() || pairs.len() > 3 {
+        return Err(CliError::new(format!(
+            "expected 1-3 curve points (temp:freq_mhz,...), got {}",
+            pairs.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(pairs.len());
+    for pair in &pairs {
+        let (t, f) = pair.split_once(':').ok_or_else(|| {
+            CliError::new(format!(
+                "invalid curve point {pair:?}: expected temp:freq_mhz"
+            ))
+        })?;
+        let temp: i32 = t
+            .trim()
+            .parse()
+            .map_err(|_| CliError::new(format!("invalid curve temperature {t:?}")))?;
+        let mhz: i64 = f
+            .trim()
+            .parse()
+            .map_err(|_| CliError::new(format!("invalid curve frequency {f:?} (MHz)")))?;
+        out.push((temp, mhz));
+    }
+    for w in out.windows(2) {
+        if w[1].0 <= w[0].0 {
+            return Err(CliError::new(
+                "curve points must be strictly increasing in temperature",
+            ));
+        }
+    }
+    Ok(out)
+}
+
 fn parse_fan_curve_points(raw: &str) -> CliResult<Vec<FanCurvePointReadout>> {
     raw.split(',')
         .map(|pair| {
