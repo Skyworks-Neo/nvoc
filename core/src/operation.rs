@@ -2616,6 +2616,107 @@ impl GpuOperation for QueryNvapiThermalChannels {
     }
 }
 
+/// Per-channel temperature-sim input state (the ThermChannel CONTROL half,
+/// 0xa933ce98 v3 10444 B): applied flag + simulated reading for the six
+/// settable channels (0..=5). The SET handler consumes `channel_mask` as
+/// the touched-channel bitmap, so only these six channels are addressable
+/// (mVolt+ UI map `[1,3,4,5,2,0]`; 0=GPU_MAX/hotspot, 1=GPU_AVG, 2=MEMORY).
+/// `None` when the surface refuses (pre-621 / pre-Turing).
+#[derive(Debug, Clone)]
+pub struct NvapiThermalInputState {
+    /// Driver-reported populated mask from the control response.
+    pub channel_mask: u32,
+    pub channels: Vec<NvapiThermalInputChannel>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NvapiThermalInputChannel {
+    pub channel: usize,
+    /// Sim armed for this channel (driver consumes the reading below).
+    pub applied: bool,
+    /// Simulated reading in °C (Q8 ÷256). Unapplied channels report 0.
+    pub sim_c: f32,
+}
+
+pub struct QueryNvapiThermalInputs;
+
+impl GpuOperation for QueryNvapiThermalInputs {
+    type Output = Option<NvapiThermalInputState>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiThermalInputs
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        // Prime mask 0x3F = the mVolt+ SET-view request (probe T6d); the
+        // wide info mask reads fine for GET but this is the recipe mask.
+        let Ok(control) = gpu.thermal_channel_control(0x3F) else {
+            return Ok(None);
+        };
+        Ok(Some(NvapiThermalInputState {
+            channel_mask: control.channel_mask,
+            channels: (0..6)
+                .map(|ch| NvapiThermalInputChannel {
+                    channel: ch,
+                    applied: control.entry[ch].applied != 0,
+                    sim_c: control.entry[ch].sim_temp_q8 as f32 / 256.0,
+                })
+                .collect(),
+        }))
+    }
+}
+
+/// Arm one channel's temperature-sim input (mVolt+ "Thermal inputs" lane;
+/// mVolt-exact recipe — standalone CONSUMED on 5060 Ti / 621.24, probe
+/// T6d: Status pinned exactly, retain verified, restore clean). `celsius`
+/// becomes the simulated reading; restore with
+/// [`ResetNvapiThermalInputs`]. Sim temps alter DVFS/thermal behavior
+/// (the "LN2 preset" exists because a cold-reported GPU boosts harder).
+#[derive(Debug, Clone)]
+pub struct SetNvapiThermalInput {
+    /// Driver channel 0..=5.
+    pub channel: usize,
+    pub celsius: f32,
+}
+
+impl GpuOperation for SetNvapiThermalInput {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiThermalInput
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_thermal_channel_sim_temp(self.channel, self.celsius)
+            .map_err(Error::from)
+    }
+}
+
+/// Restore channels to "follow the real sensor" (applied = 0,
+/// sim_temp_q8 = 0). `channel_mask` is clipped to the six settable bits.
+#[derive(Debug, Clone)]
+pub struct ResetNvapiThermalInputs {
+    pub channel_mask: u32,
+}
+
+impl GpuOperation for ResetNvapiThermalInputs {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiThermalInputs
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .clear_thermal_channel_sim_temps(self.channel_mask)
+            .map_err(Error::from)
+    }
+}
+
 /// LACT-parity raw-register thermal views (NvAPI_GPU_RegisterOp
 /// 0x2EB3C140, READ|32BIT|GLOBAL): per-chip GDDR6x/GDDR7 sensor
 /// temperatures (0x9024C0/0x9024D0 family, poison-filtered, clamshell

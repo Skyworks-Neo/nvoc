@@ -327,3 +327,68 @@ mVolt slot→var 模型 `var_slot = 4·rail + map[3,0,1,2]`(staged 序
 2. 用正确 var 索引重做写实验;若仍存而不消费 → 复刻 mVolt 全链(身份版 GET
    → verbatim SET → 收敛轮询),重点补 **32B 身份@4**。
 3. var 索引表锚定流(install 时谁填对象+28)待挖(28AE30/28A900/28AA10)。
+
+## 15. 热面 SET 全链 RE 定案（2026-11-15 第十八轮，T6c -9 判决触发）
+
+### 15.1 T6c -9 根因：124B 结构体不是驱动载荷
+
+- T6c（124B ver1 载荷 + SetControl）5060 Ti 返回 **-9（NO_IMPLEMENTATION）**
+  → 回 mVolt IDA（93c20dca session）复核，定案：**sub_140219C90 的 v42
+  124B 结构体 = mVolt 内部"期望状态"验证模板**（六条 20B 记录，header
+  byte0=1/byte1=(state==1)，仅用于 apply 后两次 SET-marker GET 回读比对
+  "did not retain"），**从不发给驱动**。sub_1401F4D20 也不是 push——是
+  UI 状态标签函数（"GPU interface <name>"/": recovered"，写 obj+2288+32·idx）。
+
+### 15.2 真实 SET 协议（sub_140219B60 / 14021A360 / 1401D32C0:22 全链）
+
+- **GET/SET 共用同一 10444B 自描述缓冲、同一两参调用形
+  `fn(handle, buf)`**（mVolt 调用处证实 2 参；probe 的第 3 参被忽略）。
+  缓冲自描述：ver@0=0x328CC(207052)、mask@+8（GET 请求：obj+28 缓存，
+  0xFFFF 失败重试 **63**=0x3F）、**六映射通道 dword_1403746B0=[1,3,4,5,2,0]
+  的 entry+8 请求期写入 marker**：GET=0x13579BDF / SET=0x2468ACE0，
+  驱动对未设置槽**回显哨兵**（=0x2468ACE0 即"无 staged 值"）。
+- entry 布局（76+108·ch）：class@+0（合法 1..5）/ **applied@+4（byte∈{0,1}）**
+  / value@+8（Q8；GET 视图=激活 sim 值，SET 视图=staged 或哨兵）。
+- **mVolt apply（sub_14021A360）**：SET-marker GET prime → 逐输入 patch
+  （12B 请求 {en_a,en_b,…,applied_src@4,value@8}，en_a&&en_b 才纳入）→
+  **mask@+8 = 触达通道位图（⊆0x3F，case 22 客户端校验
+  `(mask & 0xFFFFFFC0)==0`）** → SetControl（写面函数指针）→ 两次
+  SET-marker GET 回读比对（"did not retain"/"unrelated control changed"
+  ——entry+44 byte 是驱动侧变更计数）。
+- **写面/读面是两个函数指针**：mVolt 热面对象 obj+0=handle、obj+8=读 fn、
+  obj+16=写 fn（obj+16 为空即 "Thermal input control is unavailable"）。
+  与 nvapi_QueryInterface(0xA933CE98/0x8DF19FA2) 两参 FFI 同构。
+- **sub_1401D29A0 布局校验器**（GET 响应与 SET 缓冲共用）：len==10444、
+  ver==0x328CC、dword@12/16/20/24/28/32/36 全零、mask@+8 高 16 位为零。
+  （probe 旧 T6 的 mask=0x1cfff 过校验 → SET=0 但语义字段不对，default
+  态不消费。）
+- 布局校验也解释了 mVolt 版本探测：**id 0x8DF19FA2 作为 GET 用返回 -121**
+  （T3c），写面不受理 GET 视图请求。
+
+### 15.3 T6d（probe v7，SHA256 77aa3394…32ada2）
+
+- 配方：SET-marker GET prime（mask=63 优先回退 0x1cfff）→ 哨兵回显计数
+  → 触达通道 applied=1+Q8、未触达 sentinel→0 → mask=1<<ch → SetControl
+  → 三面验证（Status 跟随 / SET 视图 retain / GET 视图激活）→
+  还原（applied=0+value=0，mask 同位图）。
+- **5060 Ti 实测判决（2026-11-15，thermal-t6d.txt）：CONSUMED 实锤**。
+  default 态（同场 T6 旧配方 no-follow、T7 时 Status 28.x 真温度漂移）
+  `SET=0 [mid] status ch1 = Some(30.0) <— CONSUMED`，retain 精确
+  （applied=1/value=7680 读回一致），restore（applied=0+value=0）回
+  28.11°C 真传感器——**nvoc 配方无 mVolt 自足，"独立武装位/总开关"
+  假说否定：applied@entry+4 + mask 触达位图就是武装本体**。附带收获：
+  mask=63 st=0（mVolt 重试链终态确认）；**sentinel 回显 0/6**（621.24
+  不回显 0x2468ACE0，GET prime 返回全零——mVolt 的哨兵判"未设置"逻辑
+  在此驱动上是空转，无碍配方）。
+- **2070/610.47 复判**：CONTROL GET mask=0x3F 也命中（populated=0x3F，
+  之前"2070 无 CONTROL"= mask 0x1cfff 含未充填位假象）；SET=-137
+  INVALID_USER_PRIVILEGE（权限位拒绝非面缺失，提权后是否放行=开放题，
+  涉及"此车道是否 50 系独占"的定性）。
+- **CLI 收官（nvoc core+cli 同轮落地）**：core 三操作
+  QueryNvapiThermalInputs/SetNvapiThermalInput/ResetNvapiThermalInputs
+  （hi::Gpu 三 pass-through 补齐）；medium 配方迁移（0x3F prime +
+  applied/value patch + mask=触达位图，删 0x2F/0x65/0x80 旧经验字节）；
+  CLI 三命令 get-thermal-inputs（角色 join get-thermal-channels 主通道
+  映射）/ set-thermal-input（--channel 0..5 默认 1、celsius 拒 0（Q8 歧义
+  applied+0）、范围 -40..150、set 后 retain 复读）/ reset-thermal-inputs
+  （默认清 0..5、--channel 单清）。nvoc-cli 180 测试全绿，clippy/fmt 净。

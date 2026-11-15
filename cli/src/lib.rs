@@ -12,27 +12,28 @@ use nvoc_core::{
     BackendSet, ClearEdid, ClkVfDomainHint, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
     DisableNvapiThermalSim, FanCurvePointReadout, GetFanCurves, GetPowerMode, GpuSelector,
     GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiI2cTransaction, NvapiPerfFreqCap,
-    OemOcScanner, OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction,
-    QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo,
-    QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
-    QueryNvapiBarInfo, QueryNvapiBoostLocks, QueryNvapiClkDomainFreqDetail,
-    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains,
-    QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiComputeCaps, QueryNvapiCoolerInfo,
-    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
-    QueryNvapiFramerateLimit, QueryNvapiI2cRead, QueryNvapiOcScannerIncomplete,
-    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
-    QueryNvapiPowerCeiling, QueryNvapiPowerChannels, QueryNvapiPowerCommand,
-    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiRegisterThermals,
-    QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange,
-    QueryNvapiThermalChannels, QueryNvapiThermalSettings, QueryNvapiThermalSim,
-    QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices, QueryNvapiVoltRails,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations,
-    QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion,
-    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
-    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
-    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
-    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
+    NvapiThermalChannelSnapshot, NvapiThermalInputState, OemOcScanner, OemOcScannerAction, PState,
+    Percentage, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
+    QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
+    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiBarInfo, QueryNvapiBoostLocks,
+    QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum,
+    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiComputeCaps,
+    QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
+    QueryNvapiFanPolicyInfo, QueryNvapiFramerateLimit, QueryNvapiI2cRead,
+    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPowerChannels,
+    QueryNvapiPowerCommand, QueryNvapiPstates20Private, QueryNvapiRatedTdp,
+    QueryNvapiRegisterThermals, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
+    QueryNvapiTgpWattRange, QueryNvapiThermalChannels, QueryNvapiThermalInputs,
+    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVfeTables,
+    QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
+    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage, QueryVbiosSecurityInfo,
+    QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
+    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
+    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
+    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    ResetNvapiThermalInputs, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
     ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
     ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
     SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
@@ -43,17 +44,17 @@ use nvoc_core::{
     SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
     SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry, SetNvapiVfpPointPrivate,
-    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
-    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
-    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
-    SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
-    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
-    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
-    sync_memory_pstate_as_p0,
+    SetNvapiThermalInput, SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry,
+    SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate,
+    SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
+    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
+    SetSubdomainFreqRatio, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries,
+    SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode,
+    discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
+    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
+    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -212,6 +213,9 @@ pub enum Command {
     GetPowerCommand,
     GetBoostLocks,
     GetThermalChannels,
+    GetThermalInputs,
+    ResetThermalInputs,
+    SetThermalInput,
     SetPwrCurLimit,
     SetPowerCommand,
     GetTopRelsRatio,
@@ -839,6 +843,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::GetThermalInputs,
+                CommandSpec {
+                    formatter: Some(output::format_thermal_inputs),
+                    ..CommandSpec::new("get-thermal-inputs", Group::Thermal, "Read the temperature-sim input state (ThermChannel CONTROL half, 0xa933ce98 v3 10444B — the writable half of the mVolt+ 'Thermal inputs' lane): per settable channel (0..5) the applied flag + simulated reading in Celsius; applied=false = follows the real sensor. Write with set-thermal-input, restore with reset-thermal-inputs")
+                },
+            ),
+            (
                 Command::GetThrottleReasons,
                 CommandSpec {
                     adapters: &NVML_ONLY,
@@ -1124,6 +1135,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
             ),
             (Command::ResetTempLimit, CommandSpec::new("reset-temp-limit", Group::Thermal, "Reset NVAPI sensor limits")),
             (Command::ResetTempSim, CommandSpec::new("reset-temp-sim", Group::Thermal, "Disable temperature simulation and restore the real sensor reading")),
+            (
+                Command::ResetThermalInputs,
+                CommandSpec {
+                    options: Box::leak(Box::new(["channel"])),
+                    ..CommandSpec::new("reset-thermal-inputs", Group::Thermal, "Restore temperature-sim inputs to 'follow the real sensor' (applied=0 + value=0): default clears all six settable channels (0..5); --channel N clears one. Companion of set-thermal-input")
+                },
+            ),
 (
                 Command::ResetVoltRailLimit,
                 CommandSpec {
@@ -1744,6 +1762,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetThermalInput,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["channel"])),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_sim_c",
+                    "SIM_C",
+                    "Simulated reading in Celsius, for example 30 or -20; 0 is rejected (ambiguous with disabled in the sim lane) — clear with reset-thermal-inputs instead",
+                )])),
+                    ..CommandSpec::new("set-thermal-input", Group::Thermal, "Arm one temperature-sim input (0x8df19fa2, mVolt+ 0.50.13 exact recipe — live-verified standalone on RTX 5060 Ti / 621.24, probe T6d: Status pinned exactly + retain verified): --channel N (0..5, default 1=GPU_AVG; 0=GPU_MAX/hotspot, 2=VRAM on RTX50) + positional celsius (negative allowed, mVolt uses -20 on an aux input). Sim temps alter DVFS/boost behavior (LN2-preset semantics: a cold-reported GPU boosts harder) — restore with reset-thermal-inputs")
+                },
+            ),
+            (
                 Command::SetVfeVarEntry,
                 CommandSpec {
                     arity: (3, 3),
@@ -2311,6 +2342,55 @@ fn power_command_json(channel: u8, command: u32, value: u32, applied: bool) -> V
         out["value_W"] = json!(value as f64 / 1000.0);
     }
     out
+}
+
+/// Temperature-sim input lane (`get/set/reset-thermal-inputs`, the mVolt+
+/// "Thermal inputs" surface): control-view state joined with the
+/// get-thermal-channels primary mapping for the per-channel role labels
+/// (the 0/1 GPU↔hotspot order is generation-dependent — 2070 flips it).
+fn thermal_inputs_json(
+    state: &NvapiThermalInputState,
+    primaries: Option<&NvapiThermalChannelSnapshot>,
+) -> Value {
+    const TYPE_NAMES: [&str; 5] = [
+        "GPU_AVG",
+        "GPU_MAX(hotspot)",
+        "BOARD",
+        "MEMORY(vram)",
+        "PWR_SUPPLY",
+    ];
+    let role_of = |ch: usize| -> Option<&'static str> {
+        primaries.and_then(|snap| {
+            snap.info
+                .primary
+                .iter()
+                .position(|slot| slot.is_some_and(|i| i as usize == ch))
+                .and_then(|ty| TYPE_NAMES.get(ty).copied())
+        })
+    };
+    json!({
+        "supported": true,
+        "channel_mask": format!("0x{:08X}", state.channel_mask),
+        "channels": state.channels.iter().map(|c| json!({
+            "channel": c.channel,
+            "role": role_of(c.channel),
+            "applied": c.applied,
+            "sim_c": c.sim_c,
+        })).collect::<Vec<_>>(),
+        "hint": "settable set = channels 0..5 (mVolt UI map [1,3,4,5,2,0]); set-thermal-input arms one, reset-thermal-inputs restores the real sensor",
+    })
+}
+
+/// `--channel` parser for the temperature-sim input lane: the settable set
+/// is the six mVolt UI-mapped driver channels (0..5).
+fn parse_thermal_input_channel(raw: &str) -> CliResult<usize> {
+    let ch = parse_usize(raw, "--channel")?;
+    if ch > 5 {
+        return Err(CliError::new(format!(
+            "--channel {ch} out of range (temperature-sim inputs are 0..5; on RTX50: 0=GPU_MAX/hotspot 1=GPU_AVG 2=VRAM, 3..5 aux)"
+        )));
+    }
+    Ok(ch)
 }
 
 fn parse_command(raw: &str) -> CliResult<Command> {
@@ -5527,6 +5607,69 @@ fn execute_target(
                     "voltage_lock": e.is_voltage_lock(),
                 })).collect::<Vec<_>>(),
                 "hint": "id0/1+mode2 = clock-range lock (kHz bounds, -lgc family); id6+mode3 = V/F voltage lock (uV); all mode 0 = unlocked",
+            }))
+        }
+        Command::GetThermalInputs => {
+            let Some(state) = run(target, QueryNvapiThermalInputs)?.output else {
+                return Ok(json!({
+                    "supported": false,
+                    "hint": "ThermChannel CONTROL (0xa933ce98 v3) refused — the temperature-sim input lane needs an RTX50-class / 621.24+ driver (mVolt Thermal inputs lane)",
+                }));
+            };
+            let primaries = run(target, QueryNvapiThermalChannels)
+                .ok()
+                .and_then(|r| r.output);
+            Ok(thermal_inputs_json(&state, primaries.as_ref()))
+        }
+        Command::SetThermalInput => {
+            let celsius = parse_i32_unit(&invocation.positionals[0], "c", "celsius")?;
+            if celsius == 0 {
+                return Err(CliError::new(
+                    "celsius 0 is ambiguous in the sim lane (applied + Q8 0) — use reset-thermal-inputs to restore the real sensor, or a nonzero value",
+                ));
+            }
+            if !(-40..=150).contains(&celsius) {
+                return Err(CliError::new(format!(
+                    "celsius {celsius} outside the driver-reported sim range (-40..150)"
+                )));
+            }
+            let channel = match option_one(invocation, "channel") {
+                Some(raw) => parse_thermal_input_channel(raw)?,
+                None => 1,
+            };
+            run(
+                target,
+                SetNvapiThermalInput {
+                    channel,
+                    celsius: celsius as f32,
+                },
+            )?;
+            // Retain check (T6d discipline): re-read the SET view and report
+            // whether the driver kept the requested arm + value.
+            let retain = run(target, QueryNvapiThermalInputs)
+                .ok()
+                .and_then(|r| r.output)
+                .and_then(|s| s.channels.into_iter().find(|c| c.channel == channel));
+            Ok(json!({
+                "applied": true,
+                "channel": channel,
+                "sim_c": celsius,
+                "retained_applied": retain.as_ref().map(|c| c.applied),
+                "retained_sim_c": retain.as_ref().map(|c| c.sim_c),
+                "restore": "reset-thermal-inputs [--channel N]",
+                "note": "temperature-sim input armed (mVolt Thermal inputs lane, 0x8df19fa2); sim temps alter DVFS/boost behavior",
+            }))
+        }
+        Command::ResetThermalInputs => {
+            let mask = match option_one(invocation, "channel") {
+                Some(raw) => 1u32 << parse_thermal_input_channel(raw)?,
+                None => 0x3F,
+            };
+            run(target, ResetNvapiThermalInputs { channel_mask: mask })?;
+            Ok(json!({
+                "applied": true,
+                "restored_mask": format!("0x{mask:X}"),
+                "note": "sim inputs cleared (applied=0, value=0) — real sensor readings resume",
             }))
         }
         Command::GetThermalChannels => {
@@ -11846,6 +11989,9 @@ mod tests {
             | Command::GetPowerCommand
             | Command::GetBoostLocks
             | Command::GetThermalChannels
+            | Command::GetThermalInputs
+            | Command::ResetThermalInputs
+            | Command::SetThermalInput
             | Command::SetPwrCurLimit
             | Command::SetPowerCommand
             | Command::GetTopRelsRatio

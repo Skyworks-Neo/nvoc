@@ -4453,6 +4453,36 @@ fn format_sensors_array(indent: usize, items: &[Value]) -> Vec<String> {
     lines
 }
 
+/// Render the temperature-sim input state (get-thermal-inputs): per settable
+/// channel the role (joined from the get-thermal-channels primary mapping),
+/// applied flag and simulated reading — the mVolt+ "Thermal inputs" panel.
+pub(super) fn format_thermal_inputs(output: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    if output.get("supported").and_then(Value::as_bool) == Some(false) {
+        return vec!["  Thermal Inputs: N/A (ThermChannel CONTROL refused)".to_string()];
+    }
+    if let Some(mask) = output.get("channel_mask").and_then(Value::as_str) {
+        lines.push(format!("  populated: {mask}"));
+    }
+    if let Some(channels) = output.get("channels").and_then(Value::as_array) {
+        for c in channels {
+            let ch = c.get("channel").and_then(Value::as_u64).unwrap_or(0);
+            let role = c
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("unclassified");
+            let state = match c.get("applied").and_then(Value::as_bool) {
+                Some(true) => {
+                    format_measurement(c.get("sim_c").and_then(Value::as_f64).unwrap_or(0.0), "C")
+                }
+                _ => "follows sensor".to_string(),
+            };
+            lines.push(format!("    ch{ch} ({role}): {state}"));
+        }
+    }
+    lines
+}
+
 /// Render the full ThermChannel map (get-thermal-channels): the classified
 /// primary channels with live temperatures, then every populated channel with
 /// its research metadata (type tag, offsets/scaling raw, decoded range, and

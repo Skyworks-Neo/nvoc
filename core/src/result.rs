@@ -111,6 +111,14 @@ pub enum OperationKind {
     /// temperatures (0x65FE3AAD v2, 8.8 fixed point ÷256 °C; index
     /// semantics 0=GPU/1=hotspot/VRAM=2(RTX50)/7(RTX40)/9(older)).
     QueryNvapiThermalChannels,
+    /// ThermChannel per-channel temperature-sim input state (CONTROL half,
+    /// 0xa933ce98 v3): applied flag + simulated reading, channels 0..=5.
+    QueryNvapiThermalInputs,
+    /// Arm one channel's temperature-sim input (0x8df19fa2, mVolt-exact
+    /// recipe; standalone verified on 5060 Ti / 621.24).
+    SetNvapiThermalInput,
+    /// Restore temperature-sim inputs to "follow the real sensor".
+    ResetNvapiThermalInputs,
     /// Raw-register thermal views (NvAPI_GPU_RegisterOp 0x2EB3C140, read
     /// flag): per-chip GDDR6x/GDDR7 sensor temperatures (0x9024C0 family,
     /// LACT-parity) plus the Blackwell+ aggregated hotspot register
