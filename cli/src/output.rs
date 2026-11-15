@@ -3158,7 +3158,7 @@ fn format_combined_thresholds(obj: &serde_json::Map<String, Value>) -> Vec<Strin
     lines.extend(threshold_view_lines(obj.get("nvml"), threshold_entry_row));
     if let Some(nvapi) = obj.get("nvapi").and_then(Value::as_object) {
         lines.push(nvoc_cli_common::color::stylize_title(
-            "NVAPI target-temp policies (read-back of set-thermal-limit)",
+            "NVAPI target-temp policies (read-back of set-temp-limit --nvapi --slot)",
         ));
         lines.extend(threshold_view_lines(
             nvapi.get("target_temp_policies"),
@@ -6297,7 +6297,7 @@ mod tests {
                 json!([{"memory_mhz": 10500, "graphics_mhz": 1800}])
             }
             Command::GetFanInfo => json!({"count": 2, "min_percent": 30, "max_percent": 100}),
-            Command::GetTemperatureThresholds => {
+            Command::GetTempLimit => {
                 json!([{"name": "shutdown", "celsius": 95}])
             }
             Command::GetLegacyTempSensor => json!([

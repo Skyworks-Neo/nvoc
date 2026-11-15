@@ -187,7 +187,7 @@ pub enum Command {
     SetFanCurve,
     ResetFanCurveCmd,
     SetFanstopStatus,
-    GetTemperatureThresholds,
+    GetTempLimit,
     GetLegacyTempSensor,
     GetPowerMode,
     SetPowerMode,
@@ -326,7 +326,7 @@ impl Command {
 
     /// Backend an `auto` run should prefer when the command advertises both
     /// (`BOTH_BACKENDS`). Defaults to Nvapi; overridden per-command where the
-    /// classic backend is the more useful default. `GetTemperatureThresholds`
+    /// classic backend is the more useful default. `GetTempLimit`
     /// prefers NVML because the Shutdown/Slowdown/... table is the established
     /// primary view — the dispatch merges the NVAPI sections into the same
     /// readout on auto; `--nvml`/`--nvapi` filter to the legacy flat arrays.
@@ -827,16 +827,16 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("get-supported-legacy-application-freq", Group::Clock, "Read NVML supported application clocks")
                 },
             ),
-            (Command::GetTempSim, CommandSpec::new("get-temp-sim", Group::Thermal, "Read the temperature-simulation state (GetThermalSimulationMode; Secured-Overrides 'Temp faking allowed' gated)")),
             (
-                Command::GetTemperatureThresholds,
+                Command::GetTempLimit,
                 CommandSpec {
                     adapters: &BOTH_BACKENDS,
                     preferred: BackendAdapter::Nvml,
                     formatter: Some(output::format_temperature_thresholds_output),
-                    ..CommandSpec::new("get-temp-thresholds", Group::Thermal, "Read temperature thresholds — default emits BOTH backends: NVML's classic Shutdown/Slowdown table + the NVAPI views (private target-temp policy slots — on Turing only 0 and 2 exist and slot 0 is the READ-ONLY PROJECTION of slot 2, the writable target-temp wall: writing set-temp-limit --nvapi --slot 2 mirrors into slot 0's throttle quad; on RTX50 slots 0=GPU/1=Hotspot/4=Memory, 0/1/4 = the set-temp-limit --nvapi --slot read-back; documented ClientThermalPoliciesGetStatus with per-policy bRemoveTdpLimit + PFF curve, the read-back of set-temp-limit --nvapi; RM-lane compact STATUS (mVolt thermal-limits readout)); --nvml/--nvapi filter to the legacy single-backend flat arrays")
+                    ..CommandSpec::new("get-temp-limit", Group::Thermal, "Read temperature thresholds — default emits BOTH backends: NVML's classic Shutdown/Slowdown table + the NVAPI views (private target-temp policy slots — on Turing only 0 and 2 exist and slot 0 is the READ-ONLY PROJECTION of slot 2, the writable target-temp wall: writing set-temp-limit --nvapi --slot 2 mirrors into slot 0's throttle quad; on RTX50 slots 0=GPU/1=Hotspot/4=Memory, 0/1/4 = the set-temp-limit --nvapi --slot read-back; documented ClientThermalPoliciesGetStatus with per-policy bRemoveTdpLimit + PFF curve, the read-back of set-temp-limit --nvapi; RM-lane compact STATUS (mVolt thermal-limits readout)); --nvml/--nvapi filter to the legacy single-backend flat arrays")
                 },
             ),
+            (Command::GetTempSim, CommandSpec::new("get-temp-sim", Group::Thermal, "Read the temperature-simulation state (GetThermalSimulationMode; Secured-Overrides 'Temp faking allowed' gated)")),
             (
                 Command::GetThermalChannels,
                 CommandSpec {
@@ -3099,7 +3099,7 @@ fn execute_auto(invocation: &Invocation, command: Command) -> CliResult<Executio
     let supports_nvml = command.adapters().contains(&BackendAdapter::Nvml);
 
     // Where a command advertises both backends, honour its preferred default
-    // before falling back. Commands that prefer NVML (e.g. GetTemperatureThresholds)
+    // before falling back. Commands that prefer NVML (e.g. GetTempLimit)
     // short-circuit straight to the NVML path on auto; the NVAPI branch stays
     // reachable via an explicit `--nvapi`.
     //
@@ -3577,7 +3577,7 @@ fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSe
         // inventory — otherwise the NVAPI sections degrade to "no NvAPI
         // backend" on every target (the routing picks NVML first, discovery
         // must not narrow behind it).
-        (Command::GetTemperatureThresholds, BackendAdapter::Nvml) => BackendSet::Both,
+        (Command::GetTempLimit, BackendAdapter::Nvml) => BackendSet::Both,
         (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLockViaMemRange, BackendAdapter::Nvapi) => BackendSet::Both,
         // Profile binding keys on the NVML UUID and verifies power via NVML,
@@ -4717,7 +4717,7 @@ fn execute_target(
             )?;
             Ok(json!({"applied": true, "curve": curve, "fan_stop": enable}))
         }
-        Command::GetTemperatureThresholds => {
+        Command::GetTempLimit => {
             // Three views of "temperature threshold":
             //  - NVML: the classic Shutdown/Slowdown/GpuMax/GpsCurr/... table.
             //  - NVAPI target-temp policies: the private 温度墙 policy table —
@@ -4725,7 +4725,7 @@ fn execute_target(
             //    On RTX 4060 Laptop idx 2 is the "GPU Target Temperature" wall
             //    (matches nvidia-smi and NVML's GpsCurr channel); on RTX 50
             //    desktop slots 0=GPU / 1=Hotspot / 4=Memory. This is where the
-            //    set-thermal-limit (v2|984 curve-quad) writes read back.
+            //    set-temp-limit --nvapi --slot (v2|984 curve-quad) writes read back.
             //  - NVAPI thermal-policy status: the documented
             //    ClientThermalPoliciesGetStatus family — per-armed policy temp
             //    wall + bRemoveTdpLimit + PFF throttle curve. This is the
@@ -12367,7 +12367,7 @@ mod tests {
             | Command::SetFanCurve
             | Command::ResetFanCurveCmd
             | Command::SetFanstopStatus
-            | Command::GetTemperatureThresholds
+            | Command::GetTempLimit
             | Command::GetLegacyTempSensor
             | Command::GetPowerMode
             | Command::SetPowerMode
@@ -12672,28 +12672,28 @@ mod tests {
         // routing (the classic Shutdown/Slowdown/... table stays primary) but
         // the auto dispatch merges the NVAPI views into the same readout.
         assert!(
-            Command::GetTemperatureThresholds
+            Command::GetTempLimit
                 .adapters()
                 .contains(&BackendAdapter::Nvapi)
         );
         assert!(
-            Command::GetTemperatureThresholds
+            Command::GetTempLimit
                 .adapters()
                 .contains(&BackendAdapter::Nvml)
         );
         assert_eq!(
-            Command::GetTemperatureThresholds.auto_preferred_backend(),
+            Command::GetTempLimit.auto_preferred_backend(),
             BackendAdapter::Nvml
         );
         // Explicit --nvapi parses and routes to the nvapi backend (legacy flat
         // target-temp array); --nvml keeps the legacy flat NVML array.
-        let invocation = parse_args(["get-temp-thresholds", "--nvapi"]).unwrap();
-        assert_eq!(invocation.command, Some(Command::GetTemperatureThresholds));
+        let invocation = parse_args(["get-temp-limit", "--nvapi"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetTempLimit));
         assert_eq!(invocation.backend, BackendChoice::Nvapi);
-        let invocation = parse_args(["get-temp-thresholds", "--nvml"]).unwrap();
+        let invocation = parse_args(["get-temp-limit", "--nvml"]).unwrap();
         assert_eq!(invocation.backend, BackendChoice::Nvml);
         // No flag parses to auto (NVML routing + merged NVAPI sections).
-        let invocation = parse_args(["get-temp-thresholds"]).unwrap();
+        let invocation = parse_args(["get-temp-limit"]).unwrap();
         assert_eq!(invocation.backend, BackendChoice::Auto);
     }
 
