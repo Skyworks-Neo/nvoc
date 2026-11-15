@@ -213,7 +213,6 @@ pub enum Command {
     GetPowerCommand,
     GetBoostLocks,
     GetThermalChannels,
-    GetThermalInputs,
     ResetThermalInputs,
     SetThermalInput,
     SetPwrCurLimit,
@@ -839,14 +838,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::GetThermalChannels,
                 CommandSpec {
                     formatter: Some(output::format_thermal_channels),
-                    ..CommandSpec::new("get-thermal-channels", Group::Thermal, "Read the FULL ThermChannel map (the research-detail view; get-status only surfaces the classified primaries): populated channel metadata (type/offset_sw/offset_hw/scaling/range) + the primary channel per thermal type (GPU_AVG/hotspot/board/VRAM/PWR_SUPPLY) joined with live temperatures (0x0BC8163D + 0x65FE3AAD, 8.8 fixed point; hotspot=idx1, VRAM=idx2 on RTX50 / 7 on RTX40 / 9 on older)")
-                },
-            ),
-            (
-                Command::GetThermalInputs,
-                CommandSpec {
-                    formatter: Some(output::format_thermal_inputs),
-                    ..CommandSpec::new("get-thermal-inputs", Group::Thermal, "Read the temperature-sim input state (ThermChannel CONTROL half, 0xa933ce98 v3 10444B — the writable half of the mVolt+ 'Thermal inputs' lane): per settable channel (0..5) the applied flag + simulated reading in Celsius; applied=false = follows the real sensor. Write with set-thermal-input, restore with reset-thermal-inputs")
+                    ..CommandSpec::new("get-thermal-channels", Group::Thermal, "Read the FULL ThermChannel map (the research-detail view; get-status only surfaces the classified primaries): populated channel metadata (type/offset_sw/offset_hw/scaling/range) + the primary channel per thermal type (GPU_AVG/hotspot/board/VRAM/PWR_SUPPLY) joined with live temperatures (0x0BC8163D + 0x65FE3AAD, 8.8 fixed point; hotspot=idx1, VRAM=idx2 on RTX50 / 7 on RTX40 / 9 on older), plus the temperature-sim input state in the `inputs` section (ThermChannel CONTROL 0xa933ce98 v3, the writable half of the mVolt+ 'Thermal inputs' lane: per settable channel 0..5 the applied flag + simulated reading; write with set-thermal-channel-override, restore with reset-thermal-channel-override)")
                 },
             ),
             (
@@ -1139,7 +1131,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 Command::ResetThermalInputs,
                 CommandSpec {
                     options: Box::leak(Box::new(["channel"])),
-                    ..CommandSpec::new("reset-thermal-inputs", Group::Thermal, "Restore temperature-sim inputs to 'follow the real sensor' (applied=0 + value=0): default clears all six settable channels (0..5); --channel N clears one. Companion of set-thermal-input")
+                    ..CommandSpec::new("reset-thermal-channel-override", Group::Thermal, "Restore temperature-sim inputs to 'follow the real sensor' (applied=0 + value=0): default clears all six settable channels (0..5); --channel N clears one. Companion of set-thermal-channel-override")
                 },
             ),
 (
@@ -1769,9 +1761,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     positionals: Box::leak(Box::new([PositionalArg::free(
                     "arg_sim_c",
                     "SIM_C",
-                    "Simulated reading in Celsius, for example 30 or -20; 0 is rejected (ambiguous with disabled in the sim lane) — clear with reset-thermal-inputs instead",
+                    "Simulated reading in Celsius, for example 30 or -20; 0 is rejected (ambiguous with disabled in the sim lane) — clear with reset-thermal-channel-override instead",
                 )])),
-                    ..CommandSpec::new("set-thermal-input", Group::Thermal, "Arm one temperature-sim input (0x8df19fa2, mVolt+ 0.50.13 exact recipe — live-verified standalone on RTX 5060 Ti / 621.24, probe T6d: Status pinned exactly + retain verified): --channel N (0..5, default 1=GPU_AVG; 0=GPU_MAX/hotspot, 2=VRAM on RTX50) + positional celsius (negative allowed, mVolt uses -20 on an aux input). Sim temps alter DVFS/boost behavior (LN2-preset semantics: a cold-reported GPU boosts harder) — restore with reset-thermal-inputs")
+                    ..CommandSpec::new("set-thermal-channel-override", Group::Thermal, "Arm one temperature-sim input (0x8df19fa2, mVolt+ 0.50.13 exact recipe — live-verified standalone on RTX 5060 Ti / 621.24, probe T6d: Status pinned exactly + retain verified): --channel N (0..5, default 1=GPU_AVG; 0=GPU_MAX/hotspot, 2=VRAM on RTX50) + positional celsius (negative allowed, mVolt uses -20 on an aux input). Sim temps alter DVFS/boost behavior (LN2-preset semantics: a cold-reported GPU boosts harder) — restore with reset-thermal-channel-override")
                 },
             ),
             (
@@ -2344,7 +2336,7 @@ fn power_command_json(channel: u8, command: u32, value: u32, applied: bool) -> V
     out
 }
 
-/// Temperature-sim input lane (`get/set/reset-thermal-inputs`, the mVolt+
+/// Temperature-sim input lane (`set/reset-thermal-channel-override` (state in get-thermal-channels `inputs`), the mVolt+
 /// "Thermal inputs" surface): control-view state joined with the
 /// get-thermal-channels primary mapping for the per-channel role labels
 /// (the 0/1 GPU↔hotspot order is generation-dependent — 2070 flips it).
@@ -2377,11 +2369,11 @@ fn thermal_inputs_json(
             "applied": c.applied,
             "sim_c": c.sim_c,
         })).collect::<Vec<_>>(),
-        "hint": "settable set = channels 0..5 (mVolt UI map [1,3,4,5,2,0]); set-thermal-input arms one, reset-thermal-inputs restores the real sensor",
+        "hint": "settable set = channels 0..5 (mVolt UI map [1,3,4,5,2,0]); set-thermal-channel-override arms one, reset-thermal-channel-override restores the real sensor",
     })
 }
 
-/// `--channel` parser for the temperature-sim input lane: the settable set
+/// `--channel` parser for the thermal-channel-override lane: the settable set
 /// is the six mVolt UI-mapped driver channels (0..5).
 fn parse_thermal_input_channel(raw: &str) -> CliResult<usize> {
     let ch = parse_usize(raw, "--channel")?;
@@ -5609,23 +5601,11 @@ fn execute_target(
                 "hint": "id0/1+mode2 = clock-range lock (kHz bounds, -lgc family); id6+mode3 = V/F voltage lock (uV); all mode 0 = unlocked",
             }))
         }
-        Command::GetThermalInputs => {
-            let Some(state) = run(target, QueryNvapiThermalInputs)?.output else {
-                return Ok(json!({
-                    "supported": false,
-                    "hint": "ThermChannel CONTROL (0xa933ce98 v3) refused — the temperature-sim input lane needs an RTX50-class / 621.24+ driver (mVolt Thermal inputs lane)",
-                }));
-            };
-            let primaries = run(target, QueryNvapiThermalChannels)
-                .ok()
-                .and_then(|r| r.output);
-            Ok(thermal_inputs_json(&state, primaries.as_ref()))
-        }
         Command::SetThermalInput => {
             let celsius = parse_i32_unit(&invocation.positionals[0], "c", "celsius")?;
             if celsius == 0 {
                 return Err(CliError::new(
-                    "celsius 0 is ambiguous in the sim lane (applied + Q8 0) — use reset-thermal-inputs to restore the real sensor, or a nonzero value",
+                    "celsius 0 is ambiguous in the sim lane (applied + Q8 0) — use reset-thermal-channel-override to restore the real sensor, or a nonzero value",
                 ));
             }
             if !(-40..=150).contains(&celsius) {
@@ -5656,7 +5636,7 @@ fn execute_target(
                 "sim_c": celsius,
                 "retained_applied": retain.as_ref().map(|c| c.applied),
                 "retained_sim_c": retain.as_ref().map(|c| c.sim_c),
-                "restore": "reset-thermal-inputs [--channel N]",
+                "restore": "reset-thermal-channel-override [--channel N]",
                 "note": "temperature-sim input armed (mVolt Thermal inputs lane, 0x8df19fa2); sim temps alter DVFS/boost behavior",
             }))
         }
@@ -5691,7 +5671,7 @@ fn execute_target(
                         .is_some_and(|c| c.therm_dev_idx == want_dev && c.therm_dev_prov_idx == 0)
                 })
             };
-            Ok(json!({
+            let mut out = json!({
                 "channel_mask": format!("0x{:08X}", snap.info.channel_mask),
                 "primary": snap.info.primary.iter().enumerate().map(|(ty, slot)| json!({
                     "type": type_names.get(ty).copied().unwrap_or("UNKNOWN"),
@@ -5736,7 +5716,24 @@ fn execute_target(
                     }
                     Err(e) => json!({"supported": false, "error": e.to_string()}),
                 },
-            }))
+            });
+            // Temperature-sim input state (the CONTROL half of the same
+            // ThermChannel family, 0xa933ce98 v3 — the mVolt+ "Thermal
+            // inputs" surface). Absent/"supported":false where the CONTROL
+            // view refuses (pre-621 / privilege-gated SET faces still GET).
+            out["inputs"] = match run(target, QueryNvapiThermalInputs) {
+                Ok(report) => report
+                    .output
+                    .map(|state| thermal_inputs_json(&state, Some(&snap)))
+                    .unwrap_or_else(|| {
+                        json!({
+                            "supported": false,
+                            "hint": "ThermChannel CONTROL (0xa933ce98 v3) refused on this driver",
+                        })
+                    }),
+                Err(e) => json!({"supported": false, "error": e.to_string()}),
+            };
+            Ok(out)
         }
         Command::SetPwrCurLimit => {
             let target_name = invocation.positionals[0].to_ascii_lowercase();
@@ -11989,7 +11986,6 @@ mod tests {
             | Command::GetPowerCommand
             | Command::GetBoostLocks
             | Command::GetThermalChannels
-            | Command::GetThermalInputs
             | Command::ResetThermalInputs
             | Command::SetThermalInput
             | Command::SetPwrCurLimit

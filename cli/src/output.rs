@@ -4453,36 +4453,6 @@ fn format_sensors_array(indent: usize, items: &[Value]) -> Vec<String> {
     lines
 }
 
-/// Render the temperature-sim input state (get-thermal-inputs): per settable
-/// channel the role (joined from the get-thermal-channels primary mapping),
-/// applied flag and simulated reading — the mVolt+ "Thermal inputs" panel.
-pub(super) fn format_thermal_inputs(output: &Value) -> Vec<String> {
-    let mut lines = Vec::new();
-    if output.get("supported").and_then(Value::as_bool) == Some(false) {
-        return vec!["  Thermal Inputs: N/A (ThermChannel CONTROL refused)".to_string()];
-    }
-    if let Some(mask) = output.get("channel_mask").and_then(Value::as_str) {
-        lines.push(format!("  populated: {mask}"));
-    }
-    if let Some(channels) = output.get("channels").and_then(Value::as_array) {
-        for c in channels {
-            let ch = c.get("channel").and_then(Value::as_u64).unwrap_or(0);
-            let role = c
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("unclassified");
-            let state = match c.get("applied").and_then(Value::as_bool) {
-                Some(true) => {
-                    format_measurement(c.get("sim_c").and_then(Value::as_f64).unwrap_or(0.0), "C")
-                }
-                _ => "follows sensor".to_string(),
-            };
-            lines.push(format!("    ch{ch} ({role}): {state}"));
-        }
-    }
-    lines
-}
-
 /// Render the full ThermChannel map (get-thermal-channels): the classified
 /// primary channels with live temperatures, then every populated channel with
 /// its research metadata (type tag, offsets/scaling raw, decoded range, and
@@ -4672,6 +4642,63 @@ pub(super) fn format_thermal_channels(output: &Value) -> Vec<String> {
             }
         }
         None => {}
+    }
+    // Temperature-sim input state (the ThermChannel CONTROL half — the
+    // mVolt+ "Thermal inputs" surface): only renders when the CONTROL view
+    // answered; an N/A line otherwise so the absence stays visible.
+    if let Some(inputs) = output.get("inputs") {
+        lines.extend(render_thermal_inputs(inputs));
+    }
+    lines
+}
+
+/// Render the temperature-sim input state (get-thermal-channels `inputs`
+/// section): per settable channel (0..5) the role (joined from the primary
+/// mapping), applied flag and simulated reading — the mVolt+ "Thermal
+/// inputs" panel.
+fn render_thermal_inputs(output: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    if output.get("supported").and_then(Value::as_bool) == Some(false) {
+        let reason = output
+            .get("hint")
+            .or_else(|| output.get("error"))
+            .and_then(Value::as_str)
+            .unwrap_or("ThermChannel CONTROL refused");
+        lines.push(format!(
+            "  {} {}",
+            nvoc_cli_common::color::stylize_title("Thermal inputs:"),
+            nvoc_cli_common::color::stylize(&format!("N/A ({reason})"), false)
+        ));
+        return lines;
+    }
+    lines.push(nvoc_cli_common::color::stylize_title("Thermal inputs").to_string());
+    if let Some(mask) = output.get("channel_mask").and_then(Value::as_str) {
+        lines.push(format!(
+            "  {}: {}",
+            nvoc_cli_common::color::stylize_title("settable"),
+            nvoc_cli_common::color::stylize(mask, false)
+        ));
+    }
+    if let Some(channels) = output.get("channels").and_then(Value::as_array) {
+        for c in channels {
+            let ch = c.get("channel").and_then(Value::as_u64).unwrap_or(0);
+            let role = c
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("unclassified");
+            let state = match c.get("applied").and_then(Value::as_bool) {
+                Some(true) => {
+                    format_measurement(c.get("sim_c").and_then(Value::as_f64).unwrap_or(0.0), "C")
+                }
+                _ => "follows sensor".to_string(),
+            };
+            lines.push(format!(
+                "  ch{} ({}): {}",
+                nvoc_cli_common::color::stylize(&ch.to_string(), false),
+                nvoc_cli_common::color::stylize(role, false),
+                nvoc_cli_common::color::stylize(&state, false)
+            ));
+        }
     }
     lines
 }

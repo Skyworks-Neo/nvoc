@@ -384,11 +384,14 @@ mVolt slot→var 模型 `var_slot = 4·rail + map[3,0,1,2]`(staged 序
   之前"2070 无 CONTROL"= mask 0x1cfff 含未充填位假象）；SET=-137
   INVALID_USER_PRIVILEGE（权限位拒绝非面缺失，提权后是否放行=开放题，
   涉及"此车道是否 50 系独占"的定性）。
-- **CLI 收官（nvoc core+cli 同轮落地）**：core 三操作
+- **CLI 收官（nvoc core+cli 同轮落地，第二十一轮合并定名）**：core 三操作
   QueryNvapiThermalInputs/SetNvapiThermalInput/ResetNvapiThermalInputs
   （hi::Gpu 三 pass-through 补齐）；medium 配方迁移（0x3F prime +
   applied/value patch + mask=触达位图，删 0x2F/0x65/0x80 旧经验字节）；
-  CLI 三命令 get-thermal-inputs（角色 join get-thermal-channels 主通道
-  映射）/ set-thermal-input（--channel 0..5 默认 1、celsius 拒 0（Q8 歧义
-  applied+0）、范围 -40..150、set 后 retain 复读）/ reset-thermal-inputs
-  （默认清 0..5、--channel 单清）。nvoc-cli 180 测试全绿，clippy/fmt 净。
+  **GET 面 = get-thermal-channels 单命令**（Info/Status 与 CONTROL 同族且
+  角色标签本来就冗余拉 channels 快照——合并后 inputs 作为附加段，一次
+  调用全览，CONTROL 拒绝时显 N/A 行）；写面两命令
+  **set-thermal-channel-override**（--channel 0..5 默认 1、celsius 拒 0
+  （Q8 歧义 applied+0）、范围 -40..150、set 后 retain 复读）/
+  **reset-thermal-channel-override**（默认清 0..5、--channel 单清）。
+  nvoc-cli 82 测试全绿，clippy/fmt 净，2070 冒烟通过。
