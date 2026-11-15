@@ -33,28 +33,29 @@ use nvoc_core::{
     ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
     ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
     ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
-    ResetNvapiThermalInputs, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
-    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
-    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
-    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
-    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
-    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
-    SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates, SetNvapiOvervolt,
-    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
-    SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
-    SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-    SetNvapiThermalInput, SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry,
-    SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate,
-    SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
-    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetSubdomainFreqRatio, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries,
-    SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode,
-    discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
-    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
+    ResetNvapiThermalInputs, ResetNvapiThermalPolicyCurve, ResetNvapiVfpPrivate,
+    ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
+    ResetPublicVftableOffset, ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver,
+    SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset,
+    SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate,
+    SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
+    SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
+    SetNvapiEccConfiguration, SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates,
+    SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
+    SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue, SetNvapiPowerCommand,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalInput, SetNvapiThermalPolicyCurve,
+    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry, SetNvapiVfpPointPrivate,
+    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
+    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
+    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
+    SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
+    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
+    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
+    sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -214,7 +215,9 @@ pub enum Command {
     GetBoostLocks,
     GetThermalChannels,
     ResetThermalInputs,
+    ResetThermalPolicyLimit,
     SetThermalInput,
+    SetThermalPolicyLimit,
     SetPwrCurLimit,
     SetPowerCommand,
     GetTopRelsRatio,
@@ -1134,6 +1137,14 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("reset-thermal-channel-override", Group::Thermal, "Restore temperature-sim inputs to 'follow the real sensor' (applied=0 + value=0): default clears all six settable channels (0..5); --channel N clears one. Companion of set-thermal-channel-override")
                 },
             ),
+
+            (
+                Command::ResetThermalPolicyLimit,
+                CommandSpec {
+                    options: Box::leak(Box::new(["slot"])),
+                    ..CommandSpec::new("reset-thermal-limit", Group::Thermal, "Restore one thermal-policy slot's throttle curve to stock (re-derive from the live temp-limit readback): --slot N (0=GPU wall / 1=Hotspot / 4=Memory on RTX50; default 0). Companion of set-thermal-limit")
+                },
+            ),
 (
                 Command::ResetVoltRailLimit,
                 CommandSpec {
@@ -1764,6 +1775,19 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     "Simulated reading in Celsius, for example 30 or -20; 0 is rejected (ambiguous with disabled in the sim lane) — clear with reset-thermal-channel-override instead",
                 )])),
                     ..CommandSpec::new("set-thermal-channel-override", Group::Thermal, "Arm one temperature-sim input (0x8df19fa2, mVolt+ 0.50.13 exact recipe — live-verified standalone on RTX 5060 Ti / 621.24, probe T6d: Status pinned exactly + retain verified): --channel N (0..5, default 1=GPU_AVG; 0=GPU_MAX/hotspot, 2=VRAM on RTX50) + positional celsius (negative allowed, mVolt uses -20 on an aux input). Sim temps alter DVFS/boost behavior (LN2-preset semantics: a cold-reported GPU boosts harder) — restore with reset-thermal-channel-override")
+                },
+            ),
+            (
+                Command::SetThermalPolicyLimit,
+                CommandSpec {
+                    arity: (1, 1),
+                    options: Box::leak(Box::new(["slot"])),
+                    positionals: Box::leak(Box::new([PositionalArg::free(
+                    "arg_limit_c",
+                    "LIMIT_C",
+                    "Throttle-curve limit in Celsius, for example 105 or 87; the quad [c+1, c, c-1, c-3] is written and retain-verified",
+                )])),
+                    ..CommandSpec::new("set-thermal-limit", Group::Thermal, "Write one thermal-policy slot's throttle curve (0x8DF19FA2 TARGET RMW, v2|984 curve-quad recipe — the ONLY working policy-write path on RTX 5060 Ti / 621.24, live-verified SET=0 + retain; the documented SetStatus family is dead there and the static temp dword is read-only): --slot N (default 0=GPU wall; 1=Hotspot 105C, 4=Memory 105C). HIGH RISK: raising a thermal wall delays protective throttling — restore with reset-thermal-limit")
                 },
             ),
             (
@@ -5410,6 +5434,59 @@ fn execute_target(
                 "equ_info": t.equ_info,
                 "equ_control": t.equ_control,
                 "note": "var records are 88B {type u32, payload…}; writable via set-vfe-var <index> <dword> <value>; entries absent on pre-VFE drivers report null",
+            }))
+        }
+        Command::SetThermalPolicyLimit => {
+            let celsius = parse_i32_unit(&invocation.positionals[0], "c", "celsius")?;
+            if !(-40..=150).contains(&celsius) {
+                return Err(CliError::new(format!(
+                    "celsius {celsius} outside the plausible thermal-wall range (-40..150)"
+                )));
+            }
+            let slot = match option_one(invocation, "slot") {
+                Some(raw) => parse_usize(&raw, "--slot")?,
+                None => 0,
+            };
+            if slot >= 16 {
+                return Err(CliError::new(format!(
+                    "--slot {slot} out of range (policy slots are 0..15; RTX50: 0=GPU 1=Hotspot 4=Memory)"
+                )));
+            }
+            run(
+                target,
+                SetNvapiThermalPolicyCurve {
+                    slot,
+                    celsius: celsius as f32,
+                },
+            )?;
+            Ok(json!({
+                "applied": true,
+                "slot": slot,
+                "limit_c": celsius,
+                "curve": [
+                    (celsius + 1) as f32,
+                    celsius as f32,
+                    (celsius - 1) as f32,
+                    (celsius - 3) as f32,
+                ],
+                "restore": "reset-thermal-limit [--slot N]",
+                "note": "thermal-policy throttle curve written (TARGET RMW v2|984, retain-verified); raising a wall delays protective throttling",
+            }))
+        }
+        Command::ResetThermalPolicyLimit => {
+            let slot = match option_one(invocation, "slot") {
+                Some(raw) => parse_usize(&raw, "--slot")?,
+                None => 0,
+            };
+            if slot >= 16 {
+                return Err(CliError::new(format!("--slot {slot} out of range (0..15)")));
+            }
+            let stock = run(target, ResetNvapiThermalPolicyCurve { slot })?.output;
+            Ok(json!({
+                "applied": true,
+                "slot": slot,
+                "stock_c": stock,
+                "note": "throttle curve restored to stock (f(live temp-limit readback))",
             }))
         }
         Command::SetVfeVarEntry => {
@@ -11987,7 +12064,9 @@ mod tests {
             | Command::GetBoostLocks
             | Command::GetThermalChannels
             | Command::ResetThermalInputs
+            | Command::ResetThermalPolicyLimit
             | Command::SetThermalInput
+            | Command::SetThermalPolicyLimit
             | Command::SetPwrCurLimit
             | Command::SetPowerCommand
             | Command::GetTopRelsRatio

@@ -119,6 +119,11 @@ pub enum OperationKind {
     SetNvapiThermalInput,
     /// Restore temperature-sim inputs to "follow the real sensor".
     ResetNvapiThermalInputs,
+    /// Write one slot's thermal-policy throttle curve (mVolt Thermal limits
+    /// write face; the working policy-write path on RTX50/621.24).
+    SetNvapiThermalPolicyCurve,
+    /// Restore a slot's throttle curve to stock.
+    ResetNvapiThermalPolicyCurve,
     /// Raw-register thermal views (NvAPI_GPU_RegisterOp 0x2EB3C140, read
     /// flag): per-chip GDDR6x/GDDR7 sensor temperatures (0x9024C0 family,
     /// LACT-parity) plus the Blackwell+ aggregated hotspot register

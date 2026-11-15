@@ -2717,6 +2717,65 @@ impl GpuOperation for ResetNvapiThermalInputs {
     }
 }
 
+/// Write one slot's thermal-policy throttle curve (the mVolt+ "Thermal
+/// limits" write face; TARGET v2|984 curve-quad recipe — the ONLY working
+/// policy-write path on RTX 50 desktop / 621.24, live-verified SET=0 +
+/// retain). Slots: 0=GPU wall (87C stock), 1=Hotspot (105C), 4=Memory
+/// (105C). HIGH RISK: raising a thermal wall delays protective throttling —
+/// keep the stock value for restore (readable via
+/// [`QueryNvapiTargetTempPolicies`]).
+#[derive(Debug, Clone)]
+pub struct SetNvapiThermalPolicyCurve {
+    /// Policy slot 0..16 (0=GPU / 1=hotspot / 4=VRAM on RTX50).
+    pub slot: usize,
+    pub celsius: f32,
+}
+
+impl GpuOperation for SetNvapiThermalPolicyCurve {
+    type Output = ();
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiThermalPolicyCurve
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_thermal_policy_curve(self.slot, self.celsius)
+            .map_err(Error::from)
+    }
+}
+
+/// Restore a slot's throttle curve to stock = f(live temp-limit readback).
+#[derive(Debug, Clone)]
+pub struct ResetNvapiThermalPolicyCurve {
+    pub slot: usize,
+}
+
+impl GpuOperation for ResetNvapiThermalPolicyCurve {
+    type Output = f32;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ResetNvapiThermalPolicyCurve
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let stock = gpu
+            .target_temperature(self.slot)
+            .map_err(Error::from)?
+            .ok_or_else(|| {
+                Error::from(format!(
+                    "slot {} temp-limit readback unavailable — cannot derive the stock curve",
+                    self.slot
+                ))
+            })?;
+        gpu.set_thermal_policy_curve(self.slot, stock)
+            .map_err(Error::from)?;
+        Ok(stock)
+    }
+}
+
 /// LACT-parity raw-register thermal views (NvAPI_GPU_RegisterOp
 /// 0x2EB3C140, READ|32BIT|GLOBAL): per-chip GDDR6x/GDDR7 sensor
 /// temperatures (0x9024C0/0x9024D0 family, poison-filtered, clamshell
