@@ -3126,6 +3126,13 @@ fn format_object_array(output: &Value, fields: &[(&str, &str)]) -> Vec<String> {
 ///   min/max range is appended when GetInfo exposed it. An entry is treated as
 ///   NVAPI when it carries a `policy_index` field.
 pub(super) fn format_temperature_thresholds_output(output: &Value) -> Vec<String> {
+    // Combined (auto) shape: {"nvml": ..., "nvapi": {target_temp_policies,
+    // thermal_policies_status}} — one section per view.
+    if let Some(obj) = output.as_object()
+        && (obj.contains_key("nvml") || obj.contains_key("nvapi"))
+    {
+        return format_combined_thresholds(obj);
+    }
     let Some(items) = output.as_array() else {
         return format_value_block(output, 1);
     };
@@ -3135,57 +3142,160 @@ pub(super) fn format_temperature_thresholds_output(output: &Value) -> Vec<String
             nvoc_cli_common::color::stylize("No entries", false)
         )];
     }
-    items
-        .iter()
-        .map(|item| {
-            let obj = item.as_object();
-            let name = obj
-                .and_then(|o| o.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let render_temp = |key: &str| -> String {
-                obj.and_then(|o| o.get(key))
-                    .map(|v| format_scalar(key, v))
-                    .unwrap_or_else(|| "---".into())
-            };
-            let label = nvoc_cli_common::color::stylize_title("Threshold");
-            let row = if obj.is_some_and(|o| o.contains_key("policy_index")) {
-                // NVAPI row: Current + Min/Max range. format_scalar already
-                // appends the ` C` unit (key ends in _celsius/_c), so don't
-                // add it again here.
-                let cur = nvoc_cli_common::color::stylize(
-                    &format!("Current {}", render_temp("celsius")),
-                    false,
-                );
-                let min = obj
-                    .and_then(|o| o.get("min_c"))
-                    .map(|v| format_scalar("min_c", v));
-                let max = obj
-                    .and_then(|o| o.get("max_c"))
-                    .map(|v| format_scalar("max_c", v));
-                match (min, max) {
-                    (Some(mn), Some(mx)) => {
-                        let range = nvoc_cli_common::color::stylize(
-                            &format!("Min {} / Max {}", mn, mx),
-                            false,
-                        );
-                        format!("{} {} | {} | {}", label, name, cur, range)
-                    }
-                    _ => format!("{} {} | {}", label, name, cur),
-                }
-            } else {
-                // NVML row: single Limit value. celsius is a u32 (no _c key),
-                // so render it bare and add the unit once.
-                let raw = obj
-                    .and_then(|o| o.get("celsius"))
-                    .map(|v| format_scalar("celsius", v))
-                    .unwrap_or_else(|| "N/A".into());
-                let limit = nvoc_cli_common::color::stylize(&format!("Limit {}", raw), false);
-                format!("{} {} | {}", label, name, limit)
-            };
-            format!("  {}", row)
-        })
+    threshold_entry_lines(items)
+        .into_iter()
+        .map(|row| format!("  {row}"))
         .collect()
+}
+
+/// Sectioned render of the combined (auto) readout: NVML classic table +
+/// both NVAPI views.
+fn format_combined_thresholds(obj: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(nvoc_cli_common::color::stylize_title(
+        "NVML thresholds (Shutdown/Slowdown/...)",
+    ));
+    lines.extend(threshold_view_lines(obj.get("nvml"), threshold_entry_row));
+    if let Some(nvapi) = obj.get("nvapi").and_then(Value::as_object) {
+        lines.push(nvoc_cli_common::color::stylize_title(
+            "NVAPI target-temp policies (read-back of set-thermal-limit)",
+        ));
+        lines.extend(threshold_view_lines(
+            nvapi.get("target_temp_policies"),
+            threshold_entry_row,
+        ));
+        lines.push(nvoc_cli_common::color::stylize_title(
+            "NVAPI thermal policies (bRemoveTdpLimit + PFF curve; read-back of set-temp-limit --nvapi)",
+        ));
+        lines.extend(threshold_view_lines(
+            nvapi.get("thermal_policies_status"),
+            policy_status_row,
+        ));
+    }
+    lines
+}
+
+/// Render one view of the combined readout: an entry array → indented rows,
+/// a degraded `{"supported": false, "error": ...}` → `(unavailable: ...)`,
+/// a missing key or empty array → `(no entries)`. `row_fn` picks the row
+/// style (NVML/target-temp entries vs documented-policy entries).
+fn threshold_view_lines(view: Option<&Value>, row_fn: fn(&Value) -> String) -> Vec<String> {
+    match view {
+        Some(Value::Array(items)) if !items.is_empty() => items
+            .iter()
+            .map(|item| format!("  {}", row_fn(item)))
+            .collect(),
+        Some(Value::Object(o)) => {
+            let err = o
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unsupported");
+            vec![format!("  (unavailable: {err})")]
+        }
+        _ => vec!["  (no entries)".to_string()],
+    }
+}
+
+/// Per-entry rows for the flat NVML / NVAPI target-temp arrays (the legacy
+/// `--nvml`/`--nvapi` output and the matching combined-view sections).
+fn threshold_entry_lines(items: &[Value]) -> Vec<String> {
+    items.iter().map(threshold_entry_row).collect()
+}
+
+/// One row of [`threshold_entry_lines`]: NVML entries render a single Limit,
+/// NVAPI target-temp entries render Current + Min/Max.
+fn threshold_entry_row(item: &Value) -> String {
+    let obj = item.as_object();
+    let name = obj
+        .and_then(|o| o.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let render_temp = |key: &str| -> String {
+        obj.and_then(|o| o.get(key))
+            .map(|v| format_scalar(key, v))
+            .unwrap_or_else(|| "---".into())
+    };
+    let label = nvoc_cli_common::color::stylize_title("Threshold");
+    if obj.is_some_and(|o| o.contains_key("policy_index")) {
+        // NVAPI row: Current + Min/Max range. format_scalar already
+        // appends the ` C` unit (key ends in _celsius/_c), so don't
+        // add it again here.
+        let cur =
+            nvoc_cli_common::color::stylize(&format!("Current {}", render_temp("celsius")), false);
+        let min = obj
+            .and_then(|o| o.get("min_c"))
+            .map(|v| format_scalar("min_c", v));
+        let max = obj
+            .and_then(|o| o.get("max_c"))
+            .map(|v| format_scalar("max_c", v));
+        match (min, max) {
+            (Some(mn), Some(mx)) => {
+                let range =
+                    nvoc_cli_common::color::stylize(&format!("Min {} / Max {}", mn, mx), false);
+                format!("{} {} | {} | {}", label, name, cur, range)
+            }
+            _ => format!("{} {} | {}", label, name, cur),
+        }
+    } else {
+        // NVML row: single Limit value. celsius is a u32 (no _c key),
+        // so render it bare and add the unit once.
+        let raw = obj
+            .and_then(|o| o.get("celsius"))
+            .map(|v| format_scalar("celsius", v))
+            .unwrap_or_else(|| "N/A".into());
+        let limit = nvoc_cli_common::color::stylize(&format!("Limit {}", raw), false);
+        format!("{} {} | {}", label, name, limit)
+    }
+}
+
+/// One row of the documented ClientThermalPoliciesGetStatus entries:
+/// `Policy 1 | Limit 81 C | RemoveTdpLimit no | PFF 50C:600MHz, 80C:1500MHz`.
+fn policy_status_row(item: &Value) -> String {
+    let obj = item.as_object();
+    let id = obj
+        .and_then(|o| o.get("policy_id"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let name = match id {
+        1 => "GPU".to_string(),
+        other => format!("{other}"),
+    };
+    let limit = obj
+        .and_then(|o| o.get("celsius"))
+        .map(|v| format_scalar("celsius", v))
+        .unwrap_or_else(|| "N/A".into());
+    let tdp = obj
+        .and_then(|o| o.get("remove_tdp_limit"))
+        .map(|v| format_scalar("remove_tdp_limit", v))
+        .unwrap_or_else(|| "no".into());
+    let label = nvoc_cli_common::color::stylize_title("Policy");
+    let mut row = format!(
+        "{} {} | Limit {} | RemoveTdpLimit {}",
+        label, name, limit, tdp
+    );
+    if let Some(points) = obj
+        .and_then(|o| o.get("pff_curve"))
+        .and_then(Value::as_array)
+        && !points.is_empty()
+    {
+        let pts = points
+            .iter()
+            .filter_map(|p| {
+                let temp = p.get("temp_c")?.as_f64()?;
+                let khz = p.get("freq_khz")?.as_f64()?;
+                let mhz = khz / 1000.0;
+                let mhz = if (mhz - mhz.round()).abs() < 1e-9 {
+                    format!("{}", mhz.round() as i64)
+                } else {
+                    format!("{mhz:.1}")
+                };
+                Some(format!("{}C:{}MHz", temp, mhz))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        row.push_str(&format!(" | PFF {pts}"));
+    }
+    row
 }
 
 pub(super) fn format_pstate_native_output(output: &Value) -> Vec<String> {

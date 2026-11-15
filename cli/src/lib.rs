@@ -25,37 +25,37 @@ use nvoc_core::{
     QueryNvapiPowerCommand, QueryNvapiPstates20Private, QueryNvapiRatedTdp,
     QueryNvapiRegisterThermals, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
     QueryNvapiTgpWattRange, QueryNvapiThermalChannels, QueryNvapiThermalInputs,
-    QueryNvapiThermalSettings, QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVfeTables,
-    QueryNvapiVoltDevices, QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage,
-    QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage, QueryVbiosSecurityInfo,
-    QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
-    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
-    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
-    ResetNvapiThermalInputs, ResetNvapiThermalPolicyCurve, ResetNvapiVfpPrivate,
-    ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
-    ResetPublicVftableOffset, ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver,
-    SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset,
-    SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate,
-    SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
-    SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
-    SetNvapiEccConfiguration, SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates,
-    SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
-    SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue, SetNvapiPowerCommand,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalInput, SetNvapiThermalPolicyCurve,
-    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry, SetNvapiVfpPointPrivate,
-    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
-    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
-    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
-    SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
-    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
-    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
-    sync_memory_pstate_as_p0,
+    QueryNvapiThermalPoliciesStatus, QueryNvapiThermalSettings, QueryNvapiThermalSim,
+    QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices, QueryNvapiVoltRails,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations,
+    QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion,
+    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
+    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiThermalInputs,
+    ResetNvapiThermalPolicyCurve, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
+    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
+    ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
+    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
+    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
+    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
+    SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates, SetNvapiOvervolt,
+    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
+    SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
+    SetNvapiThermalInput, SetNvapiThermalPolicyCurve, SetNvapiThermalSim, SetNvapiTopRelsRatio,
+    SetNvapiVfeVarEntry, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
+    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
+    SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode,
+    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
+    SetPublicVftableRangeOffset, SetSubdomainFreqRatio, SetTemperatureLimit, SetVfpFrequencyLock,
+    SetVfpLockEntries, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
+    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
+    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
+    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -328,8 +328,8 @@ impl Command {
     /// (`BOTH_BACKENDS`). Defaults to Nvapi; overridden per-command where the
     /// classic backend is the more useful default. `GetTemperatureThresholds`
     /// prefers NVML because the Shutdown/Slowdown/... table is the established
-    /// output — its NVAPI branch (target-temp policy indices) is an opt-in via
-    /// `--nvapi` while the index↔channel mapping is still being worked out.
+    /// primary view — the dispatch merges the NVAPI sections into the same
+    /// readout on auto; `--nvml`/`--nvapi` filter to the legacy flat arrays.
     fn auto_preferred_backend(self) -> BackendAdapter {
         self.spec().preferred
     }
@@ -834,7 +834,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     adapters: &BOTH_BACKENDS,
                     preferred: BackendAdapter::Nvml,
                     formatter: Some(output::format_temperature_thresholds_output),
-                    ..CommandSpec::new("get-temp-thresholds", Group::Thermal, "Read temperature thresholds (NVML by default; --nvapi exposes target-temp policy)")
+                    ..CommandSpec::new("get-temp-thresholds", Group::Thermal, "Read temperature thresholds — default emits BOTH backends: NVML's classic Shutdown/Slowdown table + the NVAPI views (private target-temp policy slots 0=GPU/1=Hotspot/4=Memory on RTX50, the read-back of set-thermal-limit; documented ClientThermalPoliciesGetStatus with per-policy bRemoveTdpLimit + PFF curve, the read-back of set-temp-limit --nvapi); --nvml/--nvapi filter to the legacy single-backend flat arrays")
                 },
             ),
             (
@@ -4722,63 +4722,156 @@ fn execute_target(
             Ok(json!({"applied": true, "curve": curve, "fan_stop": enable}))
         }
         Command::GetTemperatureThresholds => {
-            // Two backend flavours of "temperature threshold":
+            // Three views of "temperature threshold":
             //  - NVML: the classic Shutdown/Slowdown/GpuMax/GpsCurr/... table.
-            //  - NVAPI: the private target-temp (温度墙) policy table — every
-            //    policy slot the driver exposes (private GET-prime 0xC4554575).
+            //  - NVAPI target-temp policies: the private 温度墙 policy table —
+            //    every slot the driver exposes (private GET-prime 0xC4554575).
             //    On RTX 4060 Laptop idx 2 is the "GPU Target Temperature" wall
-            //    (matches nvidia-smi and NVML's GpsCurr channel); surfacing all
-            //    slots here lets callers discover the right index per-GPU
-            //    instead of hardcoding 2.
+            //    (matches nvidia-smi and NVML's GpsCurr channel); on RTX 50
+            //    desktop slots 0=GPU / 1=Hotspot / 4=Memory. This is where the
+            //    set-thermal-limit (v2|984 curve-quad) writes read back.
+            //  - NVAPI thermal-policy status: the documented
+            //    ClientThermalPoliciesGetStatus family — per-armed policy temp
+            //    wall + bRemoveTdpLimit + PFF throttle curve. This is the
+            //    read-back of `set-temp-limit --nvapi --pff-curve /
+            //    --remove-tdp-limit` (10/40-series lane); RTX 50 desktop arms
+            //    no policies (empty list).
             //
-            // Backend routing (per the user's explicit contract — no merging
-            // while the index↔channel mapping is still being worked out):
-            //  - `--nvapi`         → NVAPI policy indices only.
-            //  - `--nvml` or auto  → NVML table only.
-            let mut entries: Vec<Value> = Vec::new();
-            if adapter == BackendAdapter::Nvapi {
-                // Auto-discover the target-temp wall index (private GetInfo:
-                // GPS idx, else acoustics fallback) so the "(TargetTemp)" tag
-                // follows the driver's own choice instead of a hardcoded 2.
+            // Backend routing:
+            //  - auto (default) → ALL views at once, keyed `nvml` / `nvapi`;
+            //    each NVAPI section degrades to `{"supported": false, ...}`
+            //    instead of failing the whole readout.
+            //  - `--nvml` → legacy flat NVML array only.
+            //  - `--nvapi` → legacy flat target-temp array only.
+            let explicit = invocation.backend != BackendChoice::Auto;
+            if explicit {
+                let mut entries: Vec<Value> = Vec::new();
+                if adapter == BackendAdapter::Nvapi {
+                    // Auto-discover the target-temp wall index (private GetInfo:
+                    // GPS idx, else acoustics fallback) so the "(TargetTemp)" tag
+                    // follows the driver's own choice instead of a hardcoded 2.
+                    let chosen_idx = run(target, QueryNvapiTargetTempPolicyIndex)
+                        .ok()
+                        .and_then(|r| r.output);
+                    let policies = run(target, QueryNvapiTargetTempPolicies)?.output;
+                    for p in policies {
+                        // Name is just the index (the human renderer prefixes the
+                        // "Threshold" label, so "2" -> "Threshold 2"). Only the
+                        // auto-discovered wall slot gets the "(TargetTemp)" tag.
+                        let is_wall = chosen_idx == Some(p.policy_index);
+                        let name = if is_wall {
+                            format!("{} (TargetTemp)", p.policy_index)
+                        } else {
+                            format!("{}", p.policy_index)
+                        };
+                        let mut entry = json!({
+                            "name": name,
+                            "policy_index": p.policy_index,
+                            "celsius": p.celsius,
+                        });
+                        if let Some(obj) = entry.as_object_mut() {
+                            if let Some(mn) = p.min {
+                                obj.insert("min_c".into(), json!(mn));
+                            }
+                            if let Some(def) = p.default {
+                                obj.insert("default_c".into(), json!(def));
+                            }
+                            if let Some(mx) = p.max {
+                                obj.insert("max_c".into(), json!(mx));
+                            }
+                        }
+                        entries.push(entry);
+                    }
+                } else {
+                    let thresholds = run(target, QueryTemperatureThresholds)?.output;
+                    for item in thresholds {
+                        entries.push(json!({"name": item.name, "celsius": item.celsius}));
+                    }
+                }
+                return Ok(Value::Array(entries));
+            }
+            // Default: both backends, all three views.
+            let nvml_view = match run(target, QueryTemperatureThresholds) {
+                Ok(report) => Value::Array(
+                    report
+                        .output
+                        .iter()
+                        .map(|t| json!({"name": t.name, "celsius": t.celsius}))
+                        .collect(),
+                ),
+                Err(e) => json!({"supported": false, "error": e.to_string()}),
+            };
+            let target_temps = || -> Result<Vec<Value>, nvoc_core::Error> {
                 let chosen_idx = run(target, QueryNvapiTargetTempPolicyIndex)
                     .ok()
                     .and_then(|r| r.output);
                 let policies = run(target, QueryNvapiTargetTempPolicies)?.output;
-                for p in policies {
-                    // Name is just the index (the human renderer prefixes the
-                    // "Threshold" label, so "2" -> "Threshold 2"). Only the
-                    // auto-discovered wall slot gets the "(TargetTemp)" tag.
-                    let is_wall = chosen_idx == Some(p.policy_index);
-                    let name = if is_wall {
-                        format!("{} (TargetTemp)", p.policy_index)
-                    } else {
-                        format!("{}", p.policy_index)
-                    };
-                    let mut entry = json!({
-                        "name": name,
-                        "policy_index": p.policy_index,
-                        "celsius": p.celsius,
-                    });
-                    if let Some(obj) = entry.as_object_mut() {
-                        if let Some(mn) = p.min {
-                            obj.insert("min_c".into(), json!(mn));
+                Ok(policies
+                    .iter()
+                    .map(|p| {
+                        let is_wall = chosen_idx == Some(p.policy_index);
+                        let name = if is_wall {
+                            format!("{} (TargetTemp)", p.policy_index)
+                        } else {
+                            format!("{}", p.policy_index)
+                        };
+                        let mut entry = json!({
+                            "name": name,
+                            "policy_index": p.policy_index,
+                            "celsius": p.celsius,
+                        });
+                        if let Some(obj) = entry.as_object_mut() {
+                            if let Some(mn) = p.min {
+                                obj.insert("min_c".into(), json!(mn));
+                            }
+                            if let Some(def) = p.default {
+                                obj.insert("default_c".into(), json!(def));
+                            }
+                            if let Some(mx) = p.max {
+                                obj.insert("max_c".into(), json!(mx));
+                            }
                         }
-                        if let Some(def) = p.default {
-                            obj.insert("default_c".into(), json!(def));
+                        entry
+                    })
+                    .collect())
+            };
+            let policies_status = || -> Result<Vec<Value>, nvoc_core::Error> {
+                let entries = run(target, QueryNvapiThermalPoliciesStatus)?.output;
+                Ok(entries
+                    .iter()
+                    .map(|p| {
+                        let mut entry = json!({
+                            "policy_id": p.policy_id,
+                            "celsius": p.celsius,
+                            "remove_tdp_limit": p.remove_tdp_limit,
+                        });
+                        if !p.pff_points.is_empty() {
+                            entry["pff_curve"] = Value::Array(
+                                p.pff_points
+                                    .iter()
+                                    .map(|(temp_c, freq_khz)| {
+                                        json!({"temp_c": temp_c, "freq_khz": freq_khz})
+                                    })
+                                    .collect(),
+                            );
                         }
-                        if let Some(mx) = p.max {
-                            obj.insert("max_c".into(), json!(mx));
-                        }
-                    }
-                    entries.push(entry);
-                }
-            } else {
-                let thresholds = run(target, QueryTemperatureThresholds)?.output;
-                for item in thresholds {
-                    entries.push(json!({"name": item.name, "celsius": item.celsius}));
-                }
-            }
-            Ok(Value::Array(entries))
+                        entry
+                    })
+                    .collect())
+            };
+            Ok(json!({
+                "nvml": nvml_view,
+                "nvapi": {
+                    "target_temp_policies": match target_temps() {
+                        Ok(v) => json!(v),
+                        Err(e) => json!({"supported": false, "error": e.to_string()}),
+                    },
+                    "thermal_policies_status": match policies_status() {
+                        Ok(v) => json!(v),
+                        Err(e) => json!({"supported": false, "error": e.to_string()}),
+                    },
+                },
+            }))
         }
         Command::GetLegacyTempSensor => {
             let sensors = run(target, QueryNvapiThermalSettings)?.output;
@@ -5454,7 +5547,7 @@ fn execute_target(
                 )));
             }
             let slot = match option_one(invocation, "slot") {
-                Some(raw) => parse_usize(&raw, "--slot")?,
+                Some(raw) => parse_usize(raw, "--slot")?,
                 None => 0,
             };
             if slot >= 16 {
@@ -5485,7 +5578,7 @@ fn execute_target(
         }
         Command::ResetThermalPolicyLimit => {
             let slot = match option_one(invocation, "slot") {
-                Some(raw) => parse_usize(&raw, "--slot")?,
+                Some(raw) => parse_usize(raw, "--slot")?,
                 None => 0,
             };
             if slot >= 16 {
@@ -7537,7 +7630,7 @@ fn execute_target(
                     let remove_tdp = invocation.options.contains_key("remove-tdp-limit");
                     let throttle = match option_one(invocation, "pff-curve") {
                         Some(raw) => {
-                            let points = parse_pff_curve_points(&raw)?;
+                            let points = parse_pff_curve_points(raw)?;
                             nvoc_core::SensorThrottle {
                                 value: nvoc_core::Celsius(celsius),
                                 remove_tdp_limit: remove_tdp,
@@ -12431,9 +12524,9 @@ mod tests {
 
     #[test]
     fn temperature_thresholds_supports_both_backends() {
-        // get-temp-thresholds advertises BOTH backends so `--nvapi`
-        // (target-temp policy indices) is accepted, but auto prefers NVML
-        // (the classic Shutdown/Slowdown/... table).
+        // get-temp-thresholds advertises BOTH backends; auto prefers NVML
+        // routing (the classic Shutdown/Slowdown/... table stays primary) but
+        // the auto dispatch merges the NVAPI views into the same readout.
         assert!(
             Command::GetTemperatureThresholds
                 .adapters()
@@ -12448,11 +12541,14 @@ mod tests {
             Command::GetTemperatureThresholds.auto_preferred_backend(),
             BackendAdapter::Nvml
         );
-        // Explicit --nvapi parses and routes to the nvapi backend.
+        // Explicit --nvapi parses and routes to the nvapi backend (legacy flat
+        // target-temp array); --nvml keeps the legacy flat NVML array.
         let invocation = parse_args(["get-temp-thresholds", "--nvapi"]).unwrap();
         assert_eq!(invocation.command, Some(Command::GetTemperatureThresholds));
         assert_eq!(invocation.backend, BackendChoice::Nvapi);
-        // No flag parses to auto (which routes to NVML via auto_preferred_backend).
+        let invocation = parse_args(["get-temp-thresholds", "--nvml"]).unwrap();
+        assert_eq!(invocation.backend, BackendChoice::Nvml);
+        // No flag parses to auto (NVML routing + merged NVAPI sections).
         let invocation = parse_args(["get-temp-thresholds"]).unwrap();
         assert_eq!(invocation.backend, BackendChoice::Auto);
     }

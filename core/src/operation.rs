@@ -9,9 +9,9 @@ use super::result::{
     NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport,
     OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus,
     PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
-    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalSensorReading, ThrottleReason,
-    VfeTablesState, VfeVarWrite, ViolationEntry, ViolationStatusReport, VoltageBoostState,
-    VoltageFrequencyCheck,
+    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalPolicyStatusEntry,
+    ThermalSensorReading, ThrottleReason, VfeTablesState, VfeVarWrite, ViolationEntry,
+    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -2773,6 +2773,45 @@ impl GpuOperation for ResetNvapiThermalPolicyCurve {
         gpu.set_thermal_policy_curve(self.slot, stock)
             .map_err(Error::from)?;
         Ok(stock)
+    }
+}
+
+/// Read the documented ClientThermalPoliciesGetStatus family: per-armed
+/// thermal policy — temp wall (°C), `bRemoveTdpLimit`, PFF throttle curve.
+/// This is the read-back of the `set-temp-limit --nvapi` write face
+/// (`--pff-curve`/`--remove-tdp-limit`, the documented SetStatus lane that
+/// works on 10/40-series); RTX 50 desktop arms no policies (empty vec), and
+/// the mVolt-style v2|984 curve-quad writes (`set-thermal-limit`) are NOT
+/// visible here — those live in the private TARGET family, surfaced by
+/// [`QueryNvapiTargetTempPolicies`].
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiThermalPoliciesStatus;
+
+impl GpuOperation for QueryNvapiThermalPoliciesStatus {
+    type Output = Vec<ThermalPolicyStatusEntry>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiThermalPoliciesStatus
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let limits = target
+            .nvapi()?
+            .thermal_policy_status()
+            .map_err(Error::from)?;
+        Ok(limits
+            .iter()
+            .map(|l| ThermalPolicyStatusEntry {
+                policy_id: l.policy as i32,
+                celsius: l.value.get() as f32,
+                remove_tdp_limit: l.remove_tdp_limit,
+                pff_points: l
+                    .pff
+                    .as_ref()
+                    .map(|p| p.points().map(|pt| (pt.x.get() as f32, pt.y.0)).collect())
+                    .unwrap_or_default(),
+            })
+            .collect())
     }
 }
 

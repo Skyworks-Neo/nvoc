@@ -124,6 +124,11 @@ pub enum OperationKind {
     SetNvapiThermalPolicyCurve,
     /// Restore a slot's throttle curve to stock.
     ResetNvapiThermalPolicyCurve,
+    /// Documented ClientThermalPoliciesGetStatus family: per-armed thermal
+    /// policy — temp wall, bRemoveTdpLimit, PFF throttle curve. The read-back
+    /// of `set-temp-limit --nvapi --pff-curve/--remove-tdp-limit` (10/40-series
+    /// lane; RTX 50 desktop arms no policies).
+    QueryNvapiThermalPoliciesStatus,
     /// Raw-register thermal views (NvAPI_GPU_RegisterOp 0x2EB3C140, read
     /// flag): per-chip GDDR6x/GDDR7 sensor temperatures (0x9024C0 family,
     /// LACT-parity) plus the Blackwell+ aggregated hotspot register
@@ -574,6 +579,24 @@ pub struct TargetTempPolicy {
     pub default: Option<f32>,
     /// VBIOS maximum (writable ceiling), if known.
     pub max: Option<f32>,
+}
+
+/// One armed thermal policy from the documented ClientThermalPoliciesGetStatus
+/// family: the temp wall (°C), the `bRemoveTdpLimit` arm, and the PFF throttle
+/// curve as `(temp_c, freq_khz)` pairs (curve-x temps joined with the per-point
+/// OCY frequencies). The read-back of `set-temp-limit --nvapi
+/// --pff-curve/--remove-tdp-limit`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThermalPolicyStatusEntry {
+    /// Raw policy id (`NV_GPU_CLIENT_THERMAL_POLICIES_POLICY_ID`; 1 = GPU).
+    pub policy_id: i32,
+    /// Armed temp wall (celsius).
+    pub celsius: f32,
+    /// `bRemoveTdpLimit`: skip the TDP-derived clamp while this policy is armed.
+    pub remove_tdp_limit: bool,
+    /// PFF throttle curve points (temp °C, freq kHz); empty when the policy
+    /// carries no curve.
+    pub pff_points: Vec<(f32, u32)>,
 }
 
 /// One D-Notifier (D0-notify / "extern power state") level: the D level number
