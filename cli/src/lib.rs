@@ -3582,6 +3582,12 @@ fn discovery_backend_set(command: Command, adapter: BackendAdapter) -> BackendSe
     match (command, adapter) {
         (Command::GetInfo, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::GetStatus, BackendAdapter::Nvapi) => BackendSet::Both,
+        // The auto view of get-temp-thresholds merges BOTH backends into one
+        // readout, so the NVML-preferred route must still discover the NVAPI
+        // inventory — otherwise the NVAPI sections degrade to "no NvAPI
+        // backend" on every target (the routing picks NVML first, discovery
+        // must not narrow behind it).
+        (Command::GetTemperatureThresholds, BackendAdapter::Nvml) => BackendSet::Both,
         (Command::GetUuid, BackendAdapter::Nvapi) => BackendSet::Both,
         (Command::SetPstateLockViaMemRange, BackendAdapter::Nvapi) => BackendSet::Both,
         // Profile binding keys on the NVML UUID and verifies power via NVML,
