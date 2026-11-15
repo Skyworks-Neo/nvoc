@@ -395,3 +395,42 @@ mVolt slot→var 模型 `var_slot = 4·rail + map[3,0,1,2]`(staged 序
   （Q8 歧义 applied+0）、范围 -40..150、set 后 retain 复读）/
   **reset-thermal-channel-override**（默认清 0..5、--channel 单清）。
   nvoc-cli 82 测试全绿，clippy/fmt 净，2070 冒烟通过。
+
+## 16. Thermal limits 面板 RE 收口（2026-11-15 第二十二轮续，probe d263d11/a9d1c00）
+
+### 16.1 混淆表解码：无新接口
+
+- 审计器 sub_1400120F0 的探测对（blob VA, obf key）经 decode_override_ids.py
+  的 splitmix VM（seed=key|0x891F610E00000000，opcodes 0xC1/0x02/0x43/0x84/0x4F，
+  18B cap）直解：
+  - **ThermalPolicyInfo = 0x2F69F8E5**（=nvoc PRIVATE GetInfo）
+  - **ThermalPolicyControl = 0xC4554575**（=TARGET GET-prime）
+- mVolt Thermal limits 面板 = nvoc 已封装的 ClientThermalPolicies 族，无新 ID。
+  解码对：PolicyInfo(0x1403A5D4C,0xE12DA85F)、PolicyControl(0x1403A5D5E,0x4B9F8F69)。
+
+### 16.2 5060 Ti 三缓冲全查 + T12 写实验
+
+- documented INFO(0x0D258BB5) **0/350 全零**；documented STATUS(0xE9C425A1)
+  count=0（全 Include Off；2070=1 → count=已装填策略数）；PRIVATE INFO 全扫
+  布局 50 系同构（231 步进：slot1@dw461 [4,0,105,105,105,1]、slot4@dw1154
+  [4,2,105,105,105,1]）但区间全退化 [cur,cur,cur]。
+- T10 尺寸扫描：TARGET 族只收 984B（v2/v3 同尺寸），更大全拒；扫描必须单
+  bit 掩码。T12 RMW 写（GET-prime→patch Q8@dword(15·slot+7)→SET 0xE097144F）：
+  hotspot 106/110/111、GPU 105、Memory 106、**hotspot 104（范围内）**、
+  sudo 复跑——**全部 SET=-1**。
+- **对照实验闭合**：2070 slot2（真区间 [65,81,88]）非提权=**-137
+  （INVALID_USER_PRIVILEGE）**、UAC 提权写 80C=**SET=0 retain=YES 精确读回
+  +还原干净**。错误码分型：-137=权限门（可达）、-1=驱动拒写。
+
+### 16.3 判决
+
+- **5060 Ti 策略槽 0/1/4 = 驱动只读**：退化区间 [cur,cur,cur] 与 SET=-1
+  （含提权）一致——min==max 即只读标记。
+- **mVolt Thermal limits 面板在 50 系桌面 = 软域叠加**：Allowed
+  （GPU -40..105 / Hotspot -40..110 / Memory -40..105）客户端 fiction
+  （三缓冲均无源，档位=整数常量）；Include（无独立总闸，header=三旗 OR，
+  profile 键 thermal/hotspot/memory_limit_enabled）落 STATUS count 的写
+  同样未生效。
+- **50 系桌面可写热面仍只有 sim override 车道**（T6d，ThermChannel
+  CONTROL）；热策略写在驱动策略层锁定。可选收尾：mVolt Apply 后
+  nvidia-smi GPU Target Temperature 应不变（面板装饰性用户验证）。
