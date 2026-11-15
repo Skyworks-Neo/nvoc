@@ -4813,17 +4813,8 @@ fn execute_target(
                     .iter()
                     .map(|p| {
                         let is_wall = chosen_idx == Some(p.policy_index);
-                        // Turing slot semantics (live-verified on 2070): slot
-                        // 2 is the writable target-temp wall and slot 0 is
-                        // its READ-ONLY PROJECTION — a write to 2 mirrors
-                        // into 0's throttle quad. Annotate slot 0 when slot 2
-                        // exists so the pairing is visible per-GPU.
                         let name = if is_wall {
                             format!("{} (TargetTemp)", p.policy_index)
-                        } else if p.policy_index == 0
-                            && policies.iter().any(|q| q.policy_index == 2)
-                        {
-                            "0 (projection of slot 2)".to_string()
                         } else {
                             format!("{}", p.policy_index)
                         };
@@ -4832,6 +4823,23 @@ fn execute_target(
                             "policy_index": p.policy_index,
                             "celsius": p.celsius,
                         });
+                        // Turing pairing note (live-verified on 2070): slot 0
+                        // and slot 2 SHARE driver state — 2 is the writable
+                        // target-temp wall, 0 mirrors its throttle quad (a
+                        // --slot 2 write shows up in 0's read-back). Attached
+                        // as a separate note key, never overriding the slot
+                        // identity.
+                        if p.policy_index == 0
+                            && policies.iter().any(|q| q.policy_index == 2)
+                            && let Some(obj) = entry.as_object_mut()
+                        {
+                            obj.insert(
+                                "note".into(),
+                                json!(
+                                    "mirrors slot 2 (shared driver state; 2 is the writable wall)"
+                                ),
+                            );
+                        }
                         if let Some(obj) = entry.as_object_mut() {
                             if let Some(mn) = p.min {
                                 obj.insert("min_c".into(), json!(mn));

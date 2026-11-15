@@ -3249,7 +3249,12 @@ fn threshold_entry_row(item: &Value) -> String {
         let tdp_part = tdp
             .map(|v| format!(" | RemoveTdpLimit {v}"))
             .unwrap_or_default();
-        format!("{} {} | {}{}{}", label, name, cur, range, tdp_part)
+        let note = obj
+            .and_then(|o| o.get("note"))
+            .and_then(Value::as_str)
+            .map(|v| format!(" | {v}"))
+            .unwrap_or_default();
+        format!("{} {} | {}{}{}{}", label, name, cur, range, tdp_part, note)
     } else {
         // NVML row: single Limit value. celsius is a u32 (no _c key),
         // so render it bare and add the unit once.
