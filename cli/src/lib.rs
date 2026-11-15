@@ -7697,7 +7697,11 @@ fn execute_target(
                                     }
                                     None => true,
                                 };
-                                let tdp_ok = !remove_tdp || p.remove_tdp_limit;
+                                // The flag is field-write-through (live 2070:
+                                // yes/no flips stick), so require an exact
+                                // match — omitting --remove-tdp-limit writes
+                                // false and that must read back as false too.
+                                let tdp_ok = p.remove_tdp_limit == remove_tdp;
                                 temp_ok && curve_ok && tdp_ok
                             })
                         })
