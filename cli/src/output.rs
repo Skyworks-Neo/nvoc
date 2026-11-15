@@ -3178,6 +3178,73 @@ fn format_combined_thresholds(obj: &serde_json::Map<String, Value>) -> Vec<Strin
             nvapi.get("rm_lane_policies"),
             compact_policy_row,
         ));
+        // The three views read different, NOT synchronized lanes; when they
+        // disagree about the same physical wall the divergence itself is the
+        // finding (each lane caches its own snapshot). Surface it instead of
+        // letting the reader reconcile three numbers by hand.
+        lines.extend(cross_view_divergence_lines(nvapi));
+    }
+    lines
+}
+
+/// Compare the NVAPI views pairwise per slot and emit a warning line for
+/// every disagreement (remove-TDP flag, temp wall). Known live case: the
+/// TARGET d14 mirror and the RM-lane C byte(+84) can diverge after a quad
+/// write (the driver recomputes d14, the C snapshot is per-request), and
+/// the documented STATUS family is its own third cache.
+fn cross_view_divergence_lines(nvapi: &serde_json::Map<String, Value>) -> Vec<String> {
+    let slot_flag = |view: &str, key: &str| -> Option<bool> {
+        let arr = nvapi.get(view)?.as_array()?;
+        arr.iter()
+            .filter_map(|e| {
+                let slot = e.get(key)?.as_u64()? as usize;
+                let flag = e.get("remove_tdp_limit")?.as_bool()?;
+                Some((slot, flag))
+            })
+            .find(|(slot, _)| *slot == 2)
+            .map(|(_, flag)| flag)
+    };
+    let target_flag = nvapi
+        .get("target_temp_policies")
+        .and_then(Value::as_array)
+        .and_then(|arr| {
+            arr.iter()
+                .find(|e| e.get("policy_index").and_then(Value::as_u64) == Some(2))
+                .and_then(|e| e.get("remove_tdp_limit"))
+                .and_then(Value::as_bool)
+        });
+    let doc_flag = slot_flag("thermal_policies_status", "policy_id");
+    let rm_flag = slot_flag("rm_lane_policies", "slot");
+    let mut lines = Vec::new();
+    let collected: [Option<bool>; 3] = [target_flag, doc_flag, rm_flag];
+    let known: Vec<bool> = collected.iter().filter_map(|f| *f).collect();
+    if known.len() >= 2 && known.iter().any(|f| *f != known[0]) {
+        lines.push(format!(
+            "  ⚠ remove-TDP flag DIVERGES across views (target-temp/d14 mirror: {:?}, documented STATUS: {:?}, RM-lane C(+84): {:?}) — the lanes cache independently; the RM-lane C byte is the live truth, refresh happens on the next lane write",
+            collected[0], collected[1], collected[2]
+        ));
+    }
+    // Temp walls: documented vs RM-lane slot-2 celsius (target-temp slot 2 is
+    // the same wall's static readback).
+    let temp_of = |view: &str, key: &str| -> Option<f64> {
+        nvapi
+            .get(view)?
+            .as_array()?
+            .iter()
+            .find(|e| e.get(key).and_then(Value::as_u64) == Some(2))
+            .and_then(|e| e.get("celsius"))
+            .and_then(Value::as_f64)
+    };
+    match (
+        temp_of("thermal_policies_status", "policy_id"),
+        temp_of("rm_lane_policies", "slot"),
+    ) {
+        (Some(a), Some(b)) if (a - b).abs() >= 1.0 => {
+            lines.push(format!(
+                "  ⚠ temp wall DIVERGES across views (documented: {a} C, RM-lane: {b} C) — per-lane cached snapshots; the RM-lane value is the armed truth"
+            ));
+        }
+        _ => {}
     }
     lines
 }
