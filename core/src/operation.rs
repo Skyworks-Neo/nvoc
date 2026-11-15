@@ -3,15 +3,16 @@ use super::error::Error;
 use super::nvapi as low_nvapi;
 use super::nvml as low_nvml;
 use super::result::{
-    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset, DNotifierInfo,
-    DNotifierLevel, DisplayInfo, EdidData, FanCurvePointReadout, FanCurveReadout, FanInfo,
-    NvapiCoolerInfoEntry, NvapiFanPercentResult, NvapiFanPolicyEntry, NvapiFanPolicyInfo,
-    NvapiFanRpmResult, NvapiPStateNativeLock, NvapiPerfFreqCap, OperationKind, OperationReport,
-    OvervoltApplied, PStateLevelEntry, PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus,
-    PstateBaseVoltage, PstateClockRange, SupportedApplicationClocks, TargetOutcome,
-    TargetTempPolicy, TdpTempLimits, TemperatureThreshold, ThermalPolicyStatusEntry,
-    ThermalSensorReading, ThrottleReason, VfeTablesState, VfeVarWrite, ViolationEntry,
-    ViolationStatusReport, VoltageBoostState, VoltageFrequencyCheck,
+    ApiRestrictionState, AppliedValue, AutoBoostState, BatchReport, ClockOffset,
+    CompactPolicyStatusEntry, DNotifierInfo, DNotifierLevel, DisplayInfo, EdidData,
+    FanCurvePointReadout, FanCurveReadout, FanInfo, NvapiCoolerInfoEntry, NvapiFanPercentResult,
+    NvapiFanPolicyEntry, NvapiFanPolicyInfo, NvapiFanRpmResult, NvapiPStateNativeLock,
+    NvapiPerfFreqCap, OperationKind, OperationReport, OvervoltApplied, PStateLevelEntry,
+    PStateLevelsInfo, PowerCeilingInfo, PowerModeStatus, PstateBaseVoltage, PstateClockRange,
+    SupportedApplicationClocks, TargetOutcome, TargetTempPolicy, TdpTempLimits,
+    TemperatureThreshold, ThermalPolicyStatusEntry, ThermalSensorReading, ThrottleReason,
+    VfeTablesState, VfeVarWrite, ViolationEntry, ViolationStatusReport, VoltageBoostState,
+    VoltageFrequencyCheck,
 };
 use super::target::GpuTarget;
 use super::types::{NvapiLockedVoltageTarget, VfpResetDomain};
@@ -2862,6 +2863,45 @@ impl GpuOperation for QueryNvapiTargetRemoveTdpFlags {
             .nvapi()?
             .thermal_target_remove_tdp_flags()
             .map_err(Error::from)
+    }
+}
+
+/// Read the RM-lane compact thermal-policy STATUS (impl method 0x0700018F +
+/// RM control 0x2080852C — the mVolt+ "Thermal limits" readout):
+/// per-armed-slot temp wall, `bRemoveTdpLimit`, PFF curve and the live
+/// throttle quad. `None` when the lane is unavailable (nvapi64_impl.dll not
+/// loaded or the transport signature absent on this build) — callers should
+/// surface that as `supported: false` rather than an error.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiCompactThermalPolicies;
+
+impl GpuOperation for QueryNvapiCompactThermalPolicies {
+    type Output = Option<Vec<CompactPolicyStatusEntry>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiCompactThermalPolicies
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let entries = target
+            .nvapi()?
+            .thermal_policy_compact_status()
+            .map_err(Error::from)?;
+        Ok(entries.map(|v| {
+            v.iter()
+                .map(|e| CompactPolicyStatusEntry {
+                    slot: e.slot,
+                    celsius: e.temp_c.get() as f32,
+                    remove_tdp_limit: e.remove_tdp_limit,
+                    pff_points: e
+                        .pff_points
+                        .iter()
+                        .map(|(t, f)| (t.get() as f32, f.0))
+                        .collect(),
+                    quad: e.quad.map(|q| q.get() as f32),
+                })
+                .collect()
+        }))
     }
 }
 

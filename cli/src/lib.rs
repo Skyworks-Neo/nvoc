@@ -17,46 +17,47 @@ use nvoc_core::{
     QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
     QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiBarInfo, QueryNvapiBoostLocks,
     QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum,
-    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiComputeCaps,
-    QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
-    QueryNvapiFanPolicyInfo, QueryNvapiFramerateLimit, QueryNvapiI2cRead,
-    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
-    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPowerChannels,
-    QueryNvapiPowerCommand, QueryNvapiPstates20Private, QueryNvapiRatedTdp,
-    QueryNvapiRegisterThermals, QueryNvapiTargetRemoveTdpFlags, QueryNvapiTargetTempPolicies,
-    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalChannels,
-    QueryNvapiThermalInputs, QueryNvapiThermalPoliciesStatus, QueryNvapiThermalSettings,
-    QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
-    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
-    QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage, QueryVbiosSecurityInfo,
-    QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
-    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
-    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
-    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
-    ResetNvapiThermalInputs, ResetNvapiThermalPolicyCurve, ResetNvapiVfpPrivate,
-    ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
-    ResetPublicVftableOffset, ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver,
-    SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset,
-    SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate,
-    SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
-    SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
-    SetNvapiEccConfiguration, SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates,
-    SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
-    SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue, SetNvapiPowerCommand,
-    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
-    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalInput, SetNvapiThermalPolicyCurve,
-    SetNvapiThermalPolicyRemoveTdp, SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry,
-    SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate,
-    SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
-    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
-    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
-    SetSubdomainFreqRatio, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries,
-    SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode,
-    discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
-    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
+    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints,
+    QueryNvapiCompactThermalPolicies, QueryNvapiComputeCaps, QueryNvapiCoolerInfo,
+    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
+    QueryNvapiFramerateLimit, QueryNvapiI2cRead, QueryNvapiOcScannerIncomplete,
+    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
+    QueryNvapiPowerCeiling, QueryNvapiPowerChannels, QueryNvapiPowerCommand,
+    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiRegisterThermals,
+    QueryNvapiTargetRemoveTdpFlags, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
+    QueryNvapiTgpWattRange, QueryNvapiThermalChannels, QueryNvapiThermalInputs,
+    QueryNvapiThermalPoliciesStatus, QueryNvapiThermalSettings, QueryNvapiThermalSim,
+    QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices, QueryNvapiVoltRails,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations,
+    QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion,
+    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
+    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
+    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiThermalInputs,
+    ResetNvapiThermalPolicyCurve, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
+    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
+    ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
+    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
+    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
+    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
+    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
+    SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates, SetNvapiOvervolt,
+    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
+    SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
+    SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
+    SetNvapiThermalInput, SetNvapiThermalPolicyCurve, SetNvapiThermalPolicyRemoveTdp,
+    SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry, SetNvapiVfpPointPrivate,
+    SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
+    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
+    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
+    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
+    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
+    SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
+    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
+    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
+    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
+    sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -4884,6 +4885,43 @@ fn execute_target(
                     })
                     .collect())
             };
+            // RM-lane compact STATUS (mVolt+ "Thermal limits" readout): the
+            // read face that stays alive on RTX 50 desktop where the
+            // documented family arms nothing. None = lane unavailable
+            // (impl not loaded / signature absent) → supported:false.
+            let compact_status = || -> Value {
+                match run(target, QueryNvapiCompactThermalPolicies) {
+                    Ok(report) => match report.output {
+                        Some(v) => Value::Array(
+                            v.iter()
+                                .map(|p| {
+                                    let mut entry = json!({
+                                        "slot": p.slot,
+                                        "celsius": p.celsius,
+                                        "remove_tdp_limit": p.remove_tdp_limit,
+                                        "throttle_quad_c": p.quad,
+                                    });
+                                    if !p.pff_points.is_empty() {
+                                        entry["pff_curve"] = Value::Array(
+                                            p.pff_points
+                                                .iter()
+                                                .map(|(temp_c, freq_khz)| {
+                                                    json!({"temp_c": temp_c, "freq_khz": freq_khz})
+                                                })
+                                                .collect(),
+                                        );
+                                    }
+                                    entry
+                                })
+                                .collect(),
+                        ),
+                        None => {
+                            json!({"supported": false, "reason": "RM lane unavailable (nvapi64_impl not loaded or transport signature absent)"})
+                        }
+                    },
+                    Err(e) => json!({"supported": false, "error": e.to_string()}),
+                }
+            };
             Ok(json!({
                 "nvml": nvml_view,
                 "nvapi": {
@@ -4895,6 +4933,7 @@ fn execute_target(
                         Ok(v) => json!(v),
                         Err(e) => json!({"supported": false, "error": e.to_string()}),
                     },
+                    "rm_lane_policies": compact_status(),
                 },
             }))
         }

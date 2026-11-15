@@ -137,6 +137,12 @@ pub enum OperationKind {
     /// (entry dword14, active-low). The readout lane for GPUs where the
     /// documented STATUS family arms nothing (RTX 50 desktop).
     QueryNvapiTargetRemoveTdpFlags,
+    /// Compact per-slot thermal-policy STATUS via the RM lane (impl method
+    /// 0x0700018F + RM control 0x2080852C, the mVolt+ "Thermal limits"
+    /// readout): temp wall + bRemoveTdpLimit + PFF curve + live throttle
+    /// quad per armed slot. Stays alive where the documented family arms
+    /// nothing (RTX 50 desktop).
+    QueryNvapiCompactThermalPolicies,
     /// Raw-register thermal views (NvAPI_GPU_RegisterOp 0x2EB3C140, read
     /// flag): per-chip GDDR6x/GDDR7 sensor temperatures (0x9024C0 family,
     /// LACT-parity) plus the Blackwell+ aggregated hotspot register
@@ -605,6 +611,27 @@ pub struct ThermalPolicyStatusEntry {
     /// PFF throttle curve points (temp °C, freq kHz); empty when the policy
     /// carries no curve.
     pub pff_points: Vec<(f32, u32)>,
+}
+
+/// One armed slot of the RM-lane compact thermal-policy STATUS (mVolt+
+/// "Thermal limits" readout): the read face that stays alive on RTX 50
+/// desktop where the documented ClientThermalPoliciesGetStatus family arms
+/// nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactPolicyStatusEntry {
+    /// Target-policy slot (RTX 50: 0=GPU / 1=Hotspot / 4=Memory).
+    pub slot: usize,
+    /// Armed temp wall (celsius).
+    pub celsius: f32,
+    /// `bRemoveTdpLimit`.
+    pub remove_tdp_limit: bool,
+    /// PFF throttle-curve points (temp °C, freq kHz); empty when the policy
+    /// carries no curve.
+    pub pff_points: Vec<(f32, u32)>,
+    /// Live throttle-curve quad (°C) — the wall the driver enforces
+    /// (`[c+1,c,c-1,c-3]` after a set-thermal-limit write; may carry stale
+    /// writes, e.g. the f(20 C) residue after mVolt experiments).
+    pub quad: [f32; 4],
 }
 
 /// One D-Notifier (D0-notify / "extern power state") level: the D level number

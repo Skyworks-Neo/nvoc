@@ -3171,6 +3171,13 @@ fn format_combined_thresholds(obj: &serde_json::Map<String, Value>) -> Vec<Strin
             nvapi.get("thermal_policies_status"),
             policy_status_row,
         ));
+        lines.push(nvoc_cli_common::color::stylize_title(
+            "NVAPI RM-lane policies (mVolt thermal-limits readout; alive on RTX 50)",
+        ));
+        lines.extend(threshold_view_lines(
+            nvapi.get("rm_lane_policies"),
+            compact_policy_row,
+        ));
     }
     lines
 }
@@ -3279,6 +3286,69 @@ fn policy_status_row(item: &Value) -> String {
     let mut row = format!(
         "{} {} | Limit {} | RemoveTdpLimit {}",
         label, name, limit, tdp
+    );
+    if let Some(points) = obj
+        .and_then(|o| o.get("pff_curve"))
+        .and_then(Value::as_array)
+        && !points.is_empty()
+    {
+        let pts = points
+            .iter()
+            .filter_map(|p| {
+                let temp = p.get("temp_c")?.as_f64()?;
+                let khz = p.get("freq_khz")?.as_f64()?;
+                let mhz = khz / 1000.0;
+                let mhz = if (mhz - mhz.round()).abs() < 1e-9 {
+                    format!("{}", mhz.round() as i64)
+                } else {
+                    format!("{mhz:.1}")
+                };
+                Some(format!("{}C:{}MHz", temp, mhz))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        row.push_str(&format!(" | PFF {pts}"));
+    }
+    row
+}
+
+/// One row of the RM-lane compact readout:
+/// `Slot 0 | Limit 87.0 C | RemoveTdpLimit no | Throttle 88/87/86/84 C | PFF ...`.
+fn compact_policy_row(item: &Value) -> String {
+    let obj = item.as_object();
+    let slot = obj
+        .and_then(|o| o.get("slot"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let name = match slot {
+        0 => "0 (GPU)".to_string(),
+        1 => "1 (Hotspot)".to_string(),
+        4 => "4 (Memory)".to_string(),
+        other => other.to_string(),
+    };
+    let limit = obj
+        .and_then(|o| o.get("celsius"))
+        .map(|v| format_scalar("celsius", v))
+        .unwrap_or_else(|| "N/A".into());
+    let tdp = obj
+        .and_then(|o| o.get("remove_tdp_limit"))
+        .map(|v| format_scalar("remove_tdp_limit", v))
+        .unwrap_or_else(|| "no".into());
+    let quad = obj
+        .and_then(|o| o.get("throttle_quad_c"))
+        .and_then(Value::as_array)
+        .map(|q| {
+            q.iter()
+                .filter_map(|v| v.as_f64())
+                .map(|v| format!("{}", v.round() as i64))
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_else(|| "---".into());
+    let label = nvoc_cli_common::color::stylize_title("Slot");
+    let mut row = format!(
+        "{} {} | Limit {} | RemoveTdpLimit {} | Throttle {} C",
+        label, name, limit, tdp, quad
     );
     if let Some(points) = obj
         .and_then(|o| o.get("pff_curve"))
