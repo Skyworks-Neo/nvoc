@@ -3228,14 +3228,21 @@ fn threshold_entry_row(item: &Value) -> String {
         let max = obj
             .and_then(|o| o.get("max_c"))
             .map(|v| format_scalar("max_c", v));
-        match (min, max) {
+        let tdp = obj
+            .and_then(|o| o.get("remove_tdp_limit"))
+            .map(|v| format_scalar("remove_tdp_limit", v));
+        let range = match (min, max) {
             (Some(mn), Some(mx)) => {
                 let range =
                     nvoc_cli_common::color::stylize(&format!("Min {} / Max {}", mn, mx), false);
-                format!("{} {} | {} | {}", label, name, cur, range)
+                format!(" | {range}")
             }
-            _ => format!("{} {} | {}", label, name, cur),
-        }
+            _ => String::new(),
+        };
+        let tdp_part = tdp
+            .map(|v| format!(" | RemoveTdpLimit {v}"))
+            .unwrap_or_default();
+        format!("{} {} | {}{}{}", label, name, cur, range, tdp_part)
     } else {
         // NVML row: single Limit value. celsius is a u32 (no _c key),
         // so render it bare and add the unit once.

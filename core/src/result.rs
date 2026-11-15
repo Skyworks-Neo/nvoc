@@ -129,6 +129,14 @@ pub enum OperationKind {
     /// of `set-temp-limit --nvapi --pff-curve/--remove-tdp-limit` (10/40-series
     /// lane; RTX 50 desktop arms no policies).
     QueryNvapiThermalPoliciesStatus,
+    /// Raw field-level RMW flipping bRemoveTdpLimit on every armed policy
+    /// (the only TRUE-write recipe that retains on desktop — full-struct
+    /// writes with touched/cleared pff bits are accepted-but-dropped).
+    SetNvapiThermalPolicyRemoveTdp,
+    /// Per-slot bRemoveTdpLimit mirror from the raw TARGET v2|984 buffer
+    /// (entry dword14, active-low). The readout lane for GPUs where the
+    /// documented STATUS family arms nothing (RTX 50 desktop).
+    QueryNvapiTargetRemoveTdpFlags,
     /// Raw-register thermal views (NvAPI_GPU_RegisterOp 0x2EB3C140, read
     /// flag): per-chip GDDR6x/GDDR7 sensor temperatures (0x9024C0 family,
     /// LACT-parity) plus the Blackwell+ aggregated hotspot register

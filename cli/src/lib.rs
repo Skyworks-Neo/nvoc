@@ -23,36 +23,37 @@ use nvoc_core::{
     QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
     QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPowerChannels,
     QueryNvapiPowerCommand, QueryNvapiPstates20Private, QueryNvapiRatedTdp,
-    QueryNvapiRegisterThermals, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryNvapiThermalChannels, QueryNvapiThermalInputs,
-    QueryNvapiThermalPoliciesStatus, QueryNvapiThermalSettings, QueryNvapiThermalSim,
-    QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices, QueryNvapiVoltRails,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations,
-    QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion,
-    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
-    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
-    ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
-    ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiThermalInputs,
-    ResetNvapiThermalPolicyCurve, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
-    ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
-    ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver, SetApplicationsClocks,
-    SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset, SetCoolerLevels,
-    SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate, SetGpcVoltLock,
-    SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner, SetNvapiClkDomainOffset,
-    SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost, SetNvapiEccConfiguration,
-    SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates, SetNvapiOvervolt,
-    SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter,
-    SetNvapiPowerChannelValue, SetNvapiPowerCommand, SetNvapiPowerLimits, SetNvapiPstateLock,
-    SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt,
-    SetNvapiThermalInput, SetNvapiThermalPolicyCurve, SetNvapiThermalSim, SetNvapiTopRelsRatio,
-    SetNvapiVfeVarEntry, SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate,
-    SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget,
-    SetNvmlAcousticTemp, SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
-    SetPublicVftableRangeOffset, SetSubdomainFreqRatio, SetTemperatureLimit, SetVfpFrequencyLock,
-    SetVfpLockEntries, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
-    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
+    QueryNvapiRegisterThermals, QueryNvapiTargetRemoveTdpFlags, QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalChannels,
+    QueryNvapiThermalInputs, QueryNvapiThermalPoliciesStatus, QueryNvapiThermalSettings,
+    QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage, QueryVbiosSecurityInfo,
+    QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus, QueryVoltageBoost,
+    ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetForcePstate,
+    ResetFreqLock, ResetLegacyApplicationFreqLock, ResetLegacyGpcRailOvervoltLimit,
+    ResetNvapiFanControl, ResetNvapiPowerLimits, ResetNvapiSensorLimits, ResetNvapiTgpWatt,
+    ResetNvapiThermalInputs, ResetNvapiThermalPolicyCurve, ResetNvapiVfpPrivate,
+    ResetNvapiVoltRailLimit, ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock,
+    ResetPublicVftableOffset, ResetSubdomainFreqRatio, ResetVfpFrequencyLock, RestartDisplayDriver,
+    SetApplicationsClocks, SetAutoboostStatus, SetAutoboostSupport, SetBb2Active, SetClockOffset,
+    SetCoolerLevels, SetEdid, SetFanCurve, SetFanRpm, SetFanSpeed, SetFanStop, SetForcePstate,
+    SetGpcVoltLock, SetLegacyClocks, SetLockedClocks, SetNvapiBackgroundOcScanner,
+    SetNvapiClkDomainOffset, SetNvapiCoreVoltageControl, SetNvapiDNotifier, SetNvapiDynamicBoost,
+    SetNvapiEccConfiguration, SetNvapiFramerateLimit, SetNvapiI2cWrite, SetNvapiOverclockedPstates,
+    SetNvapiOvervolt, SetNvapiPStateNative, SetNvapiPerfFreqCap, SetNvapiPerfLevelLock,
+    SetNvapiPmgrVoltageArbiter, SetNvapiPowerChannelValue, SetNvapiPowerCommand,
+    SetNvapiPowerLimits, SetNvapiPstateLock, SetNvapiPstates20PrivateDelta, SetNvapiSensorLimits,
+    SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalInput, SetNvapiThermalPolicyCurve,
+    SetNvapiThermalPolicyRemoveTdp, SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry,
+    SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate,
+    SetNvapiVoltRailOffset, SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp,
+    SetNvmlPstateLock, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
+    SetSubdomainFreqRatio, SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries,
+    SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode,
+    discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
     parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
     query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
     set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
@@ -4812,6 +4813,13 @@ fn execute_target(
                     .ok()
                     .and_then(|r| r.output);
                 let policies = run(target, QueryNvapiTargetTempPolicies)?.output;
+                // Per-slot bRemoveTdpLimit mirror from the raw TARGET v2|984
+                // buffer (entry dword14, active-low) — the only flag readout
+                // on GPUs where the documented STATUS family arms nothing.
+                // Best-effort: the section stays useful when it refuses.
+                let tdp_flags = run(target, QueryNvapiTargetRemoveTdpFlags)
+                    .ok()
+                    .map(|r| r.output);
                 Ok(policies
                     .iter()
                     .map(|p| {
@@ -4835,6 +4843,17 @@ fn execute_target(
                             }
                             if let Some(mx) = p.max {
                                 obj.insert("max_c".into(), json!(mx));
+                            }
+                            // The d14 mirror is only meaningful on an armed
+                            // policy slot (T13 verified the wall slot);
+                            // elsewhere a raw 0 would decode as a phantom
+                            // "remove_tdp = true".
+                            if is_wall
+                                && let Some(flags) = &tdp_flags
+                                && let Some(v) = flags.get(p.policy_index)
+                                && let Some(v) = v
+                            {
+                                obj.insert("remove_tdp_limit".into(), json!(v));
                             }
                         }
                         entry
@@ -7634,12 +7653,23 @@ fn execute_target(
                     // lane (the documented SetStatus family; RTX 50 desktop
                     // refuses it — use set-thermal-limit there).
                     let remove_tdp = invocation.options.contains_key("remove-tdp-limit");
+                    // Preserve the currently armed flag through the temp
+                    // transaction: the sensor-limits write sends the whole
+                    // remove_tdp field, and a cleared arm cannot be re-set
+                    // through that transaction (desktop drivers drop full-
+                    // struct writes that touch the armed pff bits — live
+                    // 2070/621). Flag changes go through the dedicated raw
+                    // field RMW below instead.
+                    let current_tdp = run(target, QueryNvapiThermalPoliciesStatus)
+                        .ok()
+                        .and_then(|r| r.output.first().map(|p| p.remove_tdp_limit))
+                        .unwrap_or(false);
                     let throttle = match option_one(invocation, "pff-curve") {
                         Some(raw) => {
                             let points = parse_pff_curve_points(raw)?;
                             nvoc_core::SensorThrottle {
                                 value: nvoc_core::Celsius(celsius),
-                                remove_tdp_limit: remove_tdp,
+                                remove_tdp_limit: current_tdp,
                                 curve: Some(nvoc_core::PffCurve {
                                     points: points
                                         .iter()
@@ -7651,7 +7681,11 @@ fn execute_target(
                                 }),
                             }
                         }
-                        None => nvoc_core::Celsius(celsius).into(),
+                        None => nvoc_core::SensorThrottle {
+                            value: nvoc_core::Celsius(celsius),
+                            remove_tdp_limit: current_tdp,
+                            curve: None,
+                        },
                     };
                     let curve_echo = throttle.curve.as_ref().map(|c| {
                         c.points
@@ -7664,48 +7698,62 @@ fn execute_target(
                             })
                             .collect::<Vec<_>>()
                     });
-                    let requested_curve = throttle
-                        .curve
-                        .as_ref()
-                        .map(|c| c.points.iter().map(|p| (p.x.get() as f32, p.y.0)).collect::<Vec<_>>());
+                    let requested_curve = throttle.curve.as_ref().map(|c| {
+                        c.points
+                            .iter()
+                            .map(|p| (p.x.get() as f32, p.y.0))
+                            .collect::<Vec<_>>()
+                    });
                     run(
                         target,
                         SetNvapiSensorLimits {
                             limits: vec![throttle],
                         },
                     )?;
+                    // Flag changes ride the dedicated raw field RMW (the only
+                    // TRUE-write recipe that retains on desktop — probe T13):
+                    // patch remove_tdp on the armed entries with the pff bits
+                    // untouched. HIGH RISK when enabling: releases the
+                    // TDP-derived thermal clamp.
+                    let mut flag_retained = true;
+                    if remove_tdp != current_tdp {
+                        flag_retained = run(
+                            target,
+                            SetNvapiThermalPolicyRemoveTdp { enable: remove_tdp },
+                        )?
+                        .output;
+                    }
                     // Honesty: SET=0 is NOT effect — some drivers accept the
-                    // transaction and drop fields (live 2070/621: PFF curve +
-                    // flags accepted, readback unchanged). Re-read the
+                    // transaction and drop fields (live 2070/621: the PFF
+                    // curve drops while temp/flag apply). Re-read the
                     // documented STATUS table and compare what came back
                     // against what was requested.
                     std::thread::sleep(std::time::Duration::from_millis(300));
-                    let retained = run(target, QueryNvapiThermalPoliciesStatus)
-                        .ok()
-                        .map(|r| {
-                            r.output.iter().any(|p| {
-                                let temp_ok = (p.celsius - celsius as f32).abs() < 0.01;
-                                let curve_ok = match &requested_curve {
-                                    Some(want) => {
-                                        p.pff_points.len() == want.len()
-                                            && p.pff_points
-                                                .iter()
-                                                .zip(want.iter())
-                                                .all(|((t, f), (wt, wf))| {
-                                                    (*t - wt).abs() < 0.01 && f == wf
-                                                })
-                                    }
-                                    None => true,
-                                };
-                                // The flag is field-write-through (live 2070:
-                                // yes/no flips stick), so require an exact
-                                // match — omitting --remove-tdp-limit writes
-                                // false and that must read back as false too.
-                                let tdp_ok = p.remove_tdp_limit == remove_tdp;
-                                temp_ok && curve_ok && tdp_ok
+                    let retained = flag_retained
+                        && run(target, QueryNvapiThermalPoliciesStatus)
+                            .ok()
+                            .map(|r| {
+                                r.output.iter().any(|p| {
+                                    let temp_ok = (p.celsius - celsius as f32).abs() < 0.01;
+                                    let curve_ok = match &requested_curve {
+                                        Some(want) => {
+                                            p.pff_points.len() == want.len()
+                                                && p.pff_points.iter().zip(want.iter()).all(
+                                                    |((t, f), (wt, wf))| {
+                                                        (*t - wt).abs() < 0.01 && f == wf
+                                                    },
+                                                )
+                                        }
+                                        None => true,
+                                    };
+                                    // Exact match — the flag is field-write-
+                                    // through (live 2070: flips stick via the
+                                    // dedicated RMW).
+                                    let tdp_ok = p.remove_tdp_limit == remove_tdp;
+                                    temp_ok && curve_ok && tdp_ok
+                                })
                             })
-                        })
-                        .unwrap_or(false);
+                            .unwrap_or(false);
                     let mut out = json!({"applied": true, "thermal_limit_c": celsius});
                     if let Some(c) = curve_echo {
                         out["pff_curve"] = json!(c);

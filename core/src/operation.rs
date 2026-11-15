@@ -2815,6 +2815,56 @@ impl GpuOperation for QueryNvapiThermalPoliciesStatus {
     }
 }
 
+/// Flip `bRemoveTdpLimit` on every armed thermal policy via the raw
+/// field-level RMW (GET v3|1352 → patch remove_tdp dword @ entry+12 → SET
+/// 0x34C0B13D → re-GET verify). The only TRUE-write recipe that retains on
+/// desktop: full-struct writes that touch or clear the armed pff bits are
+/// accepted-but-dropped (live 2070/621). Returns whether the flip survived.
+/// HIGH RISK: TRUE releases the TDP-derived thermal clamp — restore with
+/// `enable: false`.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNvapiThermalPolicyRemoveTdp {
+    pub enable: bool,
+}
+
+impl GpuOperation for SetNvapiThermalPolicyRemoveTdp {
+    type Output = bool;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetNvapiThermalPolicyRemoveTdp
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .set_thermal_policy_remove_tdp(self.enable)
+            .map_err(Error::from)
+    }
+}
+
+/// Per-slot `bRemoveTdpLimit` mirror from the raw TARGET v2|984 buffer
+/// (entry dword14, ACTIVE-LOW: 0 = TDP clamp released / remove_tdp TRUE, 1 =
+/// clamp armed / FALSE — probe T13 live-verified on 2070/621). `None` for
+/// unpopulated slots. The readout lane for GPUs where the documented STATUS
+/// family arms nothing (RTX 50 desktop).
+#[derive(Clone, Copy, Debug)]
+pub struct QueryNvapiTargetRemoveTdpFlags;
+
+impl GpuOperation for QueryNvapiTargetRemoveTdpFlags {
+    type Output = Vec<Option<bool>>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryNvapiTargetRemoveTdpFlags
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        target
+            .nvapi()?
+            .thermal_target_remove_tdp_flags()
+            .map_err(Error::from)
+    }
+}
+
 /// LACT-parity raw-register thermal views (NvAPI_GPU_RegisterOp
 /// 0x2EB3C140, READ|32BIT|GLOBAL): per-chip GDDR6x/GDDR7 sensor
 /// temperatures (0x9024C0/0x9024D0 family, poison-filtered, clamshell
