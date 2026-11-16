@@ -178,6 +178,12 @@ identity-0 同值）。**OCP 不走这条**——F8/FE 只管功耗请求。
 control-v3 零回退，nvidia-smi 生效。V3 默认可用 = 20/40/50 已实证，30 系
 （3060）同流程一跑即闭环。
 
+**Ada 真变跟随实证（同日第二跑）**：100W → **40W**，nvidia-smi 跟动——
+非 echo，真实墙移动。行为差异暴露：**V3 行无可见域钳**（40000 远低于出厂
+100W 被原样受理存储；对比 V1 compact 会钳到驱动 [min,max] 窗口）——V3 =
+原始无窗写入，这正是 mVolt 能写 9999W 的机制基础；越界保护在驱动更深层
+（或不存在）。
+
 **老卡必须 V3**——nvoc 落地：set-pwr-cur-limit V3-first 级联（tgp/board →
 identity-0 行；nvvdd/core → identity-23 行存在时），V3 缺席/失败回落
 compact（pre-Ampere 由毒写门拒，行为不变）；`get-power-control`/
