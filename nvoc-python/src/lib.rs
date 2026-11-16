@@ -12,11 +12,11 @@ use nvoc_core::{
     QueryNvapiClkVfPoints, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
     QueryNvapiFramerateLimit, QueryNvapiOcScannerIncomplete, QueryNvapiPmgrVoltageArbiter,
     QueryNvapiPowerCeiling, QueryNvapiRatedTdp, QueryNvapiTargetTempPolicies,
-    QueryNvapiTgpWattRange, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerLimits,
-    QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks, QueryTdpTempLimits,
-    QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage,
-    QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
-    ResetFanCurve, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    QueryNvapiTgpWattRange, QueryNvapiThermalSim, QueryNvapiVoltRails, QueryPowerControl,
+    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
+    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations,
+    QueryVbiosImage, QueryVfpPointVoltage, QueryVoltageBoost, ResetAutoboostStatus,
+    ResetCoolerLevels, ResetFanCurve, ResetFanSpeed, ResetFreqLock, ResetLegacyApplicationFreqLock,
     ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
     ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
     ResetPstateGlobalFreqOffset, ResetPublicVftableGpcLock, ResetPublicVftableOffset,
@@ -28,8 +28,8 @@ use nvoc_core::{
     SetNvapiPerfLevelLock, SetNvapiPmgrVoltageArbiter, SetNvapiPowerLimits, SetNvapiPstateLock,
     SetNvapiSensorLimits, SetNvapiTargetTemp, SetNvapiTgpWatt, SetNvapiThermalSim,
     SetNvapiVfpPointPrivate, SetNvapiVfpRangePerPointPrivate, SetNvapiVoltRailOffset,
-    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerLimit,
-    SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
+    SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlPstateLock, SetPowerControlRow,
+    SetPowerLimit, SetPstateBaseVoltage, SetPstateClockOffset, SetPublicVftablePointOffset,
     SetPublicVftableRangeOffset, SetTemperatureLimit, SetVfpFrequencyLock, SetVoltageBoost,
     VfPointType, VfpResetDomain, clk_vf_delta_for_target, detect_gpu_type, discover_targets,
     fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str, parse_nvml_fan_control_policy, run,
@@ -2431,6 +2431,29 @@ fn set_tgp_watt(
             inventory_cache.entry(BackendSet::Nvapi)?
         };
         let target = selected_target(&inventory.0, gpu)?;
+        // V3-first lane cascade (2026-11-16): CONTROL big-packet identity-0
+        // row (board-power request, mW) first — the pre-Ampere-safe lane
+        // (2070 wall-proven 175000 -> 175 W, 4060L 40 W real-change proof);
+        // fall back to the compact lane (SetNvapiTgpWatt, poison-gated on
+        // pre-Ampere) when V3 is unavailable or the write fails. Mirrors the
+        // set-pwr-cur-limit CLI cascade.
+        if watts <= u32::MAX / 1000
+            && let Some(geom) = run(&target, QueryPowerControl).map_err(to_py_err)?.output
+            && let Some(row) = geom.rows.iter().find(|r| r.identity == 0 && r.writable)
+        {
+            // V3 write refused -> fall through to the compact lane
+            if run(
+                &target,
+                SetPowerControlRow {
+                    channel: row.channel,
+                    raw: watts * 1000,
+                },
+            )
+            .is_ok()
+            {
+                return Ok(());
+            }
+        }
         run(
             &target,
             SetNvapiTgpWatt {
