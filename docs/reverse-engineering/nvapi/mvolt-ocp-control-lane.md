@@ -171,7 +171,12 @@ identity-0 同值）。**OCP 不走这条**——F8/FE 只管功耗请求。
 |---|---|---|---|
 | V1 compact（xOCD SetPowerChannelLimit） | 0x0001_0A4C（v1\|2636） | ✅（R465+） | ❌ fault（nvlddmkm 14/153） |
 | V1 wide（ref-tool setTgpWatt） | 0x12720（v1\|10016） | ✅（538+） | 未知 |
-| **V3 大包（mVolt 引擎二）** | class1 0x2786E0 / class2 0x5B0B0 | ✅（mVolt Blackwell） | ✅（2070 实证） |
+| **V3 大包（mVolt 引擎二）** | class1 0x2786E0 / class2 0x5B0B0 | ✅（4060L 实测 lane=control-v3 class2 ch2 100W 生效；5060 Ti mVolt 实证） | ✅（2070 实证 ch2 175000 → 墙 175W） |
+
+4060L 补充（2026-11-16 用户实测）：Ada 上类探测 = **class 2**，identity-0 行
+同样落 ch2——两代几何收敛；`set-pwr-cur-limit board 100` 级联一次命中
+control-v3 零回退，nvidia-smi 生效。V3 默认可用 = 20/40/50 已实证，30 系
+（3060）同流程一跑即闭环。
 
 **老卡必须 V3**——nvoc 落地：set-pwr-cur-limit V3-first 级联（tgp/board →
 identity-0 行；nvvdd/core → identity-23 行存在时），V3 缺席/失败回落
