@@ -32,6 +32,7 @@ capstone = { workspace = true }
 # kmd/pawnio.rs talks to \Device\PawnIO with CreateFileW/DeviceIoControl
 # directly; the Win32 umbrella feature does not pull in the sub-namespaces.
 windows-sys = { workspace = true, features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",

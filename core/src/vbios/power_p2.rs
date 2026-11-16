@@ -135,6 +135,201 @@ pub fn find_power_budget(data: &[u8]) -> Result<Option<PowerBudget>, crate::erro
     }))
 }
 
+// ── PowerBudget 写面（BIOS override：vix loader 配套 patch）───────────────
+
+/// 一条被改写的功率预算条目（回显用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowerBudgetPatch {
+    pub index: usize,
+    /// 条目在镜像内的绝对偏移（min 域；peak 在 +0xA）。
+    pub offset: usize,
+    pub tag: u8,
+    pub old_peak_mw: Option<u32>,
+    pub new_peak_mw: Option<u32>,
+}
+
+/// 一个 direct-patch 点位：P+0x2C cap 条目 peak 域（+0xA）的镜像内绝对
+/// 偏移 + 旧值。`set-vbios-direct-patch` 用它构造 romOverride 片段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowerBudgetCapPoint {
+    pub index: usize,
+    /// peak/max 域（entry+0xA）的镜像内绝对偏移。
+    pub peak_offset: usize,
+    pub tag: u8,
+    pub old_peak_mw: Option<u32>,
+}
+
+/// 定位 POWER BUDGET（P+0x2C）的 cap 条目 peak 域点位（只读）。目标条目
+/// 选择与 [`patch_power_budget_peak_mw`] 完全一致（cap_entry 槽位 →
+/// tag==0x21 回退 → 都没有拒绝）——两车道（整镜像 patch 与 romOverride
+/// 片段 patch）必须打同一个字节。
+pub fn locate_power_budget_cap_peak(data: &[u8]) -> Result<Vec<PowerBudgetCapPoint>, Error> {
+    let t = match slot_target(data, 0x2C)? {
+        None => return Err(Error::from("power_p2: P+0x2C power budget table absent")),
+        Some((_, t)) => t,
+    };
+    let version = data.get(t).copied().unwrap_or(0);
+    if !matches!(version, 0x10 | 0x20 | 0x30) {
+        return Err(Error::from("power_p2: unsupported power budget version"));
+    }
+    let hlen = usize::from(data.get(t + 1).copied().unwrap_or(0));
+    let rlen = usize::from(data.get(t + 2).copied().unwrap_or(0));
+    let cnt = usize::from(data.get(t + 3).copied().unwrap_or(0));
+    if rlen == 0 || hlen == 0 {
+        return Err(Error::from("power_p2: degenerate power budget header"));
+    }
+    if rlen == 6 {
+        return Err(Error::from(
+            "power_p2: compact avg-only budget has no cap ceiling to patch",
+        ));
+    }
+    let entry_off = |i: usize| t + hlen + i * rlen;
+    let valid = |i: usize| i < cnt.min(64) && entry_off(i) + 0xE <= data.len();
+    let cap_entry = match version {
+        0x20 => data.get(t + 9).copied(),
+        0x30 => data.get(t + 0xA).copied(),
+        _ => None,
+    };
+    let targets: Vec<usize> = if cap_entry.is_some_and(|c| valid(usize::from(c))) {
+        vec![usize::from(cap_entry.unwrap())]
+    } else {
+        (0..cnt.min(64))
+            .filter(|&i| valid(i) && data.get(entry_off(i)).is_some_and(|&tag| tag == 0x21))
+            .collect()
+    };
+    if targets.is_empty() {
+        return Err(Error::from(
+            "power_p2: no cap entry (cap_entry slot or tag 0x21) — refusing blind full-table targeting",
+        ));
+    }
+    Ok(targets
+        .into_iter()
+        .map(|i| PowerBudgetCapPoint {
+            index: i,
+            peak_offset: entry_off(i) + 0xA,
+            tag: data[entry_off(i)],
+            old_peak_mw: u32_at(data, entry_off(i) + 0xA),
+        })
+        .collect())
+}
+
+/// 一个 OCP 策略行点位（direct patch 用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcpPolicyPoint {
+    pub row: usize,
+    /// maximum 域（u32）镜像内绝对偏移。
+    pub maximum_offset: usize,
+    /// default 域（u32）镜像内绝对偏移（--nvvdd-ocp-amps-default 目标）。
+    pub default_offset: usize,
+    /// type 低 4 位（10 = NVVDD OCP——tables_v3 文档化语义）。
+    pub kind: u8,
+    /// flags bit4（mA）；GB20x 几何无此位（恒 false，行字节即 kind）。
+    pub unit_ma: bool,
+    pub old_maximum_raw: u32,
+    pub old_default_raw: u32,
+}
+
+/// 定位功率策略表（P+0x2C）里的 OCP 行（只读）。双几何：
+/// 3x（v0x30, hs 0x2C|0x27, es 0x42；kind@+0 flags 同字节，unit bit4，
+/// max@+10）与 GB20x（v0x40, hs 0x38|0x3D, es 0x66；行字节即 kind，
+/// max@+21）。选择 kind==10（文档化 NVVDD OCP）的行；没有则列出全部行
+/// （kind/max 偏移/default 值）供 `--patch offset=hex` 手动打点——绝不猜。
+pub fn locate_ocp_policy_peaks(data: &[u8]) -> Result<Vec<OcpPolicyPoint>, Error> {
+    let t = match slot_target(data, 0x2C)? {
+        None => return Err(Error::from("power_p2: P+0x2C power policy table absent")),
+        Some((_, t)) => t,
+    };
+    let version = data.get(t).copied().unwrap_or(0);
+    let hs = usize::from(data.get(t + 1).copied().unwrap_or(0));
+    let es = usize::from(data.get(t + 2).copied().unwrap_or(0));
+    let cnt = usize::from(data.get(t + 3).copied().unwrap_or(0));
+    let (def_in_row, max_in_row, gb20x) = match (version, hs, es) {
+        (0x30, 0x2C, 0x42) | (0x30, 0x27, 0x42) => (6usize, 10usize, false),
+        (0x40, 0x38, 0x66) | (0x40, 0x3D, 0x66) => (17usize, 21usize, true),
+        _ => {
+            return Err(Error::from(
+                "power_p2: unsupported power policy variant for OCP locate",
+            ));
+        }
+    };
+    let row_off = |i: usize| t + hs + i * es;
+    let mut points = Vec::new();
+    let mut listing = Vec::new();
+    for i in 0..cnt.min(64) {
+        let r = row_off(i);
+        if r + max_in_row + 4 > data.len() {
+            break;
+        }
+        let kind = data[r] & 0x0F;
+        let unit_ma = !gb20x && data[r] & 0x10 != 0;
+        let raw = u32_at(data, r + max_in_row).unwrap_or(0);
+        let old_def = u32_at(data, r + def_in_row).unwrap_or(0);
+        listing.push(format!(
+            "row {i:2} kind={kind:2} max@{:#x} default={raw}",
+            r + max_in_row
+        ));
+        if kind == 10 {
+            points.push(OcpPolicyPoint {
+                row: i,
+                maximum_offset: r + max_in_row,
+                default_offset: r + def_in_row,
+                kind,
+                unit_ma,
+                old_maximum_raw: raw,
+                old_default_raw: old_def,
+            });
+        }
+    }
+    if points.is_empty() {
+        return Err(Error::from(format!(
+            "power_p2: no kind-10 (NVVDD OCP) policy row on this image; rows for manual --patch: {}",
+            listing.join(" | ")
+        )));
+    }
+    Ok(points)
+}
+
+/// 把 POWER BUDGET（P+0x2C，nvidia-smi Max Power Limit 源头）的 **cap 条目**
+/// 的 peak/max 域（entry+0xA，u32 LE，mW）改写为 `peak_mw`，并修复所在镜像
+/// 的加性校验（镜像末字节 = 使整镜像字节和 ≡ 0 mod 256，与 vix loader 的
+/// "valid checksum" 要求一致）。
+///
+/// 目标条目选择（fail-closed，2026-11-16 代码 43 教训）：见
+/// [`locate_power_budget_cap_peak`]——**绝不盲扫全表**：2070 实测把 tag
+/// 0x00 占位条目和 tag 0x15 子轨条目（16.5/21.75/33.75 W 的 VRM 轨功率）
+/// 一并抬高会让驱动 override 加载时一致性校验拒绝 → GPU 代码 43。
+///
+/// min（+2）/default-avg（+6）与其余条目保持原值——只抬总板上限。
+pub fn patch_power_budget_peak_mw(
+    img: &mut [u8],
+    peak_mw: u32,
+) -> Result<Vec<PowerBudgetPatch>, Error> {
+    // 只读定位与写镜像共用同一目标选择器，两条车道打同一个字节。
+    let points = locate_power_budget_cap_peak(img)?;
+    let peak_bytes = peak_mw.to_le_bytes();
+    let mut patched = Vec::new();
+    for p in points {
+        let old = u32_at(img, p.peak_offset);
+        img[p.peak_offset..p.peak_offset + 4].copy_from_slice(&peak_bytes);
+        patched.push(PowerBudgetPatch {
+            index: p.index,
+            offset: p.peak_offset - 0xA,
+            tag: p.tag,
+            old_peak_mw: old,
+            new_peak_mw: Some(peak_mw),
+        });
+    }
+    // 修复包含该表的镜像（首个 55 AA legacy image，长度 = 头部 +2 u16 ×512）。
+    let base = find_image_base(img)
+        .ok_or_else(|| Error::from("power_p2: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(patched)
+}
+
 // ── PowerSense（P+0x28，功率计配置）──────────────────────────────────────
 
 /// 一条功率传感配置：mode + EXTDEV 表设备号 + 载荷原始字节。
@@ -666,6 +861,48 @@ mod tests {
     /// 元组与 2070 标称吻合；sense v0x20 7 条；base clock v0x20 17 条；
     /// thermal devices v0x10 18 条（class 1=GPU@0）；coolers v0x10 2 条。
     /// VOLTAGE/VOLT MAP 槽为零（Volta+ rails 接替）。
+    /// patch 面：**仅 cap 条目** peak/max 改写 + 镜像加性校验归零 + 重新
+    /// 解析读回新值（min/default/其余条目必须保持原值——2070 代码 43
+    /// 教训：全表扫会炸掉 tag 0x00/0x15 占位与子轨条目）。
+    #[test]
+    fn power_budget_patch_roundtrip() {
+        let Ok(d0) = std::fs::read("../1.rom") else {
+            eprintln!("skip: 1.rom not present");
+            return;
+        };
+        let before = find_power_budget(&d0).expect("ok").expect("budget");
+        let cap_idx = usize::from(before.cap_entry.expect("cap entry"));
+        let old_min = before.entries[cap_idx].min_mw;
+        let old_avg = before.entries[cap_idx].avg_mw;
+
+        let mut img = d0.clone();
+        let patched = patch_power_budget_peak_mw(&mut img, 9_999_000).expect("patched");
+        // 恰好一条：cap 条目，别无其他。
+        assert_eq!(patched.len(), 1);
+        assert_eq!(patched[0].index, cap_idx);
+        assert_eq!(patched[0].old_peak_mw, Some(219_000));
+
+        // 重解析：cap 条目 peak 抬到 9999 W，min/default 不动，其余条目
+        // （含 tag 0x00 占位/子轨）逐字节保持。
+        let after = find_power_budget(&img).expect("ok").expect("budget");
+        let cap = &after.entries[cap_idx];
+        assert_eq!(cap.peak_mw, Some(9_999_000));
+        assert_eq!(cap.min_mw, old_min);
+        assert_eq!(cap.avg_mw, old_avg);
+        for (b, a) in before.entries.iter().zip(after.entries.iter()) {
+            if b.index != cap_idx {
+                assert_eq!(b.raw_hex, a.raw_hex, "entry {} must be untouched", b.index);
+            }
+        }
+
+        // 所在镜像（首个 55 AA，长度 = 头 +2 u16 ×512）加性和 ≡ 0。
+        let base = crate::vbios::legacy::find_image_base(&img).expect("base");
+        let size = (usize::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8)) * 512;
+        let end = (base + size).min(img.len());
+        let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+        assert_eq!(sum, 0, "image checksum must stay zero after patch");
+    }
+
     #[test]
     fn power_p2_tu106_when_present() {
         let Ok(d) = std::fs::read("../1.rom") else {

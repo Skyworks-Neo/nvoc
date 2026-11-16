@@ -6006,6 +6006,482 @@ impl GpuOperation for SetNvapiI2cWrite {
     }
 }
 
+// ── vBIOS 注册表 override（vix loader 车道，2026-11 mVolt BIOS-override RE）──
+//
+// 机制：GPU 显示类驱动键 Class\{4d36e968-...}\NNNN 下的 `vbios` REG_BINARY
+// 存镜像字节链（非路径），驱动初始化时读取（616.56+）。默认模式需 Windows
+// 完整重启生效；GSP 固件模式（EnableGpuFirmware=0x11）下设备禁用/启用即
+// 可。仅校验镜像 checksum + PCI ID，不验签名。
+
+/// 电压墙定位（按镜像族分派：GB20x → 3x Turing/Ampere/Ada）。
+/// 返回 (镜像内偏移, µV) 写入点列表。
+#[cfg(windows)]
+fn locate_wall_writes_any_family(
+    data: &[u8],
+    role: crate::vbios::tables_v3::RailRole,
+    millivolts: f64,
+) -> Result<Vec<(usize, f32)>, Error> {
+    if let Ok(gb) = crate::vbios::gb20x::parse_layout(data) {
+        let patches = crate::vbios::gb20x::locate_voltage_wall_writes(data, &gb, role, millivolts)?;
+        return Ok(patches.into_iter().flat_map(|p| p.writes).collect());
+    }
+    let Some((family, _)) = crate::vbios::tables_v3::detect_family(data) else {
+        return Err(Error::from(
+            "volt wall: image family unrecognized (neither GB20x nor 3x)",
+        ));
+    };
+    let ctx = crate::vbios::tables_v3::TableContext::new(data, family)
+        .map_err(|e| Error::from(format!("volt wall: 3x context ({e})")))?;
+    let patches =
+        crate::vbios::tables_v3::locate_voltage_wall_writes(data, &ctx, role, millivolts)?;
+    Ok(patches.into_iter().flat_map(|p| p.writes).collect())
+}
+
+/// 电压墙就地应用（按镜像族分派；整镜像车道）。
+#[cfg(windows)]
+fn patch_wall_any_family(
+    img: &mut [u8],
+    role: crate::vbios::tables_v3::RailRole,
+    millivolts: f64,
+) -> Result<(), Error> {
+    if let Ok(gb) = crate::vbios::gb20x::parse_layout(img) {
+        return crate::vbios::gb20x::patch_voltage_wall_millivolts(img, &gb, role, millivolts)
+            .map(|_| ());
+    }
+    let Some((family, _)) = crate::vbios::tables_v3::detect_family(img) else {
+        return Err(Error::from(
+            "volt wall: image family unrecognized (neither GB20x nor 3x)",
+        ));
+    };
+    let ctx = crate::vbios::tables_v3::TableContext::new(img, family)
+        .map_err(|e| Error::from(format!("volt wall: 3x context ({e})")))?;
+    crate::vbios::tables_v3::patch_voltage_wall_millivolts(img, &ctx, role, millivolts).map(|_| ())
+}
+
+/// 目标适配器解析结果（instance_id + 描述）。
+#[cfg(windows)]
+fn match_nvidia_adapter(target: &GpuTarget<'_>) -> Result<(String, String), Error> {
+    let adapters = crate::vbios_override::enumerate_display_adapters()?;
+    let nvidia: Vec<_> = adapters.into_iter().filter(|a| a.is_nvidia).collect();
+    if nvidia.is_empty() {
+        return Err(Error::from("no NVIDIA display adapters (SetupDi)"));
+    }
+    // PCI BDF 精确匹配（NvAPI bus id / slot ↔ 实例路径 BUS_xx&DEV_xx）。
+    let (bus, slot) = match target.nvapi()?.info() {
+        Ok(info) => (Some(info.bus.id), Some(info.bus.slot_id)),
+        Err(_) => (None, None),
+    };
+    if let (Some(bus), Some(slot)) = (bus, slot)
+        && let Some(a) = nvidia
+            .iter()
+            .find(|a| u32::from(a.bus) == bus && u32::from(a.device) == slot)
+    {
+        return Ok((a.instance_id.clone(), a.description.clone()));
+    }
+    if nvidia.len() == 1 {
+        return Ok((nvidia[0].instance_id.clone(), nvidia[0].description.clone()));
+    }
+    let list: Vec<String> = nvidia
+        .iter()
+        .map(|a| {
+            format!(
+                "  {:02x}:{:02x}.{} {} {}",
+                a.bus, a.device, a.func, a.instance_id, a.description
+            )
+        })
+        .collect();
+    Err(Error::from(format!(
+        "multiple NVIDIA adapters and BDF match failed (nvapi bus={bus:?} slot={slot:?}); pass --gpu matching one:\n{}",
+        list.join("\n")
+    )))
+}
+
+#[cfg(windows)]
+fn prefix_hex(bytes: &[u8], n: usize) -> String {
+    bytes.iter().take(n).map(|b| format!("{b:02x}")).collect()
+}
+
+/// 读取 vix 车道 `vbios` override 状态（每适配器：存在性/大小/前 32B）。
+/// 读面；不需要管理员（驱动键对 Users 可读）。
+#[derive(Clone, Copy, Debug)]
+pub struct QueryVbiosOverrideStatus;
+
+impl GpuOperation for QueryVbiosOverrideStatus {
+    type Output = Vec<super::result::VbiosOverrideAdapterStatus>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryVbiosOverrideStatus
+    }
+
+    fn run(&self, _target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        #[cfg(windows)]
+        {
+            let adapters = crate::vbios_override::enumerate_display_adapters()?;
+            let out = adapters
+                .into_iter()
+                .map(|a| {
+                    let session = crate::vbios_override::read_session_state(&a.instance_id);
+                    let romoverride =
+                        crate::vbios_override::read_romoverride_fragments(&a.instance_id)
+                            .unwrap_or_default();
+                    let (len, prefix, err) =
+                        match crate::vbios_override::read_override(&a.instance_id) {
+                            Ok(Some(v)) => (Some(v.len()), Some(prefix_hex(&v, 32)), None),
+                            Ok(None) => (None, None, None),
+                            Err(e) => (None, None, Some(format!("{e}"))),
+                        };
+                    super::result::VbiosOverrideAdapterStatus {
+                        instance_id: a.instance_id,
+                        description: a.description,
+                        is_nvidia: a.is_nvidia,
+                        bus: a.bus,
+                        device: a.device,
+                        func: a.func,
+                        override_len: len,
+                        override_prefix_hex: prefix,
+                        read_error: err,
+                        session_vbios_source: session.as_ref().map(|s| s.vbios_source),
+                        session_vbios_len: session.as_ref().map(|s| s.session_vbios_len),
+                        mvolt_romoverride_present: session
+                            .as_ref()
+                            .map(|s| s.mvolt_romoverride_present),
+                        romoverride_fragments: romoverride
+                            .into_iter()
+                            .map(|f| super::result::VbiosRomOverrideFragment {
+                                name: f.name,
+                                version_gate_a: f.version_gate_a,
+                                version_gate_b: f.version_gate_b,
+                                offset: f.offset,
+                                len: f.len,
+                                data_hex: f.data_hex,
+                            })
+                            .collect(),
+                    }
+                })
+                .collect();
+            Ok(out)
+        }
+        #[cfg(not(windows))]
+        {
+            Err(Error::from(
+                "vbios override is Windows-only (vix loader registry lane)",
+            ))
+        }
+    }
+}
+
+/// 写入 `vbios` REG_BINARY override。HIGH RISK：驱动初始化时消费——默认
+/// 模式重启 Windows 生效，GSP 固件模式设备禁用/启用即可。需要管理员。
+#[derive(Clone, Debug)]
+pub struct SetVbiosOverride {
+    /// 目标功率上限（mW）：live 镜像 P+0x2C power budget 每条完整条目的
+    /// peak/max 域（entry+0xA）改写后修复镜像加性校验。nvidia-smi 的
+    /// Max Power Limit 源头。
+    pub power_peak_mw: Option<u32>,
+    /// 外部镜像直写（vix editor patch 好的 .rom）；与 `power_peak_mw` 互斥
+    /// 且优先。
+    pub image: Option<Vec<u8>>,
+    /// 电压墙目标（role, 毫伏）：live 镜像定位 GB20x rail×VFE 方程墙
+    /// （常数墙三点同写 / 曲线墙抬 max 钳位），与 power patch 叠加。
+    pub voltage_walls_mv: Vec<(crate::vbios::tables_v3::RailRole, f64)>,
+}
+
+impl GpuOperation for SetVbiosOverride {
+    type Output = super::result::VbiosOverrideApply;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetVbiosOverride
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        #[cfg(windows)]
+        {
+            let (instance_id, description) = match_nvidia_adapter(target)?;
+            let (image, patched) = if let Some(bytes) = &self.image {
+                if bytes.len() < 512 || bytes[..2] != [0x55, 0xAA] {
+                    // vix 接受的是从 legacy image 起的镜像链；55 AA 不在 0
+                    // 处的（如带前置头的 dump）直接拒绝，避免写废值。
+                    return Err(Error::from(
+                        "set-vbios-override: --image must start with the 55 AA legacy image",
+                    ));
+                }
+                (bytes.clone(), Vec::new())
+            } else {
+                let mut img = target.nvapi()?.vbios_image().map_err(Error::from)?;
+                let mut patched = Vec::new();
+                if let Some(peak) = self.power_peak_mw {
+                    patched = crate::vbios::power_p2::patch_power_budget_peak_mw(&mut img, peak)?;
+                }
+                for (role, mv) in &self.voltage_walls_mv {
+                    patch_wall_any_family(&mut img, *role, *mv)?;
+                }
+                if self.power_peak_mw.is_none() && self.voltage_walls_mv.is_empty() {
+                    return Err(Error::from(
+                        "set-vbios-override: need --power-max-w / --volt-*-mv or --image",
+                    ));
+                }
+                let patched = patched
+                    .into_iter()
+                    .map(|p| super::result::VbiosOverridePowerPatch {
+                        index: p.index,
+                        offset: p.offset,
+                        tag: p.tag,
+                        old_peak_mw: p.old_peak_mw,
+                        new_peak_mw: p.new_peak_mw,
+                    })
+                    .collect();
+                (img, patched)
+            };
+            // 旧值回执（供回滚对照；读失败不阻断写入本体）。
+            let previous_len = crate::vbios_override::read_override(&instance_id)
+                .ok()
+                .flatten()
+                .map(|v| v.len());
+            // 仿 vix load：整镜像车道写前清 romOverride 片段链——两车道叠
+            // 加时片段会 patch 到新镜像基线上，基线必须干净。报告清除数。
+            let cleared_romoverride =
+                crate::vbios_override::clear_romoverride_all(&instance_id).unwrap_or(0);
+            crate::vbios_override::write_override(&instance_id, &image)?;
+            Ok(super::result::VbiosOverrideApply {
+                instance_id: instance_id.clone(),
+                description,
+                image_len: image.len(),
+                cleared_romoverride,
+                patched_entries: patched,
+                previous_len,
+                restart_hint: "restart Windows (default driver mode) OR disable/enable the GPU in Device Manager (GSP firmware mode) to load; rollback = reset-vbios-override + same restart".to_string(),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (
+                target,
+                &self.power_peak_mw,
+                &self.image,
+                &self.voltage_walls_mv,
+            );
+            Err(Error::from(
+                "vbios override is Windows-only (vix loader registry lane)",
+            ))
+        }
+    }
+}
+
+/// 写 mVolt 车道 direct patch：`romOverride00..` 片段链（nvlddmkm
+/// sub_140185660 消费格式：[u32 BE 版本指纹A][u8 指纹B][u32 LE 偏移]
+/// [u8 len][数据]，指纹全 0=通配）。驱动 init 后对内存 VBIOS 影像就地
+/// 改写，patch 后免校验——与整镜像 `vbios` 车道（SetVbiosOverride）互为
+/// 两级粒度。HIGH RISK：需要管理员 + 设备重启生效。
+#[derive(Clone, Debug)]
+pub struct SetVbiosDirectPatch {
+    /// 目标功率上限（mW）：live 镜像定位 P+0x2C cap 条目 peak 域
+    /// （与整镜像车道同一字节），构造通配指纹片段写入。
+    pub power_peak_mw: Option<u32>,
+    /// NVVDD OCP 电流上限（mA）：live 镜像定位功率策略表 kind==10 行
+    /// （文档化 NVVDD OCP；无 kind-10 行时报错并列出全部行供 raw 片段
+    /// 手动打点）。
+    pub ocp_milliamps: Option<u32>,
+    /// NVVDD OCP default 电流（mA）：同 kind==10 行的 default 域。
+    /// 驱动要求 min<=default<=max 一致性——与 --ocp-amps 同跑或 max 先行。
+    pub ocp_default_milliamps: Option<u32>,
+    /// 电压墙目标（role, 毫伏）——GB20x rail×VFE 方程墙（fragment 车道）。
+    pub voltage_walls_mv: Vec<(crate::vbios::tables_v3::RailRole, f64)>,
+    /// 原始片段（offset, data LE bytes）——绕过一切自动定位。
+    pub raw_patches: Vec<(u32, Vec<u8>)>,
+    /// true = --overwrite：清空既有 romOverride 链只写新片段；
+    /// false = --append（默认）：按 offset 合并，保留其它既有片段。
+    pub overwrite_chain: bool,
+}
+
+impl GpuOperation for SetVbiosDirectPatch {
+    type Output = super::result::VbiosDirectPatchApply;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetVbiosDirectPatch
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        #[cfg(windows)]
+        {
+            if self.power_peak_mw.is_none()
+                && self.ocp_milliamps.is_none()
+                && self.ocp_default_milliamps.is_none()
+                && self.voltage_walls_mv.is_empty()
+                && self.raw_patches.is_empty()
+            {
+                return Err(Error::from(
+                    "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --patch",
+                ));
+            }
+            let (instance_id, description) = match_nvidia_adapter(target)?;
+            // live 镜像定位（与整镜像 patch 车道共用目标选择器=同字节）。
+            let image = target.nvapi()?.vbios_image().map_err(Error::from)?;
+            let mut new_pairs: Vec<(u32, Vec<u8>)> = Vec::new();
+            let mut patches: Vec<super::result::VbiosDirectPatchEntry> = Vec::new();
+            if let Some(peak) = self.power_peak_mw {
+                let points = crate::vbios::power_p2::locate_power_budget_cap_peak(&image)?;
+                for p in points {
+                    new_pairs.push((p.peak_offset as u32, peak.to_le_bytes().to_vec()));
+                    patches.push(super::result::VbiosDirectPatchEntry {
+                        offset: p.peak_offset as u32,
+                        data_hex: peak
+                            .to_le_bytes()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect(),
+                        old_peak_mw: p.old_peak_mw,
+                        source: "board-power-cap".to_string(),
+                    });
+                }
+            }
+            if self.ocp_milliamps.is_some() || self.ocp_default_milliamps.is_some() {
+                let points = crate::vbios::power_p2::locate_ocp_policy_peaks(&image)?;
+                for p in points {
+                    if let Some(ocp) = self.ocp_milliamps {
+                        new_pairs.push((p.maximum_offset as u32, ocp.to_le_bytes().to_vec()));
+                        patches.push(super::result::VbiosDirectPatchEntry {
+                            offset: p.maximum_offset as u32,
+                            data_hex: ocp
+                                .to_le_bytes()
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect(),
+                            old_peak_mw: Some(p.old_maximum_raw),
+                            source: "nvvdd-ocp".to_string(),
+                        });
+                    }
+                    if let Some(def) = self.ocp_default_milliamps {
+                        new_pairs.push((p.default_offset as u32, def.to_le_bytes().to_vec()));
+                        patches.push(super::result::VbiosDirectPatchEntry {
+                            offset: p.default_offset as u32,
+                            data_hex: def
+                                .to_le_bytes()
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect(),
+                            old_peak_mw: Some(p.old_default_raw),
+                            source: "nvvdd-ocp-default".to_string(),
+                        });
+                    }
+                }
+            }
+            for (role, mv) in &self.voltage_walls_mv {
+                for (off, uv) in locate_wall_writes_any_family(&image, *role, *mv)? {
+                    let bytes = uv.to_le_bytes().to_vec();
+                    new_pairs.push((off as u32, bytes.clone()));
+                    patches.push(super::result::VbiosDirectPatchEntry {
+                        offset: off as u32,
+                        data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                        old_peak_mw: None,
+                        source: format!("volt-wall-{}", mv),
+                    });
+                }
+            }
+            for (off, bytes) in &self.raw_patches {
+                let old = (*off as usize)
+                    .checked_add(4)
+                    .filter(|&end| end <= image.len())
+                    .map(|end| u32::from_le_bytes(image[*off as usize..end].try_into().unwrap()));
+                patches.push(super::result::VbiosDirectPatchEntry {
+                    offset: *off,
+                    data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                    old_peak_mw: old,
+                    source: if old.is_some() {
+                        "raw".to_string()
+                    } else {
+                        "raw(offset beyond live image)".to_string()
+                    },
+                });
+                new_pairs.push((*off, bytes.clone()));
+            }
+            let (chain, kept_existing, replaced_existing) = if self.overwrite_chain {
+                let existing = crate::vbios_override::read_romoverride_fragments(&instance_id)
+                    .unwrap_or_default();
+                // --overwrite：抹掉既有链（write 函数自身先清再写），只写新片段。
+                let _ = existing.len();
+                (
+                    new_pairs
+                        .iter()
+                        .map(|(off, data)| {
+                            crate::vbios_override::build_romoverride_fragment(
+                                [0, 0, 0, 0],
+                                0,
+                                *off,
+                                data,
+                            )
+                        })
+                        .collect(),
+                    0usize,
+                    0usize,
+                )
+            } else {
+                let existing = crate::vbios_override::read_romoverride_fragments(&instance_id)
+                    .unwrap_or_default();
+                let r = crate::vbios_override::merge_romoverride_chain(&existing, &new_pairs);
+                (r.chain, r.kept, r.replaced)
+            };
+            let fragments_written =
+                crate::vbios_override::write_romoverride_fragments(&instance_id, &chain)?;
+            Ok(super::result::VbiosDirectPatchApply {
+                instance_id: instance_id.clone(),
+                description,
+                fragments_written,
+                kept_existing,
+                replaced_existing,
+                patches,
+                restart_hint: "disable/enable the GPU (or restart Windows) to apply; rollback = reset-vbios-override (clears the romOverride chain too)".to_string(),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (
+                target,
+                &self.power_peak_mw,
+                &self.ocp_milliamps,
+                &self.ocp_default_milliamps,
+                &self.raw_patches,
+            );
+            Err(Error::from(
+                "vbios direct patch is Windows-only (romOverride registry lane)",
+            ))
+        }
+    }
+}
+
+/// 删除 `vbios` override 值（回退到板载 VBIOS）。幂等；需要管理员。
+#[derive(Clone, Copy, Debug)]
+pub struct ClearVbiosOverride;
+
+impl GpuOperation for ClearVbiosOverride {
+    type Output = super::result::VbiosOverrideClear;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::ClearVbiosOverride
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        #[cfg(windows)]
+        {
+            let (instance_id, description) = match_nvidia_adapter(target)?;
+            let _rom = crate::vbios_override::clear_romoverride_all(&instance_id);
+            let cleared = crate::vbios_override::clear_override(&instance_id)?;
+            Ok(super::result::VbiosOverrideClear {
+                instance_id: instance_id.clone(),
+                description,
+                cleared,
+                restart_hint: "the removed override keeps running until the next driver init — restart Windows (default mode) or disable/enable the GPU (GSP mode) to fall back to the on-flash VBIOS".to_string(),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = target;
+            Err(Error::from(
+                "vbios override is Windows-only (vix loader registry lane)",
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod pair_plan_tests {
     use super::PrivateVfPairPlane::{Oc, PreOc};

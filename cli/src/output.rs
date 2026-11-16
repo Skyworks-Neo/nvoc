@@ -1127,8 +1127,10 @@ fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
                 }
             }
             render_rails(t, lines);
-            render_rel_limits(t.get("rel_limits"), lines);
+            render_voltage_walls(t.get("voltage_walls"), lines);
             render_vmin(t.get("vmin"), lines);
+            render_thermal_factory_perf(t, lines);
+            render_gb20x_clock_extras(t, lines);
             render_clocks(t.get("clocks"), true, lines);
             render_memory_nvml_scale(t.get("clocks"), lines);
             render_fans_v3(t, lines);
@@ -1165,29 +1167,13 @@ fn push_structural_sections(output: &Value, lines: &mut Vec<String>) {
                 lines.push(nvoc_cli_common::color::stylize_warning(&text));
             }
         }
-        if let Some(p) = g.get("power_policy").and_then(Value::as_object)
-            && let Some(rows) = p.get("rows").and_then(Value::as_array)
-        {
-            let notebook = p.get("notebook").and_then(Value::as_bool) == Some(true);
-            let tgp_row_idx = if notebook { 2 } else { 8 };
-            if let Some(r) = rows.get(tgp_row_idx) {
-                let ver = p.get("version").and_then(Value::as_str).unwrap_or("?");
-                let nb = if notebook { " notebook" } else { "" };
-                let fmt = |v: u64| format!("{:.0} W", v as f64 / 1000.0);
-                lines.push(nvoc_cli_common::color::stylize(
-                    &format!(
-                        "    power policy (gb20x {ver}{nb}): TGP row{tgp_row_idx} {}/{}/{}, {} rows",
-                        fmt(r.get("minimum_raw").and_then(Value::as_u64).unwrap_or(0)),
-                        fmt(r.get("default_raw").and_then(Value::as_u64).unwrap_or(0)),
-                        fmt(r.get("maximum_raw").and_then(Value::as_u64).unwrap_or(0)),
-                        rows.len()
-                    ),
-                    false,
-                ));
-            }
-        }
-        render_rel_limits(g.get("rel_limits"), lines);
+        render_voltage_walls(g.get("voltage_walls"), lines);
         render_vmin(g.get("vmin"), lines);
+        render_power_rows_gb20x(g.get("power_rows"), lines);
+        render_thermal_factory_perf(g, lines);
+        render_gb20x_clock_extras(g, lines);
+        render_fan_channels(g.get("fan_channels"), lines);
+        render_runtime_hooks(g.get("runtime_hooks"), lines);
         render_clocks(g.get("clocks"), false, lines);
         render_memory_nvml_scale(g.get("clocks"), lines);
         if let Some(profiles) = g.get("profiles").and_then(Value::as_array)
@@ -1333,24 +1319,36 @@ fn render_rails(t: &Value, lines: &mut Vec<String>) {
     }
 }
 
-fn render_rel_limits(limits: Option<&Value>, lines: &mut Vec<String>) {
-    let Some(limits) = limits.and_then(Value::as_array) else {
+/// GB20x 功率策略 20 行逐行渲染（用户裁定与 3x power rows 同格式：
+/// `#N role/kind min..def..max unit`；TGP 行加 `*`）。
+fn render_power_rows_gb20x(rows: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(rows) = rows.and_then(Value::as_array) else {
         return;
     };
-    let items: Vec<String> = limits
+    let items: Vec<String> = rows
         .iter()
-        .map(|l| {
-            let rail = l.get("rail").and_then(Value::as_str).unwrap_or("?");
-            let mv = l.get("max_mv").and_then(Value::as_f64).unwrap_or(0.0);
-            match l.get("kind").and_then(Value::as_str) {
-                Some(kind) => format!("{rail} REL max {mv:.1} mV ({kind})"),
-                None => format!("{rail} REL max {mv:.1} mV"),
-            }
+        .map(|r| {
+            let row = r.get("row").and_then(Value::as_u64).unwrap_or(0);
+            let kind_name = r.get("kind_name").and_then(Value::as_str).unwrap_or("?");
+            let role = r.get("role").and_then(Value::as_str);
+            let label = role.unwrap_or(kind_name);
+            let unit = r.get("unit").and_then(Value::as_str).unwrap_or("mW");
+            let tgp = kind_name == "board-power" && (row == 2 || row == 8);
+            format!(
+                "#{}{} {} {}..{}..{} {}",
+                row,
+                if tgp { "*" } else { "" },
+                label,
+                r.get("min_raw").and_then(Value::as_u64).unwrap_or(0),
+                r.get("default_raw").and_then(Value::as_u64).unwrap_or(0),
+                r.get("max_raw").and_then(Value::as_u64).unwrap_or(0),
+                unit
+            )
         })
         .collect();
     if !items.is_empty() {
         lines.push(nvoc_cli_common::color::stylize(
-            &format!("    rel limits: {}", items.join(" | ")),
+            &format!("    power rows (* = TGP): {}", items.join(" | ")),
             false,
         ));
     }
@@ -1380,6 +1378,288 @@ fn render_vmin(vmins: Option<&Value>, lines: &mut Vec<String>) {
             false,
         ));
     }
+}
+
+/// 电压墙（全 role；REL/ALT/OV/VMIN——vix Voltage 面板同源）。
+fn render_voltage_walls(walls: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(walls) = walls.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = walls
+        .iter()
+        .filter(|w| w.get("absent").and_then(Value::as_bool) != Some(true))
+        .map(|w| {
+            let rail = w.get("rail").and_then(Value::as_str).unwrap_or("?");
+            let role = w
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_uppercase();
+            let clamp = w.get("clamp_mv").and_then(Value::as_array);
+            let (lo, hi) = match clamp {
+                Some(a) if a.len() == 2 => {
+                    (a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0))
+                }
+                _ => (0.0, 0.0),
+            };
+            let constant = w.get("constant_mv").and_then(Value::as_f64);
+            let tree = w.get("tree_state").and_then(Value::as_str);
+            let pinned = w.get("pinned_mv").and_then(Value::as_f64);
+            let value = if let Some(v) = constant {
+                format!("const {v} mV")
+            } else if let (Some("pinned"), Some(v)) = (tree, pinned) {
+                format!("pinned {v} mV")
+            } else if tree == Some("stock") {
+                "tree (stock, computed)".to_string()
+            } else if (lo, hi) == (0.0, 0.0) {
+                "non-voltage".to_string()
+            } else {
+                format!("curve {lo}..{hi} mV")
+            };
+            format!("{rail} {role}: {value}")
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    voltage walls: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+/// 热策略 / 出厂时钟 / PERF_CF（GB20x）。
+fn render_thermal_factory_perf(g: &Value, lines: &mut Vec<String>) {
+    if let Some(entries) = g.get("thermal_policies").and_then(Value::as_array)
+        && !entries.is_empty()
+    {
+        let items: Vec<String> = entries
+            .iter()
+            .map(|e| {
+                let temps = e
+                    .get("temperatures_raw_1_32c")
+                    .and_then(Value::as_array)
+                    .map(|t| {
+                        t.iter()
+                            .map(|x| format!("{:.1}C", x.as_i64().unwrap_or(0) as f64 / 32.0))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "#{} class{} [{}]",
+                    e.get("index").and_then(Value::as_u64).unwrap_or(0),
+                    e.get("policy_class").and_then(Value::as_u64).unwrap_or(0),
+                    temps.join("/")
+                )
+            })
+            .collect();
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    thermal policies ({}): {}",
+                entries.len(),
+                items.join(" ")
+            ),
+            false,
+        ));
+    }
+    if let Some(fc) = g.get("factory_clocks")
+        && !fc.is_null()
+    {
+        let entries = |key: &str| -> Vec<String> {
+            fc.get(key)
+                .and_then(Value::as_array)
+                .map(|e| {
+                    e.iter()
+                        .map(|x| {
+                            format!(
+                                "{}:{}kHz",
+                                x.get("flag").and_then(Value::as_u64).unwrap_or(0),
+                                x.get("khz").and_then(Value::as_i64).unwrap_or(0)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    factory clocks: offsets[{}] clocks[{}]",
+                entries("offsets").join(","),
+                entries("clocks").join(",")
+            ),
+            false,
+        ));
+    }
+    if let Some(pc) = g.get("perf_cf")
+        && !pc.is_null()
+    {
+        let n_c = pc
+            .get("controllers")
+            .and_then(Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let n_p = pc
+            .get("policies")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter(|p| p.get("active").and_then(Value::as_bool) == Some(true))
+                    .count()
+            })
+            .unwrap_or(0);
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    perf_cf: {n_c} controllers, {n_p} active policies"),
+            false,
+        ));
+    }
+}
+
+/// GPC 曲线偏移槽 / DRAM 点 / LPWR（GB20x）。
+fn render_gb20x_clock_extras(g: &Value, lines: &mut Vec<String>) {
+    if let Some(gc) = g.get("gpc_curve")
+        && !gc.is_null()
+    {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!(
+                "    gpc curve offset: root {} (var {}), slot {:?} @{:?}, current {} MHz",
+                gc.get("root").and_then(Value::as_u64).unwrap_or(0),
+                gc.get("variable").and_then(Value::as_u64).unwrap_or(0),
+                gc.get("slot").and_then(Value::as_u64),
+                gc.get("slot_offset").and_then(Value::as_u64),
+                gc.get("current_offset_mhz")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+            ),
+            false,
+        ));
+    }
+    if let Some(dp) = g.get("dram_points").and_then(Value::as_array)
+        && !dp.is_empty()
+    {
+        let items: Vec<String> = dp
+            .iter()
+            .map(|x| {
+                format!(
+                    "{}{} {}",
+                    x.get("index").and_then(Value::as_u64).unwrap_or(0),
+                    if x.get("flags").and_then(Value::as_str) == Some("0x13") {
+                        "*"
+                    } else {
+                        ""
+                    },
+                    x.get("mhz").and_then(Value::as_u64).unwrap_or(0),
+                )
+            })
+            .collect();
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    dram points: {}", items.join(" ")),
+            false,
+        ));
+    }
+    if let Some(t) = g.get("lpwr").and_then(Value::as_array)
+        && !t.is_empty()
+    {
+        let items: Vec<String> = t
+            .iter()
+            .map(|x| {
+                format!(
+                    "{} {} entries",
+                    x.get("name").and_then(Value::as_str).unwrap_or("?"),
+                    x.get("entries")
+                        .and_then(Value::as_array)
+                        .map(|a| a.len())
+                        .unwrap_or(0)
+                )
+            })
+            .collect();
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    lpwr: {}", items.join(", ")),
+            false,
+        ));
+    }
+}
+
+/// 风扇五表通道（GB20x）。
+fn render_fan_channels(channels: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(channels) = channels.and_then(Value::as_array) else {
+        return;
+    };
+    let items: Vec<String> = channels
+        .iter()
+        .filter(|c| c.get("active").and_then(Value::as_bool) == Some(true))
+        .map(|c| {
+            let points = c
+                .get("curve_points_temp_rpm")
+                .and_then(Value::as_array)
+                .map(|pts| {
+                    pts.iter()
+                        .map(|p| {
+                            let pair = p.as_array().cloned().unwrap_or_default();
+                            format!(
+                                "{:.0}C/{}RPM",
+                                pair.first().and_then(Value::as_u64).unwrap_or(0) as f64 / 32.0,
+                                pair.get(1).and_then(Value::as_u64).unwrap_or(0)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            format!(
+                "#{} {}Hz {}..{}% {}..{}RPM [{}]",
+                c.get("index").and_then(Value::as_u64).unwrap_or(0),
+                c.get("pwm_frequency_hz")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                c.get("level_min").and_then(Value::as_u64).unwrap_or(0),
+                c.get("level_max").and_then(Value::as_u64).unwrap_or(0),
+                c.get("rpm_min").and_then(Value::as_u64).unwrap_or(0),
+                c.get("rpm_max").and_then(Value::as_u64).unwrap_or(0),
+                points.join(" ")
+            )
+        })
+        .collect();
+    if !items.is_empty() {
+        lines.push(nvoc_cli_common::color::stylize(
+            &format!("    fans: {}", items.join(" | ")),
+            false,
+        ));
+    }
+}
+
+/// 运行时电压 offset 钩子状态（GB20x；mVolt+ 安装形态）。
+fn render_runtime_hooks(hooks: Option<&Value>, lines: &mut Vec<String>) {
+    let Some(h) = hooks else {
+        return;
+    };
+    let state = h.get("state").and_then(Value::as_str).unwrap_or("?");
+    let slots: Vec<String> = h
+        .get("slots")
+        .and_then(Value::as_array)
+        .map(|ss| {
+            ss.iter()
+                .map(|s| {
+                    format!(
+                        "{} {} -> eq {}{}",
+                        s.get("rail").and_then(Value::as_str).unwrap_or("?"),
+                        s.get("role").and_then(Value::as_str).unwrap_or("?"),
+                        s.get("word").and_then(Value::as_u64).unwrap_or(0),
+                        if s.get("hooked").and_then(Value::as_bool) == Some(true) {
+                            " (hooked)"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut line = format!("    runtime hooks: {state}");
+    if !slots.is_empty() {
+        line.push_str(&format!(" [{}]", slots.join(", ")));
+    }
+    if let Some(blocked) = h.get("blocked").and_then(Value::as_str) {
+        line.push_str(&format!("; blocked: {blocked}"));
+    }
+    lines.push(nvoc_cli_common::color::stylize(&line, false));
 }
 
 fn render_clocks(clocks: Option<&Value>, filter_stored: bool, lines: &mut Vec<String>) {

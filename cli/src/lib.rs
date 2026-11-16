@@ -9,30 +9,31 @@ use nvoc_core::profile::{
     restore_backup, write_package,
 };
 use nvoc_core::{
-    BackendSet, ClearEdid, ClkVfDomainHint, ClockDomain, ConvertEnum, CoolerPolicy, CoolerTarget,
-    DisableNvapiThermalSim, FanCurvePointReadout, GetFanCurves, GetPowerMode, GpuSelector,
-    GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta, NvapiI2cTransaction, NvapiPerfFreqCap,
-    NvapiThermalChannelSnapshot, NvapiThermalInputState, OemOcScanner, OemOcScannerAction, PState,
-    Percentage, PmgrArbiterProbe, QueryApiRestriction, QueryAutoBoost, QueryClockOffset,
-    QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo, QueryGpuInfo, QueryGpuSettings,
-    QueryGpuStatus, QueryLegacyCoreOvervoltRanges, QueryNvapiBarInfo, QueryNvapiBoostLocks,
-    QueryNvapiClkDomainFreqDetail, QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum,
-    QueryNvapiClkDomains, QueryNvapiClkVfControl, QueryNvapiClkVfPoints,
-    QueryNvapiCompactThermalPolicies, QueryNvapiComputeCaps, QueryNvapiCoolerInfo,
-    QueryNvapiCoreVoltageControl, QueryNvapiDNotifier, QueryNvapiFanPolicyInfo,
-    QueryNvapiFramerateLimit, QueryNvapiI2cRead, QueryNvapiOcScannerIncomplete,
-    QueryNvapiPStateLevels, QueryNvapiPStateLockStatus, QueryNvapiPmgrVoltageArbiter,
-    QueryNvapiPowerCeiling, QueryNvapiPowerChannels, QueryNvapiPowerCommand,
-    QueryNvapiPstates20Private, QueryNvapiRatedTdp, QueryNvapiRegisterThermals,
-    QueryNvapiTargetRemoveTdpFlags, QueryNvapiTargetTempPolicies, QueryNvapiTargetTempPolicyIndex,
-    QueryNvapiTgpWattRange, QueryNvapiThermalChannels, QueryNvapiThermalInputs,
-    QueryNvapiThermalPoliciesStatus, QueryNvapiThermalSettings, QueryNvapiThermalSim,
-    QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices, QueryNvapiVoltRails,
-    QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates, QuerySupportedApplicationsClocks,
-    QueryTdpTempLimits, QueryTemperatureThresholds, QueryThrottleReasons, QueryTopRelsRelations,
-    QueryVbiosImage, QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion,
-    QueryViolationStatus, QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels,
-    ResetFanCurve, ResetFanSpeed, ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
+    BackendSet, ClearEdid, ClearVbiosOverride, ClkVfDomainHint, ClockDomain, ConvertEnum,
+    CoolerPolicy, CoolerTarget, DisableNvapiThermalSim, FanCurvePointReadout, GetFanCurves,
+    GetPowerMode, GpuSelector, GpuTarget, Kilohertz, KilohertzDelta, MicrovoltsDelta,
+    NvapiI2cTransaction, NvapiPerfFreqCap, NvapiThermalChannelSnapshot, NvapiThermalInputState,
+    OemOcScanner, OemOcScannerAction, PState, Percentage, PmgrArbiterProbe, QueryApiRestriction,
+    QueryAutoBoost, QueryClockOffset, QueryDisplays, QueryDomainVfpPoints, QueryEdid, QueryFanInfo,
+    QueryGpuInfo, QueryGpuSettings, QueryGpuStatus, QueryLegacyCoreOvervoltRanges,
+    QueryNvapiBarInfo, QueryNvapiBoostLocks, QueryNvapiClkDomainFreqDetail,
+    QueryNvapiClkDomainFreqsBatch, QueryNvapiClkDomainFreqsEnum, QueryNvapiClkDomains,
+    QueryNvapiClkVfControl, QueryNvapiClkVfPoints, QueryNvapiCompactThermalPolicies,
+    QueryNvapiComputeCaps, QueryNvapiCoolerInfo, QueryNvapiCoreVoltageControl, QueryNvapiDNotifier,
+    QueryNvapiFanPolicyInfo, QueryNvapiFramerateLimit, QueryNvapiI2cRead,
+    QueryNvapiOcScannerIncomplete, QueryNvapiPStateLevels, QueryNvapiPStateLockStatus,
+    QueryNvapiPmgrVoltageArbiter, QueryNvapiPowerCeiling, QueryNvapiPowerChannels,
+    QueryNvapiPowerCommand, QueryNvapiPstates20Private, QueryNvapiRatedTdp,
+    QueryNvapiRegisterThermals, QueryNvapiTargetRemoveTdpFlags, QueryNvapiTargetTempPolicies,
+    QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalChannels,
+    QueryNvapiThermalInputs, QueryNvapiThermalPoliciesStatus, QueryNvapiThermalSettings,
+    QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices,
+    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
+    QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage, QueryVbiosOverrideStatus,
+    QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus,
+    QueryVoltageBoost, ResetAutoboostStatus, ResetCoolerLevels, ResetFanCurve, ResetFanSpeed,
+    ResetForcePstate, ResetFreqLock, ResetLegacyApplicationFreqLock,
     ResetLegacyGpcRailOvervoltLimit, ResetNvapiFanControl, ResetNvapiPowerLimits,
     ResetNvapiSensorLimits, ResetNvapiTgpWatt, ResetNvapiThermalInputs,
     ResetNvapiThermalPolicyCurve, ResetNvapiVfpPrivate, ResetNvapiVoltRailLimit,
@@ -52,12 +53,12 @@ use nvoc_core::{
     SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
     SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
     SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
-    SetTemperatureLimit, SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active,
-    SetWm2Mode, VfPointType, VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type,
-    nvapi_status_name, nvml_pstate_to_str, parse_nvapi_locked_voltage_target,
-    parse_nvml_fan_control_policy, parse_nvml_pstate, query_domain_vf_points_indexed,
-    query_domain_vfp_indices, run, select_targets, set_nvapi_domain_vfp_deltas,
-    sync_memory_pstate_as_p0,
+    SetTemperatureLimit, SetVbiosDirectPatch, SetVbiosOverride, SetVfpFrequencyLock,
+    SetVfpLockEntries, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
+    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
+    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
+    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
+    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -242,12 +243,14 @@ pub enum Command {
     SetPrivateVftableRangeOffset,
     GetPrivateVftable,
     GetVbios,
+    GetVbiosOverride,
     SetPrivatePermanentPstateLockUser,
     GetTempSim,
     SetTempSim,
     ResetTempSim,
     SetPrivateTargetTempLimit,
     SetTempLimit,
+    SetVbiosOverride,
     SetFanSpeed,
     SetFreqLock,
     SetGpcVoltLock,
@@ -290,6 +293,7 @@ pub enum Command {
     ResetPrivateFreqDomainGlobalOffset,
     ResetPublicTgpPercent,
     ResetTempLimit,
+    ResetVbiosOverride,
     ResetLegacyGpcRailOvervoltLimit,
     ResetPstateGlobalFreqOffset,
     ResetPublicGpcRailVoltBoost,
@@ -862,6 +866,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::GetVbiosOverride,
+                CommandSpec {
+                    options: Box::leak(Box::new(["all"])),
+                    ..CommandSpec::new("get-vbios-override", Group::Info, "Read the vix-loader lane: the `vbios` REG_BINARY override value in each display adapter's driver key (Class\\{4d36e968-...}\\NNNN, SetupDi enumeration — read-only, no admin needed). Reports presence/size/prefix per adapter; this is the registry surface the driver consumes at init (616.56+) instead of the on-flash image. Companion of set/reset-vbios-override")
+                },
+            ),
+            (
                 Command::GetVfeTables,
                 CommandSpec {
                     arity: (0, 0),
@@ -1143,7 +1154,13 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     ..CommandSpec::new("reset-thermal-channel-override", Group::Thermal, "Restore temperature-sim inputs to 'follow the real sensor' (applied=0 + value=0): default clears all six settable channels (0..5); --channel N clears one. Companion of set-thermal-channel-override")
                 },
             ),
-(
+            (
+                Command::ResetVbiosOverride,
+                CommandSpec {
+                    ..CommandSpec::new("reset-vbios-override", Group::Power, "Delete the `vbios` registry override (vix-loader lane) from every NVIDIA display adapter's driver key — the driver falls back to the on-flash VBIOS at the next init (restart Windows / re-enable the GPU). GPU-INDEPENDENT (pure SetupDi + registry, never touches NVAPI): works when the GPU is dead with code 43 from a rejected override — this is the recovery entry point. Idempotent: no override present is a success")
+                },
+            ),
+            (
                 Command::ResetVoltRailLimit,
                 CommandSpec {
                     arity: (1, 1),
@@ -1781,6 +1798,24 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetVbiosOverride,
+                CommandSpec {
+                    options: Box::leak(Box::new([
+                        "mode",
+                        "power-max-w",
+                        "ocp-amps",
+                        "nvvdd-ocp-amps-default",
+                        "volt-rel-mv",
+                        "volt-alt-mv",
+                        "volt-ov-mv",
+                        "volt-vmin-mv",
+                        "patch",
+                        "image",
+                    ])),
+                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write a wildcard romOverride00 fragment for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
+                },
+            ),
+            (
                 Command::SetVfeVarEntry,
                 CommandSpec {
                     arity: (3, 3),
@@ -1912,6 +1947,124 @@ fn render_root_help() -> String {
 }
 
 /// `nvoc-cli list [GROUP]`: scriptable grouped command listing.
+/// reset-vbios-override：GPU 无关纯注册表路径（run_invocation 短路进入，Windows-only）。
+/// GPU 代码 43 / 驱动拒载 override 时这是唯一的恢复入口——vix loader 的
+/// unload 同样不依赖 GPU 存活。
+#[cfg(windows)]
+fn render_reset_vbios_override_invocation(invocation: &Invocation) -> CliResult<RunOutput> {
+    let entries = nvoc_core::vbios_override::clear_all_nvidia_overrides()
+        .map_err(|e| CliError::new(format!("reset-vbios-override: {e}")))?;
+    match invocation.output {
+        OutputFormat::Json => {
+            let list: Vec<Value> = entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "instance_id": e.instance_id,
+                        "description": e.description,
+                        "override_was_present": e.had_value,
+                        "cleared": e.cleared,
+                    })
+                })
+                .collect();
+            let rendered = serde_json::to_string(&json!({
+                "adapters": list,
+                "restart_hint": "the removed override keeps running until the next driver init — restart Windows or disable/enable the GPU to fall back to the on-flash VBIOS",
+            }))?;
+            Ok(RunOutput {
+                rendered,
+                exit_code: 0,
+            })
+        }
+        OutputFormat::Human => {
+            let mut text = vec!["reset-vbios-override (GPU-independent registry lane)".to_string()];
+            for e in &entries {
+                text.push(format!(
+                    "  {} [{}]: override was present: {}, cleared: {}",
+                    e.description,
+                    e.instance_id,
+                    if e.had_value { "yes" } else { "no" },
+                    if e.cleared { "yes" } else { "no" }
+                ));
+            }
+            if entries.is_empty() {
+                text.push("  (no NVIDIA display adapters found)".to_string());
+            }
+            text.push(
+                "restart Windows (or disable/enable the GPU) to fall back to the on-flash VBIOS"
+                    .to_string(),
+            );
+            Ok(RunOutput {
+                rendered: text.join("\n"),
+                exit_code: 0,
+            })
+        }
+    }
+}
+
+/// set-vbios-override --image：GPU 无关直写（外部镜像不需要 live GPU；
+/// --power-max-w 的 live 镜像路径仍走 target 管线）。
+#[cfg(windows)]
+fn render_set_vbios_override_image_invocation(invocation: &Invocation) -> CliResult<RunOutput> {
+    let Some(path) = invocation.options.get("image").and_then(|v| v.first()) else {
+        return Err(CliError::new(
+            "set-vbios-override --image: path required".to_string(),
+        ));
+    };
+    let image = std::fs::read(path)
+        .map_err(|e| CliError::new(format!("failed to read --image {path:?}: {e}")))?;
+    if image.len() < 512 || image[..2] != [0x55, 0xAA] {
+        return Err(CliError::new(
+            "set-vbios-override: --image must start with the 55 AA legacy image".to_string(),
+        ));
+    }
+    let adapters = nvoc_core::vbios_override::enumerate_display_adapters()
+        .map_err(|e| CliError::new(format!("set-vbios-override: {e}")))?;
+    let nvidia: Vec<_> = adapters.iter().filter(|a| a.is_nvidia).collect();
+    let adapter = if nvidia.len() == 1 {
+        nvidia[0]
+    } else {
+        return Err(CliError::new(format!(
+            "expected exactly one NVIDIA display adapter (GPU-independent lane has no BDF match); found {} — use the GPU-targeted lane while the GPU is alive",
+            nvidia.len()
+        )));
+    };
+    let previous_len = nvoc_core::vbios_override::read_override(&adapter.instance_id)
+        .ok()
+        .flatten()
+        .map(|v| v.len());
+    nvoc_core::vbios_override::write_override(&adapter.instance_id, &image)
+        .map_err(|e| CliError::new(format!("set-vbios-override: {e}")))?;
+    match invocation.output {
+        OutputFormat::Json => {
+            let rendered = serde_json::to_string(&json!({
+                "instance_id": adapter.instance_id,
+                "description": adapter.description,
+                "image_len": image.len(),
+                "previous_override_len": previous_len,
+                "value": "vbios",
+                "restart_hint": "restart Windows (default driver mode) OR disable/enable the GPU (GSP firmware mode) to load; rollback = reset-vbios-override (works with the GPU dead)",
+            }))?;
+            Ok(RunOutput {
+                rendered,
+                exit_code: 0,
+            })
+        }
+        OutputFormat::Human => Ok(RunOutput {
+            rendered: format!(
+                "set-vbios-override --image (GPU-independent registry lane)\n  {} [{}]\n  Image: {} bytes (previous override: {})\n  restart: Windows restart (default) / disable+enable GPU (GSP mode); rollback: reset-vbios-override",
+                adapter.description,
+                adapter.instance_id,
+                image.len(),
+                previous_len
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "none".into())
+            ),
+            exit_code: 0,
+        }),
+    }
+}
+
 fn render_list_invocation(invocation: &Invocation) -> CliResult<RunOutput> {
     let filter = invocation
         .positionals
@@ -2781,7 +2934,7 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("mode")
             .value_name("MODE")
             .action(ArgAction::Set)
-            .help("Whisper Mode 2.0 acoustic mode: quieter, quiet, or balanced (or 0/1/2); on reset-private-vftable-offset: freq or raw (clear only that mode's offsets, default both — same plane as --freq/--volt and --slot 0/1)"),
+            .help("Whisper Mode 2.0 acoustic mode: quieter, quiet, or balanced (or 0/1/2); on reset-private-vftable-offset: freq or raw (clear only that mode's offsets, default both — same plane as --freq/--volt and --slot 0/1); on set-vbios-override: file (default — whole-image `vbios` value, vix lane) or patch (mVolt direct lane — romOverride wildcard fragment for the cap byte)"),
         "out" => Arg::new("out")
             .long("out")
             .value_name("FILE")
@@ -2887,6 +3040,60 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .long("unsafe")
             .action(ArgAction::SetTrue)
             .help("set-private-vftable-{point,range}-offset on a server Pascal dual-plane card: write the ONE addressed plane instead of the default paired write (both planes converged, safe order). Single-plane writes are your responsibility: plane B > plane A feeds the GPU a non-monotonic table and soft-hangs it"),
+        "power-max-w" => Arg::new("power-max-w")
+            .long("power-max-w")
+            .value_name("W")
+            .action(ArgAction::Set)
+            .help("set-vbios-override: target power ceiling in watts (nvidia-smi Max Power Limit source; the P+0x2C power-budget cap entry). --mode file patches the image + checksum + writes the `vbios` whole-image value; --mode patch writes a wildcard romOverride fragment for the same byte. Admin; consumed at the next driver init"),
+        "ocp-amps" => Arg::new("ocp-amps")
+            .long("ocp-amps")
+            .value_name("A")
+            .action(ArgAction::Set)
+            .help("set-vbios-override --mode patch: NVVDD OCP current ceiling in amps — locates the kind-10 (NVVDD OCP) row in the live image's power-policy table and writes a wildcard romOverride fragment (mA units). If the image has no kind-10 row (GB20x often), the error lists every row (kind/max-offset/default) for manual --patch"),
+        "append" => Arg::new("append")
+            .long("append")
+            .action(ArgAction::SetTrue)
+            .conflicts_with("overwrite")
+            .help("set-vbios-override --mode patch (default behavior): merge by offset — existing romOverride fragments are KEPT (e.g. mVolt's OCP patches), same-offset fragments replaced by yours; the report shows kept/replaced/added counts"),
+        "overwrite" => Arg::new("overwrite")
+            .long("overwrite")
+            .action(ArgAction::SetTrue)
+            .help("set-vbios-override --mode patch: wipe the ENTIRE existing romOverride chain (00..FF + 000..999) and write only your fragments — use when the old chain is known-bad"),
+        "nvvdd-ocp-amps-default" => Arg::new("nvvdd-ocp-amps-default")
+            .long("nvvdd-ocp-amps-default")
+            .value_name("A")
+            .action(ArgAction::Set)
+            .help("set-vbios-override --mode patch: NVVDD OCP DEFAULT current in amps — patches the same kind-10 row's default field (the min..DEFAULT..max triple; companion of --ocp-amps which sets the max)"),
+        "volt-rel-mv" => Arg::new("volt-rel-mv")
+            .long("volt-rel-mv")
+            .value_name("MV")
+            .action(ArgAction::Set)
+            .help("set-vbios-override: NVVDD REL (runtime ceiling, temperature-derated curve) target in mV — file mode patches the curve equation's max clamp (+7); patch mode writes wildcard romOverride fragments for the same bytes. Stock 5060 Ti clamp 900..1120 mV"),
+        "volt-alt-mv" => Arg::new("volt-alt-mv")
+            .long("volt-alt-mv")
+            .value_name("MV")
+            .action(ArgAction::Set)
+            .help("set-vbios-override: NVVDD ALT/OP (backup ceiling) target in mV — the stock equation on GB20x is a small increment constant (e.g. +20 mV), so the value you pass REPLACES the equation clamp/value, not an increment"),
+        "volt-ov-mv" => Arg::new("volt-ov-mv")
+            .long("volt-ov-mv")
+            .value_name("MV")
+            .action(ArgAction::Set)
+            .help("set-vbios-override: NVVDD OV (fixed ceiling = the driver's Vrm Max Wall, follow-OV constant) target in mV — stock 5060 Ti 1200 mV. This is the wall mVolt's Voltage page shows as 'OV' with theoretical max 1280"),
+        "volt-vmin-mv" => Arg::new("volt-vmin-mv")
+            .long("volt-vmin-mv")
+            .value_name("MV")
+            .action(ArgAction::Set)
+            .help("set-vbios-override: NVVDD VMIN (evaluated @+0x13) target in mV — stock is a min/max tree (state 'stock', driver computes it); a value pins the root clamp"),
+        "patch" => Arg::new("patch")
+            .long("patch")
+            .value_name("OFFSET=HEX")
+            .action(ArgAction::Append)
+            .help("set-vbios-override --mode patch: raw wildcard fragment, repeatable — write HEX bytes (LE) at image OFFSET, e.g. --patch 0x57B2E=98929800 (mVolt's 5060 Ti sample offsets: 0x57B2E / 0x57B30 board-power trio, 0x57B94). Bypasses all auto-location"),
+        "image" => Arg::new("image")
+            .long("image")
+            .value_name("FILE")
+            .action(ArgAction::Set)
+            .help("set-vbios-override: write an externally patched VBIOS image (.rom, vix editor output) as-is instead of auto-patching power"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -3042,6 +3249,32 @@ pub fn run_invocation(invocation: &Invocation) -> CliResult<RunOutput> {
     // Meta command: interface-resolution probe, no GPU targets either.
     if invocation.command == Some(Command::Doctor) {
         return render_doctor_invocation(invocation);
+    }
+    // GPU 无关命令（纯 SetupDi + 注册表，vix loader unload 语义）：GPU 代码
+    // 43 / 驱动拒载 override 时 NVAPI 枚举死路，reset 必须绕开 target 发现。
+    // set --image 同理（外部镜像直写不需要 live GPU）。Windows-only（注册表
+    // 车道无 POSIX 等价物）。
+    #[cfg(windows)]
+    {
+        if invocation.command == Some(Command::ResetVbiosOverride) {
+            return render_reset_vbios_override_invocation(invocation);
+        }
+        if invocation.command == Some(Command::SetVbiosOverride)
+            && invocation.options.contains_key("image")
+        {
+            return render_set_vbios_override_image_invocation(invocation);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if invocation.command == Some(Command::ResetVbiosOverride)
+            || (invocation.command == Some(Command::SetVbiosOverride)
+                && invocation.options.contains_key("image"))
+        {
+            return Err(CliError::new(
+                "vbios registry override: Windows-only (SetupDi + devreg lane; no POSIX equivalent)",
+            ));
+        }
     }
 
     let execution = execute(invocation)?;
@@ -6743,6 +6976,290 @@ fn execute_target(
             }
             Ok(value)
         }
+        Command::GetVbiosOverride => {
+            // vix loader 车道读面（SetupDi 枚举 + 驱动键 vbios 值）。只读、
+            // 不需要管理员；--all 不过滤非 NVIDIA 适配器。
+            // 反向解析：取 live 镜像逐片段 diff（orig→new + u32 LE 解读），
+            // GPU 不可读时降级为纯解码。
+            let live = run(target, QueryVbiosImage).ok().map(|r| r.output);
+            let mut statuses = run(target, QueryVbiosOverrideStatus)?.output;
+            if !invocation.options.contains_key("all") {
+                statuses.retain(|a| a.is_nvidia);
+            }
+            let adapters: Vec<Value> = statuses
+                .iter()
+                .map(|a| {
+                    json!({
+                        "pci": format!("{:02x}:{:02x}.{}", a.bus, a.device, a.func),
+                        "description": a.description,
+                        "instance_id": a.instance_id,
+                        "override_present": a.override_len.is_some(),
+                        "override_len": a.override_len,
+                        "override_prefix_hex": a.override_prefix_hex,
+                        // 驱动运行层：来源标记（07=flash / 00=override 实查）+ 当前
+                        // 加载镜像回显 + mVolt 分块车道（romOverride00~）在写否。
+                        "session_vbios_source": a.session_vbios_source,
+                        "session_vbios_len": a.session_vbios_len,
+                        "mvolt_romoverride_present": a.mvolt_romoverride_present,
+                        "romoverride_fragments": a
+                            .romoverride_fragments
+                            .iter()
+                            .map(|f| {
+                                // 反解：orig = live 镜像同偏移字节（越界=未知）；
+                                // interpreted = 两边各按 u32 LE 出十进制（mW/mA
+                                // 语义由 offset 归属决定，这里只给原始量）。
+                                let diff = live.as_ref().and_then(|img| {
+                                    let off = f.offset as usize;
+                                    let end = off.checked_add(usize::from(f.len))?;
+                                    if end > img.len() {
+                                        return None;
+                                    }
+                                    let orig = &img[off..end];
+                                    // u32 LE 解读（前 4 字节；mW/mA 语义由 offset
+                                    // 归属决定，这里只给原始量）。
+                                    let le = |b: &[u8]| {
+                                        b.first_chunk::<4>()
+                                            .map(|c| u32::from_le_bytes(*c))
+                                    };
+                                    let new_bytes = (0..f.data_hex.len() / 2)
+                                        .filter_map(|i| {
+                                            u8::from_str_radix(
+                                                &f.data_hex[i * 2..i * 2 + 2],
+                                                16,
+                                            )
+                                            .ok()
+                                        })
+                                        .collect::<Vec<_>>();
+                                    Some(json!({
+                                        "orig_hex": orig.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                        "orig_u32_le": le(orig),
+                                        "new_u32_le": le(&new_bytes),
+                                        "modified": orig != new_bytes.as_slice(),
+                                    }))
+                                });
+                                json!({
+                                    "name": f.name,
+                                    "version_gate": format!("{:08x}/{:02x}", f.version_gate_a, f.version_gate_b),
+                                    "offset": f.offset,
+                                    "len": f.len,
+                                    "data_hex": f.data_hex,
+                                    "diff_vs_live": diff,
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                        "read_error": a.read_error,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "value": "vbios",
+                "lane": "vix-loader registry override (driver-init consumed, 616.56+; GSP mode applies on GPU restart, default mode on Windows restart)",
+                "adapters": adapters,
+            }))
+        }
+        Command::SetVbiosOverride => {
+            // 电压墙参数（双模共用）：--volt-{rel,alt,ov,vmin}-mv。
+            let mut voltage_walls_mv: Vec<(nvoc_core::vbios::tables_v3::RailRole, f64)> =
+                Vec::new();
+            for (key, role) in [
+                ("volt-rel-mv", nvoc_core::vbios::tables_v3::RailRole::Rel),
+                ("volt-alt-mv", nvoc_core::vbios::tables_v3::RailRole::Alt),
+                ("volt-ov-mv", nvoc_core::vbios::tables_v3::RailRole::Ov),
+                (
+                    "volt-vmin-mv",
+                    nvoc_core::vbios::tables_v3::RailRole::VminEvaluated,
+                ),
+            ] {
+                if let Some(v) = invocation.options.get(key).and_then(|x| x.first()) {
+                    let mv = v
+                        .parse::<f64>()
+                        .map_err(|e| CliError::new(format!("--{key}: {e}")))?;
+                    voltage_walls_mv.push((role, mv));
+                }
+            }
+            // 双模：--mode file（默认，vix 整镜像车道）/ --mode patch（mVolt
+            // direct patch 车道：romOverride00 通配片段，驱动 init 对内存
+            // VBIOS 影像就地改写、免校验）。
+            let mode = invocation
+                .options
+                .get("mode")
+                .and_then(|v| v.first())
+                .map(String::as_str)
+                .unwrap_or("file");
+            if mode == "patch" {
+                let watts = invocation
+                    .options
+                    .get("power-max-w")
+                    .and_then(|v| v.first())
+                    .map(|s| {
+                        s.parse::<f64>()
+                            .map_err(|e| CliError::new(format!("--power-max-w: {e}")))
+                    })
+                    .transpose()?;
+                let ocp = invocation
+                    .options
+                    .get("ocp-amps")
+                    .and_then(|v| v.first())
+                    .map(|s| {
+                        s.parse::<f64>()
+                            .map_err(|e| CliError::new(format!("--ocp-amps: {e}")))
+                    })
+                    .transpose()?;
+                let ocp_def = invocation
+                    .options
+                    .get("nvvdd-ocp-amps-default")
+                    .and_then(|v| v.first())
+                    .map(|s| {
+                        s.parse::<f64>()
+                            .map_err(|e| CliError::new(format!("--nvvdd-ocp-amps-default: {e}")))
+                    })
+                    .transpose()?;
+                let mut raw_patches: Vec<(u32, Vec<u8>)> = Vec::new();
+                for spec in invocation.options.get("patch").into_iter().flatten() {
+                    let (off, hex) = spec.split_once('=').ok_or_else(|| {
+                        CliError::new(format!(
+                            "--patch {spec:?}: expected OFFSET=HEX (e.g. 0x57B2E=98929800)"
+                        ))
+                    })?;
+                    let off = u32::from_str_radix(off.trim_start_matches("0x"), 16)
+                        .map_err(|e| CliError::new(format!("--patch offset {off:?}: {e}")))?;
+                    let hex = hex
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>();
+                    if !hex.len().is_multiple_of(2) || hex.is_empty() || hex.len() > 492 {
+                        return Err(CliError::new(format!(
+                            "--patch {off:#x}: hex must be 2..=492 digits (≤246 bytes)"
+                        )));
+                    }
+                    let mut bytes = Vec::with_capacity(hex.len() / 2);
+                    for i in (0..hex.len()).step_by(2) {
+                        bytes.push(u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| {
+                            CliError::new(format!("--patch {off:#x}: bad hex at {i}: {e}"))
+                        })?);
+                    }
+                    raw_patches.push((off, bytes));
+                }
+                if watts.is_none()
+                    && ocp.is_none()
+                    && ocp_def.is_none()
+                    && voltage_walls_mv.is_empty()
+                    && raw_patches.is_empty()
+                {
+                    return Err(CliError::new(
+                        "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --patch"
+                            .to_string(),
+                    ));
+                }
+                let op = SetVbiosDirectPatch {
+                    power_peak_mw: watts.map(|w| (w * 1000.0).round() as u32),
+                    ocp_milliamps: ocp.map(|a| (a * 1000.0).round() as u32),
+                    ocp_default_milliamps: ocp_def.map(|a| (a * 1000.0).round() as u32),
+                    voltage_walls_mv,
+                    raw_patches,
+                    overwrite_chain: invocation.options.contains_key("overwrite"),
+                };
+                let a = run(target, op)?.output;
+                let patches: Vec<Value> = a
+                    .patches
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "offset": p.offset,
+                            "source": p.source,
+                            "data_hex": p.data_hex,
+                            "old_value_raw": p.old_peak_mw,
+                        })
+                    })
+                    .collect();
+                return Ok(json!({
+                    "mode": "patch",
+                    "merge": if invocation.options.contains_key("overwrite") { "overwrite" } else { "append" },
+                    "instance_id": a.instance_id,
+                    "description": a.description,
+                    "fragments_written": a.fragments_written,
+                    "kept_existing": a.kept_existing,
+                    "replaced_existing": a.replaced_existing,
+                    "patches": patches,
+                    "value_family": "romOverride00..",
+                    "high_risk": "driver applies fragments in-place to the in-memory VBIOS shadow at init; verify with nvidia-smi -q (Power Limit -> Max) after GPU disable/enable",
+                    "restart_hint": a.restart_hint,
+                }));
+            }
+            if mode != "file" {
+                return Err(CliError::new(format!(
+                    "set-vbios-override: unknown --mode {mode:?} (expected file | patch)"
+                )));
+            }
+            // --mode file（默认）：vix 整镜像车道。HIGH RISK：管理员 + 驱动
+            // 重启才生效；输出回滚路径。
+            let watts = invocation
+                .options
+                .get("power-max-w")
+                .and_then(|v| v.first())
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|e| CliError::new(format!("--power-max-w: {e}")))
+                })
+                .transpose()?;
+            let image = invocation
+                .options
+                .get("image")
+                .and_then(|v| v.first())
+                .map(|path| {
+                    std::fs::read(path)
+                        .map_err(|e| CliError::new(format!("failed to read --image {path:?}: {e}")))
+                })
+                .transpose()?;
+            if watts.is_none() && image.is_none() && voltage_walls_mv.is_empty() {
+                return Err(CliError::new(
+                    "set-vbios-override: need --power-max-w / --volt-*-mv (auto-patch the live \
+                     image) or --image <file.rom> (externally patched image)"
+                        .to_string(),
+                ));
+            }
+            let op = SetVbiosOverride {
+                power_peak_mw: watts.map(|w| (w * 1000.0).round() as u32),
+                image,
+                voltage_walls_mv,
+            };
+            let a = run(target, op)?.output;
+            let patched: Vec<Value> = a
+                .patched_entries
+                .iter()
+                .map(|p| {
+                    json!({
+                        "index": p.index,
+                        "offset": p.offset,
+                        "tag": format!("{:#04x}", p.tag),
+                        "old_peak_mw": p.old_peak_mw,
+                        "new_peak_mw": p.new_peak_mw,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "mode": "file",
+                "instance_id": a.instance_id,
+                "description": a.description,
+                "image_len": a.image_len,
+                "cleared_romoverride_fragments": a.cleared_romoverride,
+                "patched_power_entries": patched,
+                "previous_override_len": a.previous_len,
+                "value": "vbios",
+                "high_risk": "consumed at the next driver init; verify with nvidia-smi -q (Power Limit -> Max) after restart",
+                "restart_hint": a.restart_hint,
+            }))
+        }
+        Command::ResetVbiosOverride => {
+            // vix loader 车道清除（幂等）。
+            let c = run(target, ClearVbiosOverride)?.output;
+            Ok(json!({
+                "instance_id": c.instance_id,
+                "description": c.description,
+                "cleared": c.cleared,
+                "restart_hint": c.restart_hint,
+            }))
+        }
         Command::GetVbios => {
             // WINDOWS-ONLY: NvAPI_GPU_GetVbiosImage routes through the
             // WDDM/TCC kernel escape 0x0700004F — no Linux NVAPI equivalent.
@@ -9190,25 +9707,25 @@ fn structural_sections_json(image: &[u8]) -> Value {
                 "image_checksums": integrity.image_checksums,
                 "legacy_directory_present": layout.legacy_dir.is_some(),
             },
-            "power_policy": nvoc_core::vbios::gb20x::power_policy(image, &layout).ok().map(|p| json!({
-                "version": format!("{:#04x}", p.version),
-                "notebook": p.notebook,
-                "tgp_row": if p.notebook { 2 } else { 8 },
-                "rows": p.rows.iter().map(|r| json!({
-                    "row": r.row, "kind": r.kind,
-                    "minimum_raw": r.minimum_raw, "default_raw": r.default_raw, "maximum_raw": r.maximum_raw,
-                })).collect::<Vec<_>>(),
-            })),
             "rails": nvoc_core::vbios::gb20x::rails(image, &layout).ok().map(|t| json!(t.rows.iter().map(|r| json!({
                 "name": r.name, "boot_voltage_uv": r.boot_voltage_uv,
                 "selectors": r.selectors.iter().map(|(role, off, raw)| json!({
                     "role": role.name(), "offset": off, "raw": raw, "absent": *raw == 0xFFFF,
                 })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>())),
-            "rel_limits": nvoc_core::vbios::gb20x::rail_limits(image, &layout).ok().map(|l| json!(l.iter().map(|r| json!({
-                "rail": r.rail_name, "rel_equation": r.rel_equation_index,
-                "max_mv": r.output_maximum_uv as f64 / 1000.0,
-                "maximum_offset": r.maximum_offset,
+            "voltage_walls": nvoc_core::vbios::gb20x::voltage_walls(image, &layout).ok().map(|w| json!(w.iter().map(|x| json!({
+                "rail": x.rail_name, "role": x.role_name,
+                "selector": format!("{:#06x}", x.selector_raw), "absent": x.absent,
+                "equation_offset": x.equation_offset,
+                "kind": x.equation_kind_raw,
+                "clamp_mv": x.clamp_uv.map(|(a, b)| (a as f64 / 1000.0, b as f64 / 1000.0)),
+                "constant_mv": x.constant_uv.map(|v| v as f64 / 1000.0),
+                "tree_state": x.tree_state,
+                "pinned_mv": x.pinned_uv.map(|v| v as f64 / 1000.0),
+                "min_offset": x.minimum_offset,
+                "max_offset": x.maximum_offset,
+                "constant_offset": x.constant_offset,
+                "editable_ceiling": x.editable_ceiling,
             })).collect::<Vec<_>>())),
             "vmin": nvoc_core::vbios::gb20x::rail_vmin(image, &layout).ok().map(|v| json!(v.iter().map(|r| json!({
                 "rail": r.rail_name, "pinned": r.pinned,
@@ -9227,6 +9744,169 @@ fn structural_sections_json(image: &[u8]) -> Value {
                 })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>())),
         });
+        // vix-editor 对照补差（surfaces 模块）：逐段独立赋值。
+        if let Ok(w) = nvoc_core::vbios::gb20x::voltage_walls(image, &layout) {
+            let items: Vec<Value> = w
+                .iter()
+                .map(|x| {
+                    json!({
+                        "rail": x.rail_name, "role": x.role_name,
+                        "selector": format!("{:#06x}", x.selector_raw), "absent": x.absent,
+                        "equation_offset": x.equation_offset, "kind": x.equation_kind_raw,
+                        "clamp_mv": x.clamp_uv.map(|(a, b)| (a as f64 / 1000.0, b as f64 / 1000.0)),
+                        "constant_mv": x.constant_uv.map(|v| v as f64 / 1000.0),
+                        "tree_state": x.tree_state, "pinned_mv": x.pinned_uv.map(|v| v as f64 / 1000.0),
+                        "min_offset": x.minimum_offset, "max_offset": x.maximum_offset,
+                        "constant_offset": x.constant_offset, "editable_ceiling": x.editable_ceiling,
+                    })
+                })
+                .collect();
+            out["gb20x"]["voltage_walls"] = Value::Array(items);
+        }
+        match nvoc_core::vbios::gb20x_surfaces::power_rows_full(image, &layout) {
+            Ok(r) => {
+                let items: Vec<Value> = r
+                    .iter()
+                    .map(|x| {
+                        // 行语义名 = kind 字节名 + 通道 role 名（26B 判定，
+                        // 与 3x power rows 渲染同源——用户裁定统一格式）。
+                        let role = nvoc_core::vbios::gb20x_surfaces::power_channel_bytes(
+                            image,
+                            &layout,
+                            x.monitor,
+                        )
+                        .and_then(|c| {
+                            let name = nvoc_core::vbios::gb20x_surfaces::channel_role_name(&c);
+                            (!name.is_empty()).then(|| name.to_string())
+                        });
+                        json!({
+                            "row": x.row, "kind": x.kind, "kind_name": x.kind_name,
+                            "unit": if x.unit_ma { "mA" } else { "mW" }, "monitor": x.monitor,
+                            "role": role,
+                            "min_raw": x.minimum_raw, "default_raw": x.default_raw, "max_raw": x.maximum_raw,
+                            "min_offset": x.minimum_offset, "default_offset": x.default_offset,
+                            "max_offset": x.maximum_offset, "ordered": x.ordered,
+                        })
+                    })
+                    .collect();
+                out["gb20x"]["power_rows"] = Value::Array(items);
+            }
+            Err(e) => out["gb20x"]["power_rows"] = json!({"error": e.to_string()}),
+        }
+        out["gb20x"]["notebook_power_layout"] =
+            nvoc_core::vbios::gb20x_surfaces::notebook_power_layout(image, &layout)
+                .ok()
+                .map(|v| json!(v))
+                .unwrap_or(Value::Null);
+        if let Ok(Some((off, row, state))) =
+            nvoc_core::vbios::gb20x_surfaces::runtime_limit_slot(image, &layout)
+        {
+            out["gb20x"]["runtime_limit_slot"] = json!({"offset": off, "row": row, "state": state});
+        }
+        if let Ok(Some(v)) = nvoc_core::vbios::gb20x_surfaces::notebook_base_tgp(image, &layout) {
+            out["gb20x"]["notebook_base_tgp"] = json!(v);
+        }
+        if let Ok(Some(e)) = nvoc_core::vbios::gb20x_surfaces::thermal_policies(image, &layout) {
+            let items: Vec<Value> = e
+                .iter()
+                .map(|x| {
+                    json!({
+                        "index": x.index, "offset": x.offset, "policy_class": x.policy_class,
+                        "byte1": x.byte1, "temperatures_raw_1_32c": x.temperatures_raw,
+                    })
+                })
+                .collect();
+            out["gb20x"]["thermal_policies"] = Value::Array(items);
+        }
+        if let Ok(Some((offsets, clocks))) =
+            nvoc_core::vbios::gb20x_surfaces::factory_clocks(image, &layout)
+        {
+            out["gb20x"]["factory_clocks"] = json!({
+                "offsets": offsets.iter().map(|x| json!({"index": x.index, "offset": x.offset, "flag": x.flag, "khz": x.khz})).collect::<Vec<_>>(),
+                "clocks": clocks.iter().map(|x| json!({"index": x.index, "offset": x.offset, "flag": x.flag, "khz": x.khz})).collect::<Vec<_>>(),
+            });
+        }
+        if let Ok(Some((controllers, policies))) =
+            nvoc_core::vbios::gb20x_surfaces::perf_cf(image, &layout)
+        {
+            out["gb20x"]["perf_cf"] = json!({
+                "controllers": controllers.iter().map(|c| json!({
+                    "index": c.index, "kind": c.kind, "target_raw": c.target_raw, "jump_raw": c.jump_raw,
+                    "domain": c.domain, "hysteresis_up": c.hysteresis_up, "hysteresis_down": c.hysteresis_down,
+                })).collect::<Vec<_>>(),
+                "policies": policies.iter().map(|p| json!({
+                    "index": p.index, "kind": p.kind, "active": p.active,
+                    "conflicts": p.conflicts, "controllers": p.controllers,
+                })).collect::<Vec<_>>(),
+            });
+        }
+        if let Ok(t) = nvoc_core::vbios::gb20x_surfaces::lpwr_tables(image, &layout) {
+            let items: Vec<Value> = t
+                .iter()
+                .map(|x| {
+                    json!({
+                        "name": x.name, "offset": x.offset,
+                        "object": format!("{:#x}", x.object_id), "entries": x.entries,
+                    })
+                })
+                .collect();
+            out["gb20x"]["lpwr"] = Value::Array(items);
+        }
+        if let Ok(p) = nvoc_core::vbios::gb20x_surfaces::dram_points(image, &layout) {
+            let items: Vec<Value> = p
+                .iter()
+                .map(|x| {
+                    json!({
+                        "index": x.index, "offset": x.offset,
+                        "flags": format!("{:#04x}", x.flags), "mhz": x.mhz,
+                    })
+                })
+                .collect();
+            out["gb20x"]["dram_points"] = Value::Array(items);
+        }
+        if let Ok(g) = nvoc_core::vbios::gb20x_surfaces::gpc_curve(image, &layout) {
+            out["gb20x"]["gpc_curve"] = json!({
+                "root": g.root, "root_offset": g.root_offset, "variable": g.variable,
+                "slot": g.slot, "slot_offset": g.slot_offset, "current_offset_mhz": g.current_mhz,
+            });
+        }
+        if let Ok(Some(rows)) = nvoc_core::vbios::gb20x_surfaces::fan_coolers(image, &layout) {
+            let items: Vec<Value> = rows
+                .iter()
+                .map(|x| {
+                    json!({
+                        "index": x.index, "active": x.active, "enable": x.enable,
+                        "pwm_frequency_hz": x.pwm_frequency_hz,
+                        "pwm_frequency_offset": x.pwm_frequency_offset,
+                        "level_min": x.level_minimum, "level_max": x.level_maximum,
+                        "rpm_min": x.rpm_minimum, "rpm_max": x.rpm_maximum,
+                        "curve_levels": x.curve_levels, "curve_points_temp_rpm": x.curve_points,
+                        "stored": x.stored, "flag_byte": x.flag_byte,
+                        "row_offset": x.offset, "policy_offset": x.policy_offset,
+                        "mapping_offset": x.mapping_offset, "control_offset": x.control_offset,
+                        "speed_offset": x.speed_offset,
+                    })
+                })
+                .collect();
+            out["gb20x"]["fan_channels"] = Value::Array(items);
+        }
+        if let Ok(h) = nvoc_core::vbios::gb20x_surfaces::runtime_hooks(image, &layout) {
+            out["gb20x"]["runtime_hooks"] = json!({
+                "state": h.state, "layout_ok": h.layout_ok, "unused_tail": h.unused_tail,
+                "reference_variable": h.reference, "diagnostic": h.diagnostic, "blocked": h.blocked,
+                "slots": h.slots.iter().map(|s| json!({
+                    "rail": s.rail, "role": s.role, "selector_offset": s.selector_offset,
+                    "word": s.word, "hooked": s.hooked, "hook": s.hook,
+                    "variable": s.variable, "target": s.target,
+                })).collect::<Vec<_>>(),
+            });
+        }
+        if let Ok(Some(f)) = nvoc_core::vbios::gb20x_surfaces::follow_ov(image, &layout) {
+            out["gb20x"]["follow_ov"] = json!({
+                "index": f.index, "offset": f.offset, "value_mv": f.value_uv as f64 / 1000.0,
+                "dedicated": f.dedicated, "copy_slot": f.slot,
+            });
+        }
         return out;
     }
     // 3x 世代（Turing/Ampere/Ada）
@@ -9292,11 +9972,6 @@ fn structural_sections_json(image: &[u8]) -> Value {
                 "role": role.name(), "offset": off, "raw": raw, "absent": *raw == 0xFF,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>())),
-        "rel_limits": nvoc_core::vbios::tables_v3::rail_limits(image, &ctx).ok().map(|l| json!(l.iter().map(|r| json!({
-            "rail": r.rail_name, "kind": format!("{:?}", r.equation_kind),
-            "max_mv": r.output_maximum_uv as f64 / 1000.0,
-            "temperature_derated": r.equation_kind == nvoc_core::vbios::vfe::OutputKind::TemperatureDerated,
-        })).collect::<Vec<_>>())),
         "vmin": nvoc_core::vbios::tables_v3::rail_vmin(image, &ctx).ok().map(|v| json!(v.iter().map(|r| json!({
             "rail": r.rail_name, "pinned": r.pinned,
             "value_mv": r.value_uv.map(|u| u as f64 / 1000.0),
@@ -9335,6 +10010,138 @@ fn structural_sections_json(image: &[u8]) -> Value {
             Err(e) => json!({"present": "unknown", "reason": e.to_string()}),
         },
     });
+    // vix tables.py 对照补差（3x surfaces）：独立赋值。
+    match nvoc_core::vbios::tables_v3::voltage_walls(image, &ctx) {
+        Ok(w) => {
+            let items: Vec<Value> = w
+                    .iter()
+                    .map(|x| {
+                        json!({
+                            "rail": x.rail_name, "role": x.role_name,
+                            "selector": format!("{:#06x}", x.selector_raw), "absent": x.absent,
+                            "equation_offset": x.equation_offset, "kind": x.equation_kind_raw,
+                            "clamp_mv": x.clamp_uv.map(|(a, b)| (a as f64 / 1000.0, b as f64 / 1000.0)),
+                            "constant_mv": x.constant_uv.map(|v| v as f64 / 1000.0),
+                            "tree_state": x.tree_state, "pinned_mv": x.pinned_uv.map(|v| v as f64 / 1000.0),
+                            "min_offset": x.minimum_offset, "max_offset": x.maximum_offset,
+                            "constant_offset": x.constant_offset, "editable_ceiling": x.editable_ceiling,
+                        })
+                    })
+                    .collect();
+            out["tables_v3"]["voltage_walls"] = Value::Array(items);
+        }
+        Err(e) => out["tables_v3"]["voltage_walls"] = json!({"error": e.to_string()}),
+    }
+    if let Ok(p) = nvoc_core::vbios::tables_v3::power_policy(image, &ctx) {
+        let pick = |kind: u8| -> Vec<Value> {
+            p.rows
+                    .iter()
+                    .filter(|r| r.kind == kind)
+                    .map(|r| {
+                        json!({
+                            "row": r.row, "kind": r.kind,
+                            "unit": if r.unit_ma { "mA" } else { "mW" }, "channel": r.channel_index,
+                            "min_raw": r.minimum_raw, "default_raw": r.default_raw, "max_raw": r.maximum_raw,
+                            "max_offset": r.maximum_offset,
+                        })
+                    })
+                    .collect()
+        };
+        let ocp: Vec<Value> = pick(10);
+        if !ocp.is_empty() {
+            out["tables_v3"]["ocp_policies"] = Value::Array(ocp);
+        }
+        let ic: Vec<Value> = pick(11);
+        if let Some(x) = ic.first() {
+            out["tables_v3"]["input_current"] = x.clone();
+        }
+        let slot: Vec<Value> = pick(2);
+        if let Some(x) = slot.first() {
+            out["tables_v3"]["slot_power"] = x.clone();
+        }
+    }
+    if let Ok(Some(e)) = nvoc_core::vbios::tables_v3::thermal_policies(image, &ctx) {
+        let items: Vec<Value> = e
+            .iter()
+            .map(|x| {
+                json!({
+                    "index": x.index, "offset": x.offset, "policy_class": x.policy_class,
+                    "byte1": x.byte1, "temperatures_raw_1_32c": x.temperatures_raw,
+                })
+            })
+            .collect();
+        out["tables_v3"]["thermal_policies"] = Value::Array(items);
+    }
+    if let Ok(Some((offsets, clocks))) = nvoc_core::vbios::tables_v3::factory_clocks(image, &ctx) {
+        out["tables_v3"]["factory_clocks"] = json!({
+            "offsets": offsets.iter().map(|x| json!({"index": x.index, "offset": x.offset, "flag": x.flag, "khz": x.khz})).collect::<Vec<_>>(),
+            "clocks": clocks.iter().map(|x| json!({"index": x.index, "offset": x.offset, "flag": x.flag, "khz": x.khz})).collect::<Vec<_>>(),
+        });
+    }
+    if let Ok(Some((controllers, policies))) = nvoc_core::vbios::tables_v3::perf_cf(image, &ctx) {
+        out["tables_v3"]["perf_cf"] = json!({
+            "controllers": controllers.iter().map(|c| json!({
+                "index": c.index, "kind": c.kind, "target_raw": c.target_raw, "jump_raw": c.jump_raw,
+                "domain": c.domain, "hysteresis_up": c.hysteresis_up, "hysteresis_down": c.hysteresis_down,
+            })).collect::<Vec<_>>(),
+            "policies": policies.iter().map(|p| json!({
+                "index": p.index, "kind": p.kind, "active": p.active,
+                "conflicts": p.conflicts, "controllers": p.controllers,
+            })).collect::<Vec<_>>(),
+        });
+    }
+    if let Ok(t) = nvoc_core::vbios::tables_v3::lpwr_tables(image, &ctx) {
+        let items: Vec<Value> = t
+            .iter()
+            .map(|x| {
+                json!({
+                    "name": x.name, "offset": x.offset, "entries": x.entries,
+                })
+            })
+            .collect();
+        out["tables_v3"]["lpwr"] = Value::Array(items);
+    }
+    if let Ok(p) = nvoc_core::vbios::tables_v3::dram_points(image, &ctx) {
+        let items: Vec<Value> = p
+            .iter()
+            .map(|x| {
+                json!({
+                    "index": x.index, "offset": x.offset,
+                    "flags": format!("{:#04x}", x.flags), "mhz": x.mhz,
+                })
+            })
+            .collect();
+        out["tables_v3"]["dram_points"] = Value::Array(items);
+    }
+    if let Ok(g) = nvoc_core::vbios::tables_v3::gpc_curve(image, &ctx) {
+        out["tables_v3"]["gpc_curve"] = json!({
+            "root": g.root, "root_offset": g.root_offset,
+            "slot": g.slot, "slot_offset": g.slot_offset, "current_offset_mhz": g.current_mhz,
+        });
+    }
+    if let Ok(Some((off, row, state))) =
+        nvoc_core::vbios::tables_v3::runtime_limit_slot(image, &ctx)
+    {
+        out["tables_v3"]["runtime_limit_slot"] = json!({"offset": off, "row": row, "state": state});
+    }
+    if let Ok(profiles) = nvoc_core::vbios::tables_v3::power_profiles(image, &ctx)
+        && !profiles.is_empty()
+    {
+        let items: Vec<Value> = profiles
+            .iter()
+            .enumerate()
+            .map(|(idx, entries)| {
+                json!({
+                    "index": idx,
+                    "entries": entries.iter().map(|x| json!({
+                        "policy": x.policy, "field": x.field,
+                        "value_raw": x.value_raw, "value_offset": x.value_offset,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        out["tables_v3"]["power_profiles"] = Value::Array(items);
+    }
     out
 }
 
@@ -12471,6 +13278,9 @@ mod tests {
             | Command::ResetLegacyGpcRailOvervoltLimit
             | Command::ResetPstateGlobalFreqOffset
             | Command::GetVbios
+            | Command::GetVbiosOverride
+            | Command::SetVbiosOverride
+            | Command::ResetVbiosOverride
             | Command::ResetPublicGpcRailVoltBoost
             | Command::ProfileCaptureStock
             | Command::ProfileSave

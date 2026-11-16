@@ -227,6 +227,20 @@ pub enum OperationKind {
     QueryVbiosSecurityInfo,
     QueryVbiosStatusString,
     QueryVbiosVersion,
+    /// Read the vix-lane `vbios` registry override status (presence / size /
+    /// prefix) across display adapters via SetupDi enumeration. Read-only.
+    QueryVbiosOverrideStatus,
+    /// Write the `vbios` REG_BINARY override (vix loader lane) into the GPU's
+    /// display-class driver key. HIGH RISK: consumed at driver init — takes
+    /// effect after a Windows restart (default mode) or a GPU restart in GSP
+    /// firmware mode; `ClearVbiosOverride` restores the on-flash image.
+    SetVbiosOverride,
+    /// Write mVolt-lane `romOverride00..` direct-patch fragments (in-place
+    /// byte patches the driver applies to the in-memory VBIOS shadow at init —
+    /// no checksum/signature validation afterwards). HIGH RISK.
+    SetVbiosDirectPatch,
+    /// Delete the `vbios` override value (fall back to the on-flash VBIOS).
+    ClearVbiosOverride,
     /// Write one V/F curve point via the private V/F-POINTS SetControl
     /// (ID 0xFEC00D04, mode 0 absolute / mode 1 delta). DANGEROUS:
     /// snapshots, patches, SETs, readbacks, restores on mismatch.
@@ -970,4 +984,110 @@ pub struct ViolationEntry {
 pub struct ViolationStatusReport {
     pub entries: Vec<ViolationEntry>,
     pub reference_time_us: u64,
+}
+
+// ── vBIOS 注册表 override（vix loader 车道）───────────────────────────────
+
+/// 一块显示适配器的 `vbios` override 状态（读取面）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbiosOverrideAdapterStatus {
+    /// 设备实例路径（SetupDi）。
+    pub instance_id: String,
+    pub description: String,
+    pub is_nvidia: bool,
+    pub bus: u16,
+    pub device: u16,
+    pub func: u16,
+    /// 值存在时的字节数。
+    pub override_len: Option<usize>,
+    /// 值前 32B 的 hex（人工比对镜像用）。
+    pub override_prefix_hex: Option<String>,
+    /// 读取失败原因（权限等）；None = 读取成功。
+    pub read_error: Option<String>,
+    /// 驱动运行层 SessionbiosSource（VBIOS 来源标记；实查 2070/flash=07、
+    /// 5060 Ti/override 生效=00）。
+    pub session_vbios_source: Option<u32>,
+    /// Sessionbios 长度（当前实际加载镜像的回显）。
+    pub session_vbios_len: Option<usize>,
+    /// 根部 romOverride00 是否存在（mVolt 分块 override 车道是否在写）。
+    pub mvolt_romoverride_present: Option<bool>,
+    /// 解码后的 romOverride 片段（驱动 init 消费的 direct patch 链）。
+    pub romoverride_fragments: Vec<VbiosRomOverrideFragment>,
+}
+
+/// 一个 romOverride 片段的解码视图（见 nvlddmkm sub_140185660）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbiosRomOverrideFragment {
+    pub name: String,
+    /// 版本指纹 A（BE u32，0=通配）。
+    pub version_gate_a: u32,
+    /// 版本指纹 B（0=通配）。
+    pub version_gate_b: u8,
+    pub offset: u32,
+    pub len: u8,
+    pub data_hex: String,
+}
+
+/// `set-vbios-override` 的本地功率 patch 回执条目。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbiosOverridePowerPatch {
+    pub index: usize,
+    pub offset: usize,
+    pub tag: u8,
+    pub old_peak_mw: Option<u32>,
+    pub new_peak_mw: Option<u32>,
+}
+
+/// `set-vbios-override` 回执。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbiosOverrideApply {
+    pub instance_id: String,
+    pub description: String,
+    pub image_len: usize,
+    /// 本地 patch 的功率条目（--image 外部镜像直写时为空）。
+    pub patched_entries: Vec<VbiosOverridePowerPatch>,
+    /// 写入前的旧 override 长度（None = 原本没有）。
+    pub previous_len: Option<usize>,
+    /// 写入 `vbios` 前清掉的 romOverride 片段数（仿 vix：整镜像车道与
+    /// 片段车道不能叠加以免片段 patch 污染新镜像基线）。
+    pub cleared_romoverride: usize,
+    pub restart_hint: String,
+}
+
+/// `set-vbios-direct-patch` 回执（mVolt direct patch 车道）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbiosDirectPatchApply {
+    pub instance_id: String,
+    pub description: String,
+    /// 最终写入的链长（保留+新）。
+    pub fragments_written: usize,
+    /// --append 合并时原样保留的既有片段数。
+    pub kept_existing: usize,
+    /// 同 offset 被新片段覆盖的既有片段数。
+    pub replaced_existing: usize,
+    /// 每片段：镜像内偏移 + 数据 hex + 旧 peak（自动 power patch 时）。
+    pub patches: Vec<VbiosDirectPatchEntry>,
+    pub restart_hint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbiosDirectPatchEntry {
+    /// 镜像内偏移（u32 LE @片段+5）。
+    pub offset: u32,
+    /// 数据 hex。
+    pub data_hex: String,
+    /// 写入前的旧值（board-power= mW、OCP= mA、raw= 原始 u32）。
+    pub old_peak_mw: Option<u32>,
+    /// 片段来源：board-power-cap / nvvdd-ocp / raw。
+    pub source: String,
+}
+
+/// `reset-vbios-override`（clear）回执。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbiosOverrideClear {
+    pub instance_id: String,
+    pub description: String,
+    /// 是否真的删除了值（false = 本来就不存在，幂等）。
+    pub cleared: bool,
+    pub restart_hint: String,
 }

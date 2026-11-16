@@ -1413,6 +1413,782 @@ pub fn detect_family(data: &[u8]) -> Option<(Family, bool)> {
     inferred.map(|f| (f, true))
 }
 
+// ── 电压墙（3x：REL/ALT/OV/VMIN 全 role × VFE 方程）─────────────────────
+//
+// 与 GB20x（gb20x::voltage_walls）同语义：rail 行 u8 选择器 → VFE 方程
+// （Ada 25B u16 链 / Ampere·Turing 24B u8 链）；kind@+0、min 钳@+3、
+// max 钳@+7、常数@+11、单位码@+23&0xF（2=µV）。
+
+/// 一面 3x 电压墙（与 gb20x::Gb20xVoltageWall 同形；独立定义避免模块环）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoltageWall3x {
+    pub rail_name: &'static str,
+    pub rail_index: usize,
+    /// rel/alt/ov/vmin/vmin-info。
+    pub role_name: &'static str,
+    pub selector_offset: usize,
+    pub selector_raw: u16,
+    pub absent: bool,
+    pub equation_offset: Option<usize>,
+    pub equation_kind_raw: Option<u8>,
+    pub clamp_uv: Option<(f32, f32)>,
+    pub constant_uv: Option<f32>,
+    pub tree_state: Option<&'static str>,
+    pub pinned_uv: Option<f32>,
+    pub minimum_offset: Option<usize>,
+    pub maximum_offset: Option<usize>,
+    pub constant_offset: Option<usize>,
+    pub editable_ceiling: bool,
+}
+
+fn wall_role_name(role: RailRole) -> &'static str {
+    match role {
+        RailRole::Rel => "rel",
+        RailRole::Alt => "alt",
+        RailRole::Ov => "ov",
+        RailRole::VminEvaluated => "vmin",
+        RailRole::VminInfo => "vmin-info",
+        RailRole::Boot => "boot",
+    }
+}
+
+/// 全 rail × 全 role 电压墙（3x 族）。
+pub fn voltage_walls(data: &[u8], ctx: &TableContext) -> Result<Vec<VoltageWall3x>, Error> {
+    let table = rails(data, ctx)?;
+    let vfe_table = vfe(data, ctx)?;
+    let mut out = Vec::new();
+    for row in &table.rows {
+        for (role, offset, raw) in &row.selectors {
+            let absent = *raw == 0xFFFF;
+            let mut w = VoltageWall3x {
+                rail_name: row.name,
+                rail_index: row.index,
+                role_name: wall_role_name(*role),
+                selector_offset: *offset,
+                selector_raw: *raw,
+                absent,
+                equation_offset: None,
+                equation_kind_raw: None,
+                clamp_uv: None,
+                constant_uv: None,
+                tree_state: None,
+                pinned_uv: None,
+                minimum_offset: None,
+                maximum_offset: None,
+                constant_offset: None,
+                editable_ceiling: false,
+            };
+            if !absent {
+                let at = vfe_table.equations_base + usize::from(*raw) * vfe_table.equation_size;
+                if let Some(equation) = vfe_table.equation(*raw) {
+                    w.equation_offset = Some(at);
+                    w.equation_kind_raw = Some(equation.kind_raw);
+                    // 非电压输出（单位码 != 2）：不视为墙（如 Turing 的 boot/
+                    // margin 方程族），保留 kind/偏移供诊断。
+                    if equation.output_unit != 2 {
+                        out.push(w);
+                        continue;
+                    }
+                    // 电压合理域门：非电压量纲却带电压单位码的奇异方程
+                    // （Turing boot 1.79e-20 mV 实测）不当作墙。
+                    if let Some((_, hi)) = equation.clamp
+                        && !(50_000.0..=3_000_000.0).contains(&hi)
+                    {
+                        out.push(w);
+                        continue;
+                    }
+                    w.clamp_uv = equation.clamp;
+                    w.minimum_offset = Some(at + 3);
+                    w.maximum_offset = Some(at + 7);
+                    w.constant_offset = Some(at + 11);
+                    w.constant_uv = crate::vbios::vfe::constant_equation_uv(equation);
+                    if matches!(equation.kind_raw, 2 | 3)
+                        && equation.next.is_none()
+                        && let Some((lo, hi)) = equation.clamp
+                        && lo.is_finite()
+                        && hi.is_finite()
+                    {
+                        if lo == hi && (f64::from(lo) - f64::from(lo).round()).abs() < 1.0 {
+                            w.tree_state = Some("pinned");
+                            w.pinned_uv = Some(lo);
+                        } else {
+                            w.tree_state = Some("stock");
+                        }
+                    }
+                    let allowed = match role {
+                        RailRole::Rel => matches!(equation.kind_raw, 1 | 7),
+                        RailRole::Alt | RailRole::Ov | RailRole::VminEvaluated => {
+                            equation.kind_raw == 1
+                        }
+                        _ => false,
+                    };
+                    w.editable_ceiling =
+                        allowed && equation.output_unit == 2 && w.clamp_uv.is_some();
+                }
+            }
+            out.push(w);
+        }
+    }
+    Ok(out)
+}
+
+/// 一面被改写的 3x 电压墙（回显）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoltageWallPatch3x {
+    pub rail_name: &'static str,
+    pub role_name: &'static str,
+    pub writes: Vec<(usize, f32)>,
+    pub old_clamp_uv: Option<(f32, f32)>,
+    pub old_constant_uv: Option<f32>,
+}
+
+/// 定位 3x 电压墙写入点（只读；常数墙三点 / 曲线墙 max 钳）。
+pub fn locate_voltage_wall_writes(
+    data: &[u8],
+    ctx: &TableContext,
+    role: RailRole,
+    millivolts: f64,
+) -> Result<Vec<VoltageWallPatch3x>, Error> {
+    let table = rails(data, ctx)?;
+    let vfe_table = vfe(data, ctx)?;
+    let value_uv = (millivolts * 1000.0) as f32;
+    if !value_uv.is_finite() || value_uv <= 0.0 {
+        return Err(Error::from("vbios: voltage must be a positive number"));
+    }
+    let mut out = Vec::new();
+    for row in &table.rows {
+        let Some((_, _, sel_raw)) = row
+            .selectors
+            .iter()
+            .find(|(r, _, _)| *r == role)
+            .map(|(r, o, v)| (*r, *o, *v))
+        else {
+            continue;
+        };
+        if sel_raw == 0xFFFF {
+            continue;
+        }
+        let at = vfe_table.equations_base + usize::from(sel_raw) * vfe_table.equation_size;
+        if at + vfe_table.equation_size > data.len() {
+            return Err(Error::from("vbios: rail equation outside image"));
+        }
+        let equation = vfe_table
+            .equation(sel_raw)
+            .ok_or_else(|| Error::from("vbios: selector outside equation table"))?;
+        if equation.output_unit != 2 {
+            return Err(Error::from("vbios: wall equation output is not voltage µV"));
+        }
+        let Some((lo, hi)) = equation.clamp else {
+            return Err(Error::from("vbios: wall equation has no clamp"));
+        };
+        if !lo.is_finite() || !hi.is_finite() {
+            return Err(Error::from("vbios: wall equation clamp is not finite"));
+        }
+        let is_constant = crate::vbios::vfe::constant_equation_uv(equation).is_some();
+        let mut writes = Vec::new();
+        if is_constant {
+            for off in [at + 3, at + 7, at + 11] {
+                writes.push((off, value_uv));
+            }
+        } else {
+            if value_uv < lo {
+                return Err(Error::from(format!(
+                    "vbios: {millivolts} mV is below the wall's existing min clamp ({lo} µV)"
+                )));
+            }
+            writes.push((at + 7, value_uv));
+        }
+        out.push(VoltageWallPatch3x {
+            rail_name: row.name,
+            role_name: wall_role_name(role),
+            writes,
+            old_clamp_uv: Some((lo, hi)),
+            old_constant_uv: crate::vbios::vfe::constant_equation_uv(equation),
+        });
+    }
+    if out.is_empty() {
+        return Err(Error::from(format!(
+            "vbios: no rail carries a {} wall on this image",
+            wall_role_name(role)
+        )));
+    }
+    Ok(out)
+}
+
+/// 就地应用（整镜像车道）：写字节 + 所在镜像加性校验归零。
+pub fn patch_voltage_wall_millivolts(
+    img: &mut [u8],
+    ctx: &TableContext,
+    role: RailRole,
+    millivolts: f64,
+) -> Result<Vec<VoltageWallPatch3x>, Error> {
+    let patches = locate_voltage_wall_writes(img, ctx, role, millivolts)?;
+    for p in &patches {
+        for (off, uv) in &p.writes {
+            img[*off..*off + 4].copy_from_slice(&uv.to_le_bytes());
+        }
+    }
+    let base = crate::vbios::legacy::find_image_base(img)
+        .ok_or_else(|| Error::from("vbios: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(patches)
+}
+
+// ── 3x surfaces（vix tables.py 剩余面：热策略/出厂时钟/PERF_CF/LPWR/
+//    DRAM 点/GPC 曲线/运行时功率槽/override profiles）────────────────────
+//
+// 与 GB20x（gb20x_surfaces）同形；差异全在 vix 常量：
+//   thermal：turing/ampere 头 0x0A、ada 0x0B，条目 0x28，≤16 条
+//   factory：Turing 头 6B（10 06 05 02 05 02）、Ampere/Ada 7B（尾 00/01）
+//   perf_cf：控制器 v0x10 头 6B、条目 24|28|32|49B（byte0..22 同位）
+//   lpwr：gr_pg(0x80,10,5,u32) ms(0x84,7,15,u32) gr_rg(0xD4,9,1,u8)
+//         difr(0xE8,11,17,u32)，≤5 条
+//   dram/gpc：Ada/Ampere v0x40（Turing v0x35 未审）
+//   profiles：P+0xF4 头 (10 0a 05 04 07 08 01 10 09 08)，Ada-only 非空
+
+/// 一条 3x 热策略条目。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThermalPolicyEntry3x {
+    pub index: usize,
+    pub offset: usize,
+    pub policy_class: u8,
+    pub byte1: u8,
+    pub temperatures_raw: [i16; 3],
+}
+
+/// 3x 热策略表（P+0x50 v0x10；无引用 → None）。
+pub fn thermal_policies(
+    data: &[u8],
+    ctx: &TableContext,
+) -> Result<Option<Vec<ThermalPolicyEntry3x>>, Error> {
+    let Ok(at) = ctx.read(data, b'P', 0x50, 16) else {
+        return Ok(None);
+    };
+    let (ver, hs, es, count) = (
+        data[at],
+        usize::from(data[at + 1]),
+        usize::from(data[at + 2]),
+        usize::from(data[at + 3]),
+    );
+    let hs_want = match ctx.family {
+        Family::Ada => 0x0B,
+        _ => 0x0A,
+    };
+    if ver != 0x10 || hs != hs_want || es != 0x28 || count == 0 || count > 16 {
+        return Err(Error::from("vbios: unsupported thermal policy table"));
+    }
+    let mut out = Vec::new();
+    for i in 0..count {
+        let e = at + hs + es * i;
+        out.push(ThermalPolicyEntry3x {
+            index: i,
+            offset: e,
+            policy_class: data[e],
+            byte1: data[e + 1],
+            temperatures_raw: [
+                i16::from_le_bytes([data[e + 2], data[e + 3]]),
+                i16::from_le_bytes([data[e + 4], data[e + 5]]),
+                i16::from_le_bytes([data[e + 6], data[e + 7]]),
+            ],
+        });
+    }
+    Ok(Some(out))
+}
+
+/// 一条出厂时钟条目。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactoryClockEntry3x {
+    pub index: usize,
+    pub offset: usize,
+    pub flag: u8,
+    pub khz: i64,
+}
+
+/// 3x 出厂时钟记录（P+0x98；头不合 → None=未审）。
+#[allow(clippy::type_complexity)]
+pub fn factory_clocks(
+    data: &[u8],
+    ctx: &TableContext,
+) -> Result<Option<(Vec<FactoryClockEntry3x>, Vec<FactoryClockEntry3x>)>, Error> {
+    let Ok(at) = ctx.read(data, b'P', 0x98, 16) else {
+        return Ok(None);
+    };
+    let hs = usize::from(data[at + 1]);
+    let turing = ctx.family == Family::Turing;
+    let ok = if turing {
+        hs == 6 && data[at..at + 6] == [0x10, 6, 5, 2, 5, 2]
+    } else {
+        hs == 7 && data[at..at + 6] == [0x10, 7, 5, 2, 5, 2] && matches!(data[at + 6], 0 | 1)
+    };
+    if !ok {
+        return Ok(None); // 未审头：不解读条目
+    }
+    let mut offsets = Vec::new();
+    let mut clocks = Vec::new();
+    for i in 0..2 {
+        offsets.push(FactoryClockEntry3x {
+            index: i,
+            offset: at + hs + 5 * i,
+            flag: data[at + hs + 5 * i],
+            khz: i64::from(u32_at(data, at + hs + 5 * i + 1)? as i32),
+        });
+        clocks.push(FactoryClockEntry3x {
+            index: i,
+            offset: at + hs + 10 + 5 * i,
+            flag: data[at + hs + 10 + 5 * i],
+            khz: i64::from(u32_at(data, at + hs + 10 + 5 * i + 1)?),
+        });
+    }
+    Ok(Some((offsets, clocks)))
+}
+
+/// PERF_CF 控制器行（3x；字节 0..22 各条目尺寸同位）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerfCfController3x {
+    pub index: usize,
+    pub offset: usize,
+    pub kind: u8,
+    pub target_raw: u32,
+    pub jump_raw: u32,
+    pub domain: u8,
+    pub hysteresis_up: u8,
+    pub hysteresis_down: u8,
+}
+
+/// PERF_CF 策略行（与 GB20x 同形）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerfCfPolicy3x {
+    pub index: usize,
+    pub offset: usize,
+    pub flags: u8,
+    pub kind: u8,
+    pub active: bool,
+    pub conflicts: u32,
+    pub controllers: u32,
+}
+
+/// 3x PERF_CF 控制器（P+0xa8）+ 策略（P+0xac）。
+#[allow(clippy::type_complexity)]
+pub fn perf_cf(
+    data: &[u8],
+    ctx: &TableContext,
+) -> Result<Option<(Vec<PerfCfController3x>, Vec<PerfCfPolicy3x>)>, Error> {
+    let (Ok(ca), Ok(pa)) = (ctx.read(data, b'P', 0xA8, 8), ctx.read(data, b'P', 0xAC, 8)) else {
+        return Ok(None);
+    };
+    let (ver, hs, es, count) = (
+        data[ca],
+        usize::from(data[ca + 1]),
+        usize::from(data[ca + 2]),
+        usize::from(data[ca + 3]),
+    );
+    if ver != 0x10 || hs != 6 || !matches!(es, 24 | 28 | 32 | 49) || count < 3 {
+        return Err(Error::from("vbios: unsupported PERF_CF controller table"));
+    }
+    let mut controllers = Vec::new();
+    for i in 0..count {
+        let e = ca + hs + es * i;
+        controllers.push(PerfCfController3x {
+            index: i,
+            offset: e,
+            kind: data[e] & 0x0F,
+            target_raw: u32_at(data, e + 3)?,
+            jump_raw: u32_at(data, e + 7)?,
+            domain: data[e + 19],
+            hysteresis_up: data[e + 20],
+            hysteresis_down: data[e + 21],
+        });
+    }
+    let (pver, phs, pes, pcount) = (
+        data[pa],
+        usize::from(data[pa + 1]),
+        usize::from(data[pa + 2]),
+        usize::from(data[pa + 3]),
+    );
+    if (pver, phs, pes) != (0x10, 5, 10) || pcount == 0 || data[pa + 4] != 0 {
+        return Err(Error::from("vbios: unsupported PERF_CF policy table"));
+    }
+    let mut policies = Vec::new();
+    for i in 0..pcount {
+        let e = pa + phs + pes * i;
+        policies.push(PerfCfPolicy3x {
+            index: i,
+            offset: e,
+            flags: data[e],
+            kind: data[e] & 0x0F,
+            active: data[e] & 0x80 != 0,
+            conflicts: u32_at(data, e + 2)?,
+            controllers: u32_at(data, e + 6)?,
+        });
+    }
+    Ok(Some((controllers, policies)))
+}
+
+/// 一张 3x LPWR 特性表。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LpwrTable3x {
+    pub name: &'static str,
+    pub offset: usize,
+    pub entries: Vec<u64>,
+}
+
+const LPWR_TABLES_3X: [(&str, usize, usize, usize, usize); 4] = [
+    ("gr_pg", 0x80, 10, 5, 4),
+    ("ms", 0x84, 7, 15, 4),
+    ("gr_rg", 0xD4, 9, 1, 1),
+    ("difr", 0xE8, 11, 17, 4),
+];
+
+/// 3x LPWR 表族（未引用 → 不在返回里；Turing 自然只出 gr_pg/ms）。
+pub fn lpwr_tables(data: &[u8], ctx: &TableContext) -> Result<Vec<LpwrTable3x>, Error> {
+    let mut out = Vec::new();
+    for (name, bit_off, hs, es, word) in LPWR_TABLES_3X {
+        let Ok(at) = ctx.read(data, b'P', bit_off, 8) else {
+            continue;
+        };
+        if u32_at(data, at)? == 0 {
+            continue;
+        }
+        let count = usize::from(data[at + 3]);
+        if data[at] != 0x10
+            || usize::from(data[at + 1]) != hs
+            || usize::from(data[at + 2]) != es
+            || count == 0
+            || count > 5
+        {
+            return Err(Error::from(format!("vbios: unsupported LPWR {name} table")));
+        }
+        let mut entries = Vec::new();
+        for i in 0..count {
+            let e = at + hs + es * i;
+            entries.push(match word {
+                1 => u64::from(*data.get(e).ok_or("vbios: oob")?),
+                _ => u64::from(u32_at(data, e)?),
+            });
+        }
+        out.push(LpwrTable3x {
+            name,
+            offset: at,
+            entries,
+        });
+    }
+    Ok(out)
+}
+
+/// 3x DRAM 点（Ada/Ampere 时钟编程 v0x40；Turing v0x35 未审）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DramPoint3x {
+    pub index: usize,
+    pub offset: usize,
+    pub flags: u8,
+    pub mhz: u16,
+}
+
+pub fn dram_points(data: &[u8], ctx: &TableContext) -> Result<Vec<DramPoint3x>, Error> {
+    if ctx.family == Family::Turing {
+        return Err(Error::from(
+            "vbios: DRAM points are Ada/Ampere-only (v0x35 unreviewed)",
+        ));
+    }
+    let ranges = clock_ranges(data, ctx)?;
+    let dram = ranges
+        .iter()
+        .find(|r| r.domain == "DRAM")
+        .ok_or("vbios: no DRAM clock row")?;
+    let row = dram.minimum_offset - 3;
+    let (first, last) = (usize::from(data[row + 1]), usize::from(data[row + 2]));
+    let at = ctx.read(data, b'C', 0x0C, 8)?;
+    if data[at] != 0x40 {
+        return Err(Error::from("vbios: unsupported clock programming version"));
+    }
+    let (hs, size, count, c1, s1, c2, s2) = (
+        usize::from(data[at + 1]),
+        usize::from(data[at + 2]),
+        usize::from(data[at + 3]),
+        usize::from(data[at + 4]),
+        usize::from(data[at + 5]),
+        usize::from(data[at + 6]),
+        usize::from(data[at + 7]),
+    );
+    let stride = size + c1 * s1 + c2 * s2;
+    if !(first <= last && last < count && last - first >= 2) {
+        return Err(Error::from("vbios: unsupported DRAM programming entries"));
+    }
+    let mut out = Vec::new();
+    let mut prev: Option<u16> = None;
+    for i in first..=last {
+        let e = at + hs + stride * i;
+        let flags = data[e];
+        let mhz = u16_at(data, e + 1)?;
+        if !matches!(flags, 0x03 | 0x13) {
+            return Err(Error::from("vbios: DRAM point flag outside reviewed shape"));
+        }
+        if prev.is_some_and(|p| mhz <= p) {
+            return Err(Error::from("vbios: DRAM points not strictly rising"));
+        }
+        prev = Some(mhz);
+        out.push(DramPoint3x {
+            index: i,
+            offset: e,
+            flags,
+            mhz,
+        });
+    }
+    Ok(out)
+}
+
+/// GPC 曲线偏移槽（3x；Ada 条目 15B root@+3|+13<<8、Ampere 13B root@+3）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpcCurveSlot3x {
+    pub root: u16,
+    pub root_offset: usize,
+    pub slot: Option<u16>,
+    pub slot_offset: Option<usize>,
+    pub current_mhz: i32,
+}
+
+pub fn gpc_curve(data: &[u8], ctx: &TableContext) -> Result<GpcCurveSlot3x, Error> {
+    if ctx.family == Family::Turing {
+        return Err(Error::from("vbios: GPC curve offset is Ada/Ampere-only"));
+    }
+    let ranges = clock_ranges(data, ctx)?;
+    let gpc = ranges
+        .iter()
+        .find(|r| r.domain == "GPC")
+        .ok_or("vbios: no GPC clock row")?;
+    let row = gpc.minimum_offset - 3;
+    let (first, last) = (usize::from(data[row + 1]), usize::from(data[row + 2]));
+    let at = ctx.read(data, b'C', 0x0C, 8)?;
+    let (hs, size, count, c1, s1, c2, s2) = (
+        usize::from(data[at + 1]),
+        usize::from(data[at + 2]),
+        usize::from(data[at + 3]),
+        usize::from(data[at + 4]),
+        usize::from(data[at + 5]),
+        usize::from(data[at + 6]),
+        usize::from(data[at + 7]),
+    );
+    let stride = size + c1 * s1 + c2 * s2;
+    if data[at] != 0x40 || hs != 8 || !matches!(size, 13 | 15) || first != last || first >= count {
+        return Err(Error::from("vbios: unreviewed GPC clock programming entry"));
+    }
+    let root_of = |i: usize| -> Result<u16, Error> {
+        let e = at + hs + stride * i;
+        Ok(u16::from(data[e + 3])
+            | if size == 15 {
+                u16::from(data[e + 13]) << 8
+            } else {
+                0
+            })
+    };
+    let root = root_of(first)?;
+    for i in 0..count {
+        if i != first && data[at + hs + stride * i] & 0x0F == 1 && root_of(i)? == root {
+            return Err(Error::from(
+                "vbios: another programming entry names the GPC root",
+            ));
+        }
+    }
+    let vfe_at = ctx.read(data, b'P', 0x20, 16)?;
+    let esize = usize::from(data[vfe_at + 4]);
+    let width = usize::from(esize == 25);
+    let vcount = u16::from(data[vfe_at + 5])
+        | if width == 2 {
+            u16::from(data[vfe_at + 10]) << 8
+        } else {
+            0
+        };
+    let base = vfe_at
+        + usize::from(data[vfe_at + 1])
+        + usize::from(data[vfe_at + 2]) * usize::from(data[vfe_at + 3]);
+    let none = ((1u32 << (8 * width)) - 1) as u16;
+    let mut refs = vec![0usize; usize::from(vcount)];
+    for i in 0..vcount {
+        let e = data
+            .get(base + esize * usize::from(i)..base + esize * usize::from(i) + esize)
+            .ok_or("vbios: oob")?;
+        if !matches!(e[0], 0 | 1 | 2 | 3 | 4 | 7) {
+            return Err(Error::from("vbios: unreviewed VFE equation kind"));
+        }
+        if e[0] == 0 {
+            continue;
+        }
+        let high = |k: usize| -> u16 {
+            if width == 2 {
+                u16::from(e[k + 4]) << 8
+            } else {
+                0
+            }
+        };
+        let mut links = vec![(u16::from(e[2]) | high(2))];
+        match e[0] {
+            2 => links.extend([u16::from(e[11]) | high(11), u16::from(e[12]) | high(12)]),
+            3 => {
+                links.extend([u16::from(e[15]) | high(15), u16::from(e[16]) | high(16)]);
+                if e[23] & 0x10 != 0 {
+                    links.push(u16::from(e[11]) | u16::from(e[12]) << 8);
+                }
+            }
+            _ => {}
+        }
+        for x in links {
+            if x != none
+                && let Some(slot) = refs.get_mut(usize::from(x))
+            {
+                *slot += 1;
+            }
+        }
+    }
+    if usize::from(root) >= usize::from(vcount) {
+        return Err(Error::from("vbios: GPC root outside the VFE table"));
+    }
+    let rat = base + esize * usize::from(root);
+    let e = &data[rat..rat + esize];
+    if e[0] != 3 || e[23] & 0x0F != 1 || refs[usize::from(root)] != 0 {
+        return Err(Error::from("vbios: unreviewed GPC root equation"));
+    }
+    let nxt = u16::from(e[2])
+        | if width == 2 {
+            u16::from(e[esize - 1]) << 8
+        } else {
+            0
+        };
+    let (slot, current) = if nxt == none {
+        let slot = (0..vcount).find(|&i| data[base + esize * usize::from(i)] == 0);
+        (slot, 0)
+    } else {
+        let s = base + esize * usize::from(nxt);
+        let value = f32::from_le_bytes(
+            data.get(s + 11..s + 15)
+                .ok_or("vbios: oob")?
+                .try_into()
+                .unwrap(),
+        );
+        if refs[usize::from(nxt)] != 1
+            || !value.is_finite()
+            || value != value.trunc()
+            || value.abs() > 500.0
+        {
+            return Err(Error::from(
+                "vbios: GPC root links non-offset-shape equation",
+            ));
+        }
+        (Some(nxt), value as i32)
+    };
+    Ok(GpcCurveSlot3x {
+        root,
+        root_offset: rat,
+        slot,
+        slot_offset: slot.map(|x| base + esize * usize::from(x)),
+        current_mhz: current,
+    })
+}
+
+/// 3x 运行时功率限开关槽（turing/ampere 笔记本；P 头 +10）。
+pub fn runtime_limit_slot(
+    data: &[u8],
+    ctx: &TableContext,
+) -> Result<Option<(usize, usize, u8)>, Error> {
+    if ctx.family == Family::Ada {
+        return Ok(None);
+    }
+    let policy = power_policy(data, ctx)?;
+    if !policy.notebook {
+        return Ok(None);
+    }
+    // TGP 行必须是首个 class-1 行（R525 语义）。
+    let rows = &policy.rows;
+    if policy.tgp_index >= rows.len() || rows[policy.tgp_index].kind != 1 {
+        return Ok(None);
+    }
+    if rows.iter().take(policy.tgp_index).any(|r| r.kind == 1) {
+        return Ok(None);
+    }
+    let at = ctx.read(data, b'P', 0x2C, 16)? + 10;
+    Ok(Some((at, policy.tgp_index, u8::from(data[at] != 0xFF))))
+}
+
+/// 一条 3x override profile 条目。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowerProfileEntry3x {
+    pub policy: usize,
+    /// "maximum" | "default"。
+    pub field: &'static str,
+    pub value_raw: u32,
+    pub value_offset: usize,
+}
+
+/// 3x override profile（P+0xF4；非空仅 Ada 已审，其余族非空报错）。
+pub fn power_profiles(
+    data: &[u8],
+    ctx: &TableContext,
+) -> Result<Vec<Vec<PowerProfileEntry3x>>, Error> {
+    let entry = ctx.bit.token(b'P').ok_or("vbios: no BIT P token")?;
+    if usize::from(entry.size) < 0xF8 {
+        return Ok(Vec::new());
+    }
+    let at = ctx.read(data, b'P', 0xF4, 16)?;
+    if data[at..at + 10] != [0x10, 0x0a, 0x05, 0x04, 0x07, 0x08, 0x01, 0x10, 0x09, 0x08] {
+        return Err(Error::from("vbios: unvalidated power profile header"));
+    }
+    if !data[at + 0xFE..at + 0xFE + 16 * 0x49]
+        .iter()
+        .any(|&b| b != 0)
+        && ctx.family != Family::Ada
+    {
+        return Ok(Vec::new());
+    }
+    let count = power_policy(data, ctx)?.rows.len();
+    let mut out = Vec::new();
+    for i in 0..16usize {
+        let row = at + 0xFE + i * 0x49;
+        if !data[row..row + 0x49].iter().any(|&b| b != 0) {
+            continue;
+        }
+        if data[row] != 1 {
+            return Err(Error::from("vbios: unsupported override profile flag"));
+        }
+        let mut entries = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut ended = false;
+        for j in 0..8usize {
+            let e = row + 1 + j * 9;
+            if !data[e..e + 9].iter().any(|&b| b != 0) {
+                ended = true;
+                continue;
+            }
+            let selector = u32_at(data, e + 1)?;
+            let value = u32_at(data, e + 5)?;
+            let (policy, field) = ((selector & 0xFF) as usize, (selector >> 8) as usize);
+            let field_name = match field {
+                0 => "maximum",
+                1 => "default",
+                _ => {
+                    return Err(Error::from("vbios: unsupported override profile field"));
+                }
+            };
+            if ended || data[e] != 1 || policy >= count || !seen.insert((policy, field)) {
+                return Err(Error::from("vbios: unsupported override profile entry"));
+            }
+            entries.push(PowerProfileEntry3x {
+                policy,
+                field: field_name,
+                value_raw: value,
+                value_offset: e + 5,
+            });
+        }
+        if entries.is_empty() {
+            return Err(Error::from("vbios: override profile without entries"));
+        }
+        out.push(entries);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::vbios::image_chain::{f32_at, testutil::*};

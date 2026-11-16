@@ -1011,6 +1011,252 @@ pub fn matching_power_profiles(data: &[u8], layout: &Gb20xLayout) -> Result<Vec<
         .collect())
 }
 
+// ── 电压墙全景（vix rail_limits/rail_vmin/follow_ov_equation 对照补齐）────
+
+/// 一面电压墙（GB20x rail 行 role 选择器 × VFE 方程）的只读视图 + 可写点。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gb20xVoltageWall {
+    pub rail_name: &'static str,
+    pub rail_index: usize,
+    pub role: RailRole,
+    /// 角色名（rel/alt/ov/vmin）。
+    pub role_name: &'static str,
+    pub selector_offset: usize,
+    pub selector_raw: u16,
+    pub absent: bool,
+    pub equation_offset: Option<usize>,
+    /// 方程 kind 原始码（1=二次输出、2=min/max、3=compare、7=GB20x REL 多项式）。
+    pub equation_kind_raw: Option<u8>,
+    /// f32 输出钳位 (min, max)，µV。
+    pub clamp_uv: Option<(f32, f32)>,
+    /// 常数方程值（vix constant_equation：kind 1、单位 2、无链接、
+    /// min==max==c0、c1==c2==0），µV。
+    pub constant_uv: Option<f32>,
+    /// min/max / compare 树根的钳位状态（vix vmin_tree）："stock" =
+    /// 无界钳位（VFE_UNCLAMPED 语料常态）、"pinned" = 有限钳位 min==max
+    /// （根求值即该值）。
+    pub tree_state: Option<&'static str>,
+    /// pinned 树的钳位值（µV）。
+    pub pinned_uv: Option<f32>,
+    /// min 钳位字节偏移（方程 +3，f32 µV）。
+    pub minimum_offset: Option<usize>,
+    /// max 钳位字节偏移（方程 +7，f32 µV）——vix `maximum_offset`，
+    /// 可编辑上限的写入点。
+    pub maximum_offset: Option<usize>,
+    /// 常数值字节偏移（方程 +11，f32 µV）。
+    pub constant_offset: Option<usize>,
+    /// 复核过可编辑（REL kind 1|7 / 其它 kind 1，电压单位）。
+    pub editable_ceiling: bool,
+}
+
+fn wall_role_name(role: RailRole) -> &'static str {
+    match role {
+        RailRole::Rel => "rel",
+        RailRole::Alt => "alt",
+        RailRole::Ov => "ov",
+        RailRole::VminEvaluated => "vmin",
+        RailRole::VminInfo => "vmin-info",
+        _ => "?",
+    }
+}
+
+/// 全 rail × 全 role 电压墙视图（REL/ALT/OV/VMIN evaluated/VMIN info）。
+/// 方程内布局（25B）：kind@+0、next@+2(+24)、min 钳@+3、max 钳@+7、
+/// 系数@+11..+23、输出旗标@+23（低 4 位单位码，2=电压 µV）。
+pub fn voltage_walls(data: &[u8], layout: &Gb20xLayout) -> Result<Vec<Gb20xVoltageWall>, Error> {
+    let table = rails(data, layout)?;
+    let vfe_table = vfe(data, layout)?;
+    let mut out = Vec::new();
+    for row in &table.rows {
+        for (role, offset, raw) in &row.selectors {
+            let absent = *raw == 0xFFFF;
+            let mut w = Gb20xVoltageWall {
+                rail_name: row.name,
+                rail_index: row.index,
+                role: *role,
+                role_name: wall_role_name(*role),
+                selector_offset: *offset,
+                selector_raw: *raw,
+                absent,
+                equation_offset: None,
+                equation_kind_raw: None,
+                clamp_uv: None,
+                constant_uv: None,
+                tree_state: None,
+                pinned_uv: None,
+                minimum_offset: None,
+                maximum_offset: None,
+                constant_offset: None,
+                editable_ceiling: false,
+            };
+            if !absent {
+                let at = vfe_table.equations_base + usize::from(*raw) * 25;
+                if let Some(equation) = vfe_table.equation(*raw) {
+                    w.equation_offset = Some(at);
+                    w.equation_kind_raw = Some(equation.kind_raw);
+                    w.clamp_uv = equation.clamp;
+                    w.minimum_offset = Some(at + 3);
+                    w.maximum_offset = Some(at + 7);
+                    w.constant_offset = Some(at + 11);
+                    w.constant_uv = vfe::constant_equation_uv(equation);
+                    // 树根钳位状态（kind 2/3；GSP-RM 把每 kind 的输出钳位读进
+                    // 公共字段再分 kind 处理，钳位随 kind 导出）。
+                    if matches!(equation.kind_raw, 2 | 3)
+                        && equation.next.is_none()
+                        && let Some((lo, hi)) = equation.clamp
+                        && lo.is_finite()
+                        && hi.is_finite()
+                    {
+                        if lo == hi && (f64::from(lo) - f64::from(lo).round()).abs() < 1.0 {
+                            w.tree_state = Some("pinned");
+                            w.pinned_uv = Some(lo);
+                        } else {
+                            w.tree_state = Some("stock");
+                        }
+                    }
+                    let allowed = match role {
+                        RailRole::Rel => matches!(equation.kind_raw, 1 | 7),
+                        RailRole::Alt | RailRole::Ov | RailRole::VminEvaluated => {
+                            equation.kind_raw == 1
+                        }
+                        _ => false,
+                    };
+                    w.editable_ceiling =
+                        allowed && equation.output_unit == 2 && w.clamp_uv.is_some();
+                }
+            }
+            out.push(w);
+        }
+    }
+    Ok(out)
+}
+
+/// 一面被改写的电压墙（回显）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gb20xVoltageWallPatch {
+    pub rail_name: &'static str,
+    pub role_name: &'static str,
+    /// 实际写入的字节偏移列表（常数方程 = +3/+7/+11 三点；钳位墙 = +7）。
+    pub writes: Vec<(usize, f32)>,
+    pub old_clamp_uv: Option<(f32, f32)>,
+    pub old_constant_uv: Option<f32>,
+}
+
+/// 把某 rail 某 role 的电压墙改到 `millivolts`（就地写镜像，f32 µV）。
+///
+/// - 常数方程（vix follow-OV/dedicated 语义）：值同时住 +3/+7/+11
+///   （constant_equation 的判据就是三点相等），三点全写；
+/// - 曲线/多项式墙（温度降额 REL 等）：只抬 max 钳位 @+7
+///   （vix editable_ceiling 的唯一写入点；曲线形状不动）。
+///
+/// 写后修复所在镜像（首个 55 AA）的加性校验。fail-closed：absent/方程
+/// 出界/非电压单位/新值低于现 min 钳位（会造成钳位倒挂）一律拒绝。
+pub fn locate_voltage_wall_writes(
+    data: &[u8],
+    layout: &Gb20xLayout,
+    role: RailRole,
+    millivolts: f64,
+) -> Result<Vec<Gb20xVoltageWallPatch>, Error> {
+    let table = rails(data, layout)?;
+    let vfe_table = vfe(data, layout)?;
+    let value_uv = (millivolts * 1000.0) as f32;
+    if !value_uv.is_finite() || value_uv <= 0.0 {
+        return Err(Error::from("vbios: voltage must be a positive number"));
+    }
+    let mut out = Vec::new();
+    for row in &table.rows {
+        let Some((_, _, sel_raw)) = row
+            .selectors
+            .iter()
+            .find(|(r, _, _)| *r == role)
+            .map(|(r, o, v)| (*r, *o, *v))
+        else {
+            continue;
+        };
+        if sel_raw == 0xFFFF {
+            continue; // 该 rail 无此墙（单 rail 卡的 MSVDD 行）
+        }
+        let at = vfe_table.equations_base + usize::from(sel_raw) * 25;
+        if at + 25 > data.len() {
+            return Err(Error::from("vbios: rail equation outside image"));
+        }
+        let equation = vfe_table
+            .equation(sel_raw)
+            .ok_or_else(|| Error::from("vbios: selector outside equation table"))?;
+        if equation.output_unit != 2 {
+            return Err(Error::from("vbios: wall equation output is not voltage µV"));
+        }
+        let Some((lo, hi)) = equation.clamp else {
+            return Err(Error::from("vbios: wall equation has no clamp"));
+        };
+        if !lo.is_finite() || !hi.is_finite() {
+            return Err(Error::from("vbios: wall equation clamp is not finite"));
+        }
+        let (kind_raw, next_none, coeffs) = (
+            equation.kind_raw,
+            equation.next.is_none(),
+            equation.coefficients,
+        );
+        let is_constant = vfe::constant_equation_uv(equation).is_some();
+        let mut writes = Vec::new();
+        let value_bytes = value_uv.to_le_bytes();
+        if is_constant {
+            // 常数墙：+3/+7/+11 三点同值（判据本身要求三点相等）
+            for off in [at + 3, at + 7, at + 11] {
+                writes.push((off, value_uv));
+            }
+            let _ = value_bytes;
+        } else {
+            // 曲线墙：只动 max 钳位（+7）；新值不得低于现 min 钳位
+            if value_uv < lo {
+                return Err(Error::from(format!(
+                    "vbios: {millivolts} mV is below the wall's existing min clamp ({lo} µV)"
+                )));
+            }
+            writes.push((at + 7, value_uv));
+        }
+        let _ = (kind_raw, next_none, coeffs);
+        out.push(Gb20xVoltageWallPatch {
+            rail_name: row.name,
+            role_name: wall_role_name(role),
+            writes,
+            old_clamp_uv: Some((lo, hi)),
+            old_constant_uv: vfe::constant_equation_uv(equation),
+        });
+    }
+    if out.is_empty() {
+        return Err(Error::from(format!(
+            "vbios: no rail carries a {:?} wall on this image",
+            role
+        )));
+    }
+    Ok(out)
+}
+
+/// [`locate_voltage_wall_writes`] 的就地应用版（整镜像车道）：写字节 +
+/// 修复所在镜像加性校验。
+pub fn patch_voltage_wall_millivolts(
+    img: &mut [u8],
+    layout: &Gb20xLayout,
+    role: RailRole,
+    millivolts: f64,
+) -> Result<Vec<Gb20xVoltageWallPatch>, Error> {
+    let patches = locate_voltage_wall_writes(img, layout, role, millivolts)?;
+    for p in &patches {
+        for (off, uv) in &p.writes {
+            img[*off..*off + 4].copy_from_slice(&uv.to_le_bytes());
+        }
+    }
+    let base = crate::vbios::legacy::find_image_base(img)
+        .ok_or_else(|| Error::from("vbios: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(patches)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

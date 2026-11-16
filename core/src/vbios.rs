@@ -15,6 +15,7 @@ pub mod dcb;
 pub mod dcb_ext;
 pub mod families;
 pub mod gb20x;
+pub mod gb20x_surfaces;
 pub mod image_chain;
 pub mod legacy;
 pub mod power_p2;
