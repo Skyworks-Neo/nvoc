@@ -28,7 +28,7 @@ use nvoc_core::{
     QueryNvapiTargetTempPolicyIndex, QueryNvapiTgpWattRange, QueryNvapiThermalChannels,
     QueryNvapiThermalInputs, QueryNvapiThermalPoliciesStatus, QueryNvapiThermalSettings,
     QueryNvapiThermalSim, QueryNvapiTopRelsRatio, QueryNvapiVfeTables, QueryNvapiVoltDevices,
-    QueryNvapiVoltRails, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
+    QueryNvapiVoltRails, QueryPowerControl, QueryPowerLimits, QueryPstateBaseVoltage, QueryPstates,
     QuerySupportedApplicationsClocks, QueryTdpTempLimits, QueryTemperatureThresholds,
     QueryThrottleReasons, QueryTopRelsRelations, QueryVbiosImage, QueryVbiosOverrideStatus,
     QueryVbiosSecurityInfo, QueryVbiosStatusString, QueryVbiosVersion, QueryViolationStatus,
@@ -51,14 +51,14 @@ use nvoc_core::{
     SetNvapiThermalSim, SetNvapiTopRelsRatio, SetNvapiVfeVarEntry, SetNvapiVfpPointPrivate,
     SetNvapiVfpRangePerPointPrivate, SetNvapiVfpRangePrivate, SetNvapiVoltRailOffset,
     SetNvapiVoltRailSlot, SetNvapiVoltRailTarget, SetNvmlAcousticTemp, SetNvmlPstateLock,
-    SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage, SetPstateClockOffset,
-    SetPublicVftablePointOffset, SetPublicVftableRangeOffset, SetSubdomainFreqRatio,
-    SetTemperatureLimit, SetVbiosDirectPatch, SetVbiosOverride, SetVfpFrequencyLock,
-    SetVfpLockEntries, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType, VfpResetDomain,
-    Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name, nvml_pstate_to_str,
-    parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy, parse_nvml_pstate,
-    query_domain_vf_points_indexed, query_domain_vfp_indices, run, select_targets,
-    set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
+    SetPowerControlRow, SetPowerLimit as SetNvmlPowerLimit, SetPowerMode, SetPstateBaseVoltage,
+    SetPstateClockOffset, SetPublicVftablePointOffset, SetPublicVftableRangeOffset,
+    SetSubdomainFreqRatio, SetTemperatureLimit, SetVbiosDirectPatch, SetVbiosOverride,
+    SetVfpFrequencyLock, SetVfpLockEntries, SetVoltageBoost, SetWm2Active, SetWm2Mode, VfPointType,
+    VfpResetDomain, Wm2AcousticMode, discover_targets, fetch_gpu_type, nvapi_status_name,
+    nvml_pstate_to_str, parse_nvapi_locked_voltage_target, parse_nvml_fan_control_policy,
+    parse_nvml_pstate, query_domain_vf_points_indexed, query_domain_vfp_indices, run,
+    select_targets, set_nvapi_domain_vfp_deltas, sync_memory_pstate_as_p0,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -221,6 +221,8 @@ pub enum Command {
     SetThermalInput,
     SetPwrCurLimit,
     SetPowerCommand,
+    GetPowerControl,
+    SetPowerControl,
     GetTopRelsRatio,
     SetTopRelsRatio,
     GetVfeTables,
@@ -706,6 +708,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                     formatter: Some(output::format_power_command),
                     ..CommandSpec::new("get-power-command", Group::Power, "Read one ExtendedLimits power-command lease cell (NDA 0x33AB0353 GET, packet stamp v1|1320; xOCD 2.0 ReadPowerCommand) — a per-channel command/lease surface distinct from the TGP-watt/PowerChannels control (0x8B3E7343/0xAFFC2279). --command observed (0xF8, observed-only readback) | request (0xFE, the writable request/lease; live unit mW); --channel 0..31 (default 0; only channel 0 carries data on Pascal/Ada). 0xFFFFFFFF = unset sentinel. ECHO LAYER: the request cell is what GET/NVML/nvidia-smi display as the cap, but load-time enforcement stays at the legal slider window (P100 load-proven 2026-10-06)")
                 },
+            ),
+            (
+                Command::GetPowerControl,
+                CommandSpec::new("get-power-control", Group::Power, "Read the mVolt engine-2 CONTROL big-packet rows (NDA 0x8B3E7343 GET, desc-driven class1/class2 geometry — the pre-Ampere-safe lane where the compact stamp faults; docs/reverse-engineering/nvapi/mvolt-ocp-control-lane.md). Full-channel sweep: each populated row carries its identity (0 = board-power request, live unit mW; 23 = NVVDD OCP request, live unit mA; 3/4/6/11… = driver mirror rows the SET refuses with -1), the current request value, and the writable flag (identity in {0,23}). Live 2070 verdict: identity-0 ch2 write 175000 → power wall 175 W (retention-verified)")
             ),
             (
                 Command::GetPowerMode,
@@ -1471,6 +1477,25 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                 },
             ),
             (
+                Command::SetPowerControl,
+                CommandSpec {
+                    arity: (2, 2),
+                    positionals: Box::leak(Box::new([
+                        PositionalArg::free(
+                            "arg_channel",
+                            "CHANNEL",
+                            "CONTROL row channel index from get-power-control (the sweep's `channel` key)",
+                        ),
+                        PositionalArg::hyphen(
+                            "arg_value",
+                            "VALUE",
+                            "Raw driver-unit request: mW on identity-0 rows (175000 = 175 W, 2070 wall-proven), mA on identity-23 rows (NVVDD OCP); no implicit multiplication",
+                        ),
+                    ])),
+                    ..CommandSpec::new("set-power-control", Group::Power, "Write one CONTROL big-packet row request (NDA 0xAFFC2279 SET; the V3 lane — works on pre-Ampere where the compact stamp faults, 2070 wall-proven 175000 → 175 W). Full mVolt recipe: identity {0,23} guard (mirror rows refused), SET, then 12×100ms poll for 2 consecutive matching readbacks with auto-restore on non-retention (the printed `previous_mw`/`previous_raw` is the restore anchor). set-pwr-cur-limit uses this lane first and falls back to the compact lane on 30-series+; this command pins the V3 lane for explicit writes")
+                },
+            ),
+            (
                 Command::SetPowerMode,
                 CommandSpec {
                     arity: (1, 1),
@@ -1736,7 +1761,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                             "Limit value: watts on tgp/board (one decimal allowed), amperes on OCP current channels; `ma`/`mw` suffix (case-insensitive) = raw driver integer in the row's own unit (e.g. 240 or 240000ma)",
                         ),
                     ])),
-                    ..CommandSpec::new("set-pwr-cur-limit", Group::Power, "Set a power/current limit. Unified writer for the PowerChannels control table (0xAFFC2279; HIGH RISK — raising an OCP ceiling disables a safety net, no confirmation gate): tgp/board writes the TGP/board-power row (NVAPI compact core with --policy-index, or --nvml for the nvidia-smi -pl path), nvvdd/msvdd/INDEX writes any populated channel printed by get-pwr-cur-info. nvapi-rs resolves the identity, clamps to the driver [min,max] window (plus the 1..5001 A envelope on OCP current channels), and runs the full RMW + readback + rollback recipe against the xOCD compact control geometry (stamp v1|2636, info-mask-seeded GET); the buffer geometry is feature-detected at runtime (xocd audit E3/§18). Pre-Ampere (pre-RTX-30) GPUs are refused on the NVAPI paths by default — there the SET faults the driver (nvlddmkm 14/153) and the control table reverts to defaults; --force attempts the write anyway for debugging. --nvml (nvidia-smi -pl) is unaffected")
+                    ..CommandSpec::new("set-pwr-cur-limit", Group::Power, "Set a power/current limit. Unified writer with the V3-first lane cascade (2026-11-16): tgp/board and nvvdd/core targets try the CONTROL big-packet lane first (NDA 0xAFFC2279, identity-0 board mW / identity-23 nvvdd-ocp mA; pre-Ampere-safe — 2070 wall-proven 175000 → 175 W) and fall back to the compact lane (v1|2636; works 30-series+, faults pre-Ampere drivers nvlddmkm 14/153) on V3 absence/failure; msvdd/numeric-index targets go straight to compact. HIGH RISK — raising an OCP ceiling disables a safety net, no confirmation gate. nvvdd/msvdd/INDEX writes any populated channel printed by get-pwr-cur-info; the compact core resolves the identity, clamps to the driver [min,max] window (plus the 1..5001 A envelope on OCP current channels), and runs the full RMW + readback + rollback recipe; the CONTROL lane runs the mVolt retention recipe (12×100ms poll, auto-restore). --policy-index/--nvml apply to the tgp/board target only (--nvml = nvidia-smi -pl, unaffected by lanes); --force feeds the compact pre-Ampere poison gate only")
                 },
             ),
             (
@@ -6015,6 +6040,60 @@ fn execute_target(
             let value = run(target, QueryNvapiPowerCommand { channel, command })?.output;
             Ok(power_command_json(channel, command, value, false))
         }
+        Command::GetPowerControl => {
+            let Some(snap) = run(target, QueryPowerControl)?.output else {
+                return Ok(json!({"supported": false}));
+            };
+            Ok(json!({
+                "class": snap.class,
+                "class_note": "1 = Turing/pre-Blackwell descriptors, 2 = Blackwell (mVolt INFO-probe semantics)",
+                "rows": snap.rows.iter().map(|r| {
+                    let unit = r.unit.unwrap_or("n/a");
+                    let display = if r.writable {
+                        format!("{} {} request ({})", r.request, unit, if r.identity == 0 {
+                            format!("{} W board-power", r.request as f64 / 1000.0)
+                        } else {
+                            format!("{} A nvvdd-ocp", r.request as f64 / 1000.0)
+                        })
+                    } else {
+                        format!("{} raw (mirror row, SET refuses)", r.request)
+                    };
+                    json!({
+                        "channel": r.channel,
+                        "identity": r.identity,
+                        "writable": r.writable,
+                        "unit": unit,
+                        "request_raw": r.request,
+                        "display": display,
+                    })
+                }).collect::<Vec<_>>(),
+                "hint": "identity {0,23} rows are the SET-sanctioned targets (set-power-control); other rows are driver mirrors",
+            }))
+        }
+        Command::SetPowerControl => {
+            let channel: usize = invocation.positionals[0].parse().map_err(|_| {
+                CliError::new("CHANNEL must be a channel index from get-power-control")
+            })?;
+            let raw: u32 = invocation.positionals[1]
+                .parse()
+                .map_err(|_| CliError::new("VALUE must be a raw driver-unit integer (mW on identity-0 rows, mA on identity-23 rows; no implicit multiplication)"))?;
+            let out = run(target, SetPowerControlRow { channel, raw })?.output;
+            Ok(json!({
+                "applied": true,
+                "lane": "control-v3",
+                "class": out.class,
+                "channel": out.channel,
+                "identity": out.identity,
+                "request_raw": raw,
+                "previous_raw": out.previous,
+                "display": if out.identity == 0 {
+                    format!("{} W board-power (was {} W)", raw as f64 / 1000.0, out.previous as f64 / 1000.0)
+                } else {
+                    format!("{} A nvvdd-ocp (was {} A)", raw as f64 / 1000.0, out.previous as f64 / 1000.0)
+                },
+                "restore_hint": format!("set-power-control {channel} {}", out.previous),
+            }))
+        }
         Command::GetBoostLocks => {
             let Some(entries) = run(target, QueryNvapiBoostLocks)?.output else {
                 return Ok(json!({"supported": false}));
@@ -6188,6 +6267,64 @@ fn execute_target(
                         }))
                     }
                     BackendAdapter::Nvapi => {
+                        // ── V3-first 级联（2026-11-16 用户裁定终态）：CONTROL
+                        // 大包车道（identity-0 板载功耗 request，mW）优先——
+                        // 2070 实证 175000 → 功耗墙 175W；失败回落 compact
+                        // 车道（30 系+ 老驱动回退语义）。pre-Ampere 上 compact
+                        // 被毒写门拒（nvlddmkm 14/153），V3 是唯一活车道，
+                        // 不再需要 --force 即可写。
+                        let v3_note: Option<String>;
+                        if watts <= u32::MAX / 1000 {
+                            match run(target, QueryPowerControl)?.output {
+                                Some(snap) => {
+                                    match snap.rows.iter().find(|r| r.identity == 0 && r.writable) {
+                                        Some(row) => {
+                                            match run(
+                                                target,
+                                                SetPowerControlRow {
+                                                    channel: row.channel,
+                                                    raw: watts * 1000,
+                                                },
+                                            ) {
+                                                Ok(out) => {
+                                                    let o = out.output;
+                                                    return Ok(json!({
+                                                        "applied": true,
+                                                        "backend": "nvapi",
+                                                        "lane": "control-v3",
+                                                        "target": target_name,
+                                                        "class": o.class,
+                                                        "channel": o.channel,
+                                                        "identity": o.identity,
+                                                        "tgp_watt": watts,
+                                                        "tgp_mw": watts * 1000,
+                                                        "previous_mw": o.previous,
+                                                        "restore_hint": format!("set-power-control {} {}", o.channel, o.previous),
+                                                    }));
+                                                }
+                                                Err(e) => {
+                                                    v3_note = Some(format!(
+                                                        "control-v3 write failed: {e}"
+                                                    ))
+                                                }
+                                            }
+                                        }
+                                        None => v3_note = Some(
+                                            "control-v3: no writable identity-0 row on this card"
+                                                .to_string(),
+                                        ),
+                                    }
+                                }
+                                None => {
+                                    v3_note = Some(
+                                        "control-v3: lane unavailable on this GPU/driver"
+                                            .to_string(),
+                                    )
+                                }
+                            }
+                        } else {
+                            v3_note = Some("control-v3: watts×1000 overflows u32 mW".to_string());
+                        }
                         let policy_index = option_one(invocation, "policy-index")
                             .map(|s| s.parse::<usize>())
                             .transpose()
@@ -6201,13 +6338,18 @@ fn execute_target(
                             },
                         )?
                         .output;
-                        Ok(json!({
+                        let mut out = json!({
                             "applied": true,
                             "backend": "nvapi",
+                            "lane": "compact-v1",
                             "target": target_name,
                             "tgp_watt": watts,
                             "tgp_mw": mw,
-                        }))
+                        });
+                        if let Some(note) = v3_note {
+                            out["v3_fallback"] = json!(note);
+                        }
+                        Ok(out)
                     }
                 };
             }
@@ -6220,6 +6362,52 @@ fn execute_target(
                 )));
             }
             let value_raw = parse_power_channel_value(raw_value)?;
+            // ── V3-first 级联（nvvdd 语义目标）：CONTROL identity-23 行 =
+            // NVVDD OCP request（mA；Blackwell 面）。Turing 无 id23 行 → 直接
+            // 走 compact；V3 写失败也回落 compact（pre-Ampere 上由毒写门
+            // 拒，行为不变）。msvdd/数字 index 目标无 V3 对应（通道号命名
+            // 空间不同），一律 compact。
+            let mut v3_note: Option<String> = None;
+            if matches!(target_name.as_str(), "nvvdd" | "core") {
+                match run(target, QueryPowerControl)?.output {
+                    Some(snap3) => match snap3.rows.iter().find(|r| r.identity == 23 && r.writable)
+                    {
+                        Some(row) => {
+                            match run(
+                                target,
+                                SetPowerControlRow {
+                                    channel: row.channel,
+                                    raw: value_raw,
+                                },
+                            ) {
+                                Ok(out) => {
+                                    let o = out.output;
+                                    return Ok(json!({
+                                        "applied": true,
+                                        "lane": "control-v3",
+                                        "target": target_name,
+                                        "class": o.class,
+                                        "channel": o.channel,
+                                        "identity": o.identity,
+                                        "raw_mA": value_raw,
+                                        "amperes": value_raw as f64 / 1000.0,
+                                        "previous_mA": o.previous,
+                                        "restore_hint": format!("set-power-control {} {}", o.channel, o.previous),
+                                    }));
+                                }
+                                Err(e) => v3_note = Some(format!("control-v3 write failed: {e}")),
+                            }
+                        }
+                        None => {
+                            v3_note = Some(
+                                "control-v3: no identity-23 (nvvdd-ocp) row on this generation"
+                                    .to_string(),
+                            )
+                        }
+                    },
+                    None => v3_note = Some("control-v3: lane unavailable".to_string()),
+                }
+            }
             let snap = run(target, QueryNvapiPowerChannels)?
                 .output
                 .ok_or_else(|| {
@@ -6281,8 +6469,12 @@ fn execute_target(
             };
             let mut output = serde_json::Map::new();
             output.insert("applied".to_string(), json!(true));
+            output.insert("lane".to_string(), json!("compact-v1"));
             output.insert("target".to_string(), json!(target_name));
             output.insert("index".to_string(), json!(channel.index));
+            if let Some(note) = v3_note {
+                output.insert("v3_fallback".to_string(), json!(note));
+            }
             output.insert(
                 "identity".to_string(),
                 json!(format!("({},{})", channel.policy_id, channel.subtype)),
@@ -13200,12 +13392,14 @@ mod tests {
             | Command::GetPowerCeiling
             | Command::GetPwrCurInfo
             | Command::GetPowerCommand
+            | Command::GetPowerControl
             | Command::GetBoostLocks
             | Command::GetThermalChannels
             | Command::ResetThermalInputs
             | Command::SetThermalInput
             | Command::SetPwrCurLimit
             | Command::SetPowerCommand
+            | Command::SetPowerControl
             | Command::GetTopRelsRatio
             | Command::SetTopRelsRatio
             | Command::GetVfeTables
@@ -13743,6 +13937,17 @@ mod tests {
         assert_eq!(tx.length, 4);
         assert_eq!(tx.speed_khz, 100);
         assert_eq!(tx.port, Some(2));
+    }
+
+    #[test]
+    fn power_control_parses() {
+        let invocation = parse_args(["get-power-control"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::GetPowerControl));
+        let invocation = parse_args(["set-power-control", "2", "175000"]).unwrap();
+        assert_eq!(invocation.command, Some(Command::SetPowerControl));
+        assert_eq!(invocation.positionals, ["2", "175000"]);
+        assert!(parse_args(["set-power-control", "2"]).is_err());
+        assert!(parse_args(["set-power-control"]).is_err());
     }
 
     #[test]

@@ -63,6 +63,8 @@ pub enum OperationKind {
     SetNvapiTgpWatt,
     ResetNvapiTgpWatt,
     QueryNvapiTgpWattRange,
+    QueryPowerControl,
+    SetPowerControlRow,
     QueryNvapiTargetTempPolicies,
     QueryNvapiTargetTempPolicyIndex,
     SetNvapiTargetTemp,
@@ -484,6 +486,7 @@ impl OperationKind {
                 | SetNvapiPstates20PrivateDelta
                 | SetNvapiPowerChannelValue
                 | SetNvapiPowerCommand
+                | SetPowerControlRow
                 | SetNvapiTopRelsRatio
                 | SetNvapiVoltRailSlot
                 | ResetNvapiVoltRailLimit

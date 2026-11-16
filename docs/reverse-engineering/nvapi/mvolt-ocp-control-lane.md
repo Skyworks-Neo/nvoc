@@ -153,3 +153,28 @@ identity-0 同值）。**OCP 不走这条**——F8/FE 只管功耗请求。
    持久化路径，但**运行时**路径存在（= mVolt 实证）。
 3. 「set-pwr-cur-limit 打爆 30 系前的卡」——那是 compact 0x0001_0A4C
    形态的行为；大包形态不 fault。
+
+## 8. 终态判决（2026-11-16 提权写实验链）
+
+1. **SET 提权门确认**：非提权 = InvalidUserPrivilege；提权后消失。
+2. **行身份规则实证**：identity-6 行（ch0）SET = Error(-1)——驱动只认
+   identity ∈ {0,23} 行（与 mVolt kind-27 校验完全一致）。
+3. **ch2（identity-0）echo RETAINED**——SET 受理 + 读回保留。
+4. **ch2 真写 175000 → 功耗墙 175W**（用户实测）——identity-0 行 =
+   board-power request（**mW**），CONTROL 大包车道 Turing 端到端写穿。
+5. **行结构**：单通道 GET 驱动只回填 identity(+0) + request(+68)；min/max
+   不在行内。identity-6 行是活镜像（ch13 9206000 → 9999000 跟动）。
+
+### 代际地图（V1/V3）
+
+| 车道 | stamp | 30 系+ | pre-Ampere |
+|---|---|---|---|
+| V1 compact（xOCD SetPowerChannelLimit） | 0x0001_0A4C（v1\|2636） | ✅（R465+） | ❌ fault（nvlddmkm 14/153） |
+| V1 wide（ref-tool setTgpWatt） | 0x12720（v1\|10016） | ✅（538+） | 未知 |
+| **V3 大包（mVolt 引擎二）** | class1 0x2786E0 / class2 0x5B0B0 | ✅（mVolt Blackwell） | ✅（2070 实证） |
+
+**老卡必须 V3**——nvoc 落地：set-pwr-cur-limit V3-first 级联（tgp/board →
+identity-0 行；nvvdd/core → identity-23 行存在时），V3 缺席/失败回落
+compact（pre-Ampere 由毒写门拒，行为不变）；`get-power-control`/
+`set-power-control` 钉死 V3 车道直写。nvapi-rs 侧 power_control_geometry/
+power_control_rows/set_power_control_row_checked（hi 层 pass-through 齐）。

@@ -1958,6 +1958,112 @@ impl GpuOperation for SetNvapiTgpWatt {
     }
 }
 
+/// Get the mVolt engine-2 CONTROL big-packet rows (NDA 0x8B3E7343 GET /
+/// 0xAFFC2279 SET, desc-driven class1/class2 geometry —
+/// docs/reverse-engineering/nvapi/mvolt-ocp-control-lane.md). This is the
+/// pre-Ampere-safe write lane: the compact stamp (v1|2636) faults Turing-era
+/// drivers while this form is live there (2026-11-16, 2070/621.24: identity-0
+/// ch2 write 175000 → power wall 175 W, retention-verified). Class detection
+/// follows mVolt's INFO probe semantics (class1 first, -9 → class2).
+#[derive(Clone, Debug, Default)]
+pub struct QueryPowerControl;
+
+/// One CONTROL row. identity 0 = board-power request (**mW**), identity 23 =
+/// NVVDD OCP request (**mA**); other identities are driver mirror rows the
+/// SET refuses (-1).
+#[derive(Clone, Debug)]
+pub struct PowerControlEntry {
+    pub channel: usize,
+    pub identity: u32,
+    pub request: u32,
+    pub writable: bool,
+    pub unit: Option<&'static str>,
+}
+
+/// CONTROL rows snapshot for the detected class.
+#[derive(Clone, Debug)]
+pub struct PowerControlSnapshot {
+    /// mVolt class id (1 = Turing/pre-Blackwell descriptors, 2 = Blackwell).
+    pub class: u8,
+    pub rows: Vec<PowerControlEntry>,
+}
+
+impl GpuOperation for QueryPowerControl {
+    type Output = Option<PowerControlSnapshot>;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::QueryPowerControl
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let Some(geom) = gpu.power_control_geometry() else {
+            return Ok(None);
+        };
+        let rows = gpu.power_control_rows(geom).map_err(Error::from)?;
+        Ok(Some(PowerControlSnapshot {
+            class: geom.class,
+            rows: rows
+                .iter()
+                .map(|r| PowerControlEntry {
+                    channel: r.channel,
+                    identity: r.identity,
+                    request: r.request,
+                    writable: r.writable,
+                    unit: r.unit(),
+                })
+                .collect(),
+        }))
+    }
+}
+
+/// Write one CONTROL row request (full mVolt recipe: identity {0,23} guard →
+/// SET → 12×100ms poll for 2 consecutive matching readbacks, auto-restore on
+/// non-retention). identity-0 = board-power request in mW (2070-proven: 175000
+/// → 175 W wall), identity-23 = NVVDD OCP request in mA. **DANGEROUS
+/// protection-adjacent write** — the caller owns the value choice.
+#[derive(Clone, Debug)]
+pub struct SetPowerControlRow {
+    pub channel: usize,
+    /// Raw driver unit (mW on identity-0 rows, mA on identity-23 rows).
+    pub raw: u32,
+}
+
+/// Write result (previous value is the restore anchor).
+#[derive(Clone, Debug)]
+pub struct PowerControlWriteOutput {
+    pub class: u8,
+    pub channel: usize,
+    pub identity: u32,
+    pub previous: u32,
+}
+
+impl GpuOperation for SetPowerControlRow {
+    type Output = PowerControlWriteOutput;
+
+    fn kind(&self) -> OperationKind {
+        OperationKind::SetPowerControlRow
+    }
+
+    fn run(&self, target: &GpuTarget<'_>) -> Result<Self::Output, Error> {
+        let gpu = target.nvapi()?;
+        let Some(geom) = gpu.power_control_geometry() else {
+            return Err(Error::from(
+                "power-control: CONTROL big-packet lane not available on this GPU/driver",
+            ));
+        };
+        let (previous, identity) = gpu
+            .set_power_control_row_checked(geom, self.channel, self.raw)
+            .map_err(Error::from)?;
+        Ok(PowerControlWriteOutput {
+            class: geom.class,
+            channel: self.channel,
+            identity,
+            previous,
+        })
+    }
+}
+
 /// Reset the GPU TGP to its rated/default value (the TGP slider's "Reset").
 #[derive(Clone, Debug, Default)]
 pub struct ResetNvapiTgpWatt {
