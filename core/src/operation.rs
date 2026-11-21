@@ -6300,6 +6300,9 @@ pub struct SetVbiosOverride {
     /// 出厂时钟偏移目标（offsets 表条目 index, kHz，可负）：P+0x98 A 表
     /// i32 改写（TU106 offsets[1] = +45 MHz）。
     pub factory_offset_khz: Vec<(usize, i64)>,
+    /// Pascal VPState P0 上限（三档 MHz）：VP profiles P0（id 0x0F）半
+    /// MHz 直存改写——矿卡 P104-100/P102 与消费级 Pascal 的 P0 频率源头。
+    pub pascal_p0_limits: Option<[f64; 3]>,
 }
 
 /// 温度墙 patch（按镜像族分派：GB20x → 3x；就地写 + 校验修复）。
@@ -6394,6 +6397,51 @@ fn patch_factory_clock_any_family(
         old_raw: p.old_khz,
         new_raw: p.new_khz,
     })
+}
+
+/// Pascal P0 上限 patch（就地写 + 校验修复）。
+#[cfg(windows)]
+fn patch_pascal_p0_any_family(
+    img: &mut [u8],
+    limits_mhz: [f64; 3],
+) -> Result<Vec<super::result::VbiosSurfacePatch>, Error> {
+    let patches = crate::vbios::legacy::patch_vp_p0_limits(img, limits_mhz)?;
+    Ok(patches
+        .into_iter()
+        .map(|p| super::result::VbiosSurfacePatch {
+            source: "pascal-p0".to_string(),
+            offset: p.field_offset,
+            old_raw: i64::from(p.old_raw),
+            new_raw: i64::from(p.new_raw),
+        })
+        .collect())
+}
+
+/// Pascal P0 定位（fragment 车道）——返回 (offset, current raw) ×3。
+#[cfg(windows)]
+fn locate_pascal_p0_any_family(image: &[u8]) -> Result<Vec<(usize, u16)>, Error> {
+    let tables = crate::vbios::legacy::find_vp_tables(image);
+    let table = tables
+        .iter()
+        .find(|t| !t.profiles.is_empty())
+        .ok_or_else(|| {
+            Error::from(
+                "vbios: no VP profile array in any image (P100-style ladder-only                  variant is not covered by this lane)",
+            )
+        })?;
+    let p0 = table
+        .profiles
+        .iter()
+        .find(|p| p.id == 0x0F)
+        .ok_or_else(|| Error::from("vbios: no P0 (0x0F) profile in the VP table"))?;
+    let field_off = table.generation.profile_field_offsets();
+    Ok([field_off[0], field_off[1], field_off[4]]
+        .iter()
+        .map(|&fo| {
+            let off = p0.offset + fo;
+            (off, u16::from_le_bytes([image[off], image[off + 1]]))
+        })
+        .collect())
 }
 
 /// 温度墙定位（fragment 车道：只定位不改写）——返回 (offset, current) ×3。
@@ -6540,14 +6588,18 @@ impl GpuOperation for SetVbiosOverride {
                         *khz,
                     )?);
                 }
+                if let Some(limits) = &self.pascal_p0_limits {
+                    factory_clock_patches.extend(patch_pascal_p0_any_family(&mut img, *limits)?);
+                }
                 if self.power_peak_mw.is_none()
                     && self.voltage_walls_mv.is_empty()
                     && self.thermal_temps.is_empty()
                     && self.factory_clock_khz.is_empty()
                     && self.factory_offset_khz.is_empty()
+                    && self.pascal_p0_limits.is_none()
                 {
                     return Err(Error::from(
-                        "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset or --image",
+                        "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 or --image",
                     ));
                 }
                 let patched = patched
@@ -6594,6 +6646,7 @@ impl GpuOperation for SetVbiosOverride {
                 &self.thermal_temps,
                 &self.factory_clock_khz,
                 &self.factory_offset_khz,
+                &self.pascal_p0_limits,
             );
             Err(Error::from(
                 "vbios override is Windows-only (vix loader registry lane)",
@@ -6627,6 +6680,8 @@ pub struct SetVbiosDirectPatch {
     pub factory_clock_khz: Vec<(usize, i64)>,
     /// 出厂时钟偏移目标（offsets 表条目 index, kHz，可负）——fragment 车道。
     pub factory_offset_khz: Vec<(usize, i64)>,
+    /// Pascal VPState P0 上限（三档 MHz）——fragment 车道。
+    pub pascal_p0_limits: Option<[f64; 3]>,
     /// 原始片段（offset, data LE bytes）——绕过一切自动定位。
     pub raw_patches: Vec<(u32, Vec<u8>)>,
     /// true = --overwrite：清空既有 romOverride 链只写新片段；
@@ -6651,10 +6706,11 @@ impl GpuOperation for SetVbiosDirectPatch {
                 && self.thermal_temps.is_empty()
                 && self.factory_clock_khz.is_empty()
                 && self.factory_offset_khz.is_empty()
+                && self.pascal_p0_limits.is_none()
                 && self.raw_patches.is_empty()
             {
                 return Err(Error::from(
-                    "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --patch",
+                    "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 / --patch",
                 ));
             }
             let (instance_id, description) = match_nvidia_adapter(target)?;
@@ -6751,6 +6807,21 @@ impl GpuOperation for SetVbiosDirectPatch {
                         data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
                         old_peak_mw: Some(current),
                         source: source.to_string(),
+                    });
+                }
+            }
+            if let Some(limits) = &self.pascal_p0_limits {
+                for (i, (off, current)) in
+                    locate_pascal_p0_any_family(&image)?.into_iter().enumerate()
+                {
+                    let raw = (limits[i] * 2.0).round() as u16;
+                    let bytes = raw.to_le_bytes().to_vec();
+                    new_pairs.push((off as u32, bytes.clone()));
+                    patches.push(super::result::VbiosDirectPatchEntry {
+                        offset: off as u32,
+                        data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                        old_peak_mw: Some(i64::from(current)),
+                        source: "pascal-p0".to_string(),
                     });
                 }
             }

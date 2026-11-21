@@ -535,7 +535,7 @@ impl VpGeneration {
     }
 
     /// profile 内 5 字段偏移：limit1 / limit2 / mem_short / mem_long / limit3。
-    fn profile_field_offsets(self) -> [usize; 5] {
+    pub fn profile_field_offsets(self) -> [usize; 5] {
         if self == Self::Pascal {
             [7, 13, 15, 19, 25]
         } else {
@@ -652,6 +652,81 @@ impl VpTable {
 const VP_ENTRY_STRIDE: usize = 41;
 const VP_MAX_ENTRIES: usize = 128;
 const VP_MAX_PROFILES: usize = 10;
+
+/// 一条 VPState P0 上限写点。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VpP0LimitPatch {
+    pub profile_offset: usize,
+    pub field_offset: usize,
+    /// 半 MHz 直存 u16（×2 = MHz）。
+    pub old_raw: u16,
+    pub new_raw: u16,
+}
+
+/// Pascal VPState P0 上限写：P0 profile（id 0x0F）三档 limit_raw（半 MHz
+/// 直存 ×2，字段偏移 = 世代 profile_field_offsets 的 [0]/[1]/[4]）。定位
+/// 复用 [`find_vp_tables`]（首张带 profiles 的表）。**Pascal-only fail
+/// closed**——Turing+ 布局未经逐位校准（CPR 观测值），拒绝盲写；GP100
+/// 服务器卡 P100 仅 ladder 无 profiles（该变体走 ladder 车道，另行）。
+/// 写后修复首个 legacy 镜像加性校验。**服务器卡 P0 频率上限的 vBIOS 源头
+/// 之一**（矿卡 P104-100 = GP104 profiles 变体，实测样本在册）。
+pub fn patch_vp_p0_limits(
+    img: &mut [u8],
+    limits_mhz: [f64; 3],
+) -> Result<Vec<VpP0LimitPatch>, Error> {
+    let tables = find_vp_tables(img);
+    let table = tables
+        .iter()
+        .find(|t| !t.profiles.is_empty())
+        .ok_or_else(|| {
+            Error::from(
+                "vbios: no VP profile array in any image (P100-style ladder-only                  variant is not covered by this lane)",
+            )
+        })?;
+    if table.generation != VpGeneration::Pascal {
+        return Err(Error::from(
+            "vbios: VP profile layout for this generation is not bit-calibrated              (Pascal only, fail closed)",
+        ));
+    }
+    let p0 = table
+        .profiles
+        .iter()
+        .find(|p| p.id == 0x0F)
+        .ok_or_else(|| Error::from("vbios: no P0 (0x0F) profile in the VP table"))?;
+    let field_off = table.generation.profile_field_offsets();
+    let mut patches = Vec::with_capacity(3);
+    for (i, &fo) in [field_off[0], field_off[1], field_off[4]]
+        .iter()
+        .enumerate()
+    {
+        let off = p0.offset + fo;
+        let raw = (limits_mhz[i] * 2.0).round() as i64;
+        if !(0..=0xFFFF).contains(&raw) {
+            let want = limits_mhz[i];
+            return Err(Error::from(format!(
+                "vbios: P0 limit {want} MHz out of the u16 half-MHz domain"
+            )));
+        }
+        let old_raw = u16::from_le_bytes([img[off], img[off + 1]]);
+        let new_raw = raw as u16;
+        patches.push(VpP0LimitPatch {
+            profile_offset: p0.offset,
+            field_offset: off,
+            old_raw,
+            new_raw,
+        });
+        img[off..off + 2].copy_from_slice(&new_raw.to_le_bytes());
+    }
+    // 修复首个 legacy 镜像加性校验（VP 表位于 legacy 镜像内）。
+    let base = crate::vbios::legacy::find_image_base(img)
+        .ok_or_else(|| Error::from("vbios: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(patches)
+}
 
 /// 扫描全部 VP 表（模式定位，不依赖 BIT 目录）。双镜像 ROM 返回 2 份。
 ///
@@ -3661,6 +3736,57 @@ pub fn parse(data: &[u8]) -> Result<LegacyVbios, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pascal_p0_patch_roundtrip() {
+        // 真镜像（P104-100 = GP104 Pascal 矿卡）：定位→改写→重解析→校验和。
+        let Ok(d0) = std::fs::read("../P104.rom") else {
+            eprintln!("skip: P104.rom not present");
+            return;
+        };
+        let tables = find_vp_tables(&d0);
+        let table = tables
+            .iter()
+            .find(|t| !t.profiles.is_empty())
+            .expect("a VP table with profiles (consumer Pascal)");
+        assert_eq!(table.generation, VpGeneration::Pascal);
+        let p0 = table
+            .profiles
+            .iter()
+            .find(|p| p.id == 0x0F)
+            .expect("P0 profile");
+        let before = p0.limit_raw;
+
+        // P0 三档 → 1910.5 MHz（半 MHz = 3821）。
+        let mut img = d0.clone();
+        let patches = patch_vp_p0_limits(&mut img, [1910.5, 1910.5, 1910.5]).expect("patch");
+        assert_eq!(patches.len(), 3);
+
+        let after_tables = find_vp_tables(&img);
+        let after = after_tables
+            .iter()
+            .find(|t| !t.profiles.is_empty())
+            .expect("table after")
+            .profiles
+            .iter()
+            .find(|p| p.id == 0x0F)
+            .expect("P0 after");
+        for (b, p) in before.iter().zip(patches.iter()) {
+            assert_eq!(p.old_raw, *b);
+            assert_eq!(p.new_raw, 3821);
+        }
+        assert_eq!(after.limit_raw, [3821; 3]);
+        assert_eq!(after.mem_short_raw, p0.mem_short_raw);
+        assert_eq!(after.mem_long_raw, p0.mem_long_raw);
+
+        // 镜像加性校验归零。
+        let base = find_image_base(&img).expect("base");
+        let size =
+            (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+        let end = (base + size).min(img.len());
+        let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+        assert_eq!(sum, 0, "image checksum must stay zero after patch");
+    }
 
     /// 构造一个最小合成 vBIOS：BIT 目录 + P 表 + perf/boost/vmap，
     /// 数值取自 GM200 实测解码结果。

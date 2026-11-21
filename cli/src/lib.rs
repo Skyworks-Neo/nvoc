@@ -1841,8 +1841,9 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "factory-offset",
                         "auto-apply",
                         "failsafe",
+                        "pascal-p0",
                     ])),
-                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these). Safety nets: --auto-apply runs the device-manager disable/enable cycle right after the write, polls the devnode problem code (code 43 = CM_PROB 0x31) and ROLLS BACK THIS COMMAND'S registry changes only (previous vbios bytes + previous romOverride chain restored, second reinit) on failure; --failsafe additionally prints a 15s press-Y confirm after a healthy reinit — a black screen means no Y arrives and the write rolls back automatically. Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
+                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these), --pascal-p0 L1[,L2[,L3]] (Pascal VPState P0 limits in MHz; P104-100/P102 mining-card unlock; single value = all three). Safety nets: --auto-apply runs the device-manager disable/enable cycle right after the write, polls the devnode problem code (code 43 = CM_PROB 0x31) and ROLLS BACK THIS COMMAND'S registry changes only (previous vbios bytes + previous romOverride chain restored, second reinit) on failure; --failsafe additionally prints a 15s press-Y confirm after a healthy reinit — a black screen means no Y arrives and the write rolls back automatically. Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
                 },
             ),
             (
@@ -3218,6 +3219,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("INDEX:MHZ")
             .action(ArgAction::Append)
             .help("set-vbios-override (both modes): factory clock offset patch, repeatable — P+0x98 offsets table entry INDEX to signed MHZ (TU106 offsets[1]=+45 MHz)"),
+        "pascal-p0" => Arg::new("pascal-p0")
+            .long("pascal-p0")
+            .value_name("L1[,L2[,L3]]")
+            .action(ArgAction::Set)
+            .help("set-vbios-override (both modes): Pascal VPState P0 limits in MHz — patches the P0 profile's three limit_raw cells (half-MHz encoding) in the VP table; P104-100/P102 mining cards = GP104 profiles variant (P100 ladder-only is a separate lane). Single value = all three limits"),
         "auto-apply" => Arg::new("auto-apply")
             .long("auto-apply")
             .action(ArgAction::SetTrue)
@@ -7467,6 +7473,36 @@ fn execute_target(
                     "--auto-apply/--failsafe are Windows-only (SetupDi device cycle)",
                 ));
             }
+            // Pascal P0 上限：--pascal-p0 L1[,L2[,L3]]（MHz；单值=三档同值）。
+            let mut pascal_p0_limits: Option<[f64; 3]> = None;
+            if let Some(spec) = invocation.options.get("pascal-p0").and_then(|v| v.first()) {
+                let parts: Vec<&str> = spec.split(',').collect();
+                if parts.is_empty() || parts.len() > 3 {
+                    return Err(CliError::new(format!(
+                        "--pascal-p0 {spec:?}: expected L1[,L2[,L3]] in MHz"
+                    )));
+                }
+                let mut limits = [0.0f64; 3];
+                for (i, v) in parts.iter().enumerate() {
+                    let mhz: f64 = v
+                        .trim()
+                        .parse()
+                        .map_err(|e| CliError::new(format!("--pascal-p0 {v:?}: {e}")))?;
+                    if !(100.0..=5000.0).contains(&mhz) {
+                        return Err(CliError::new(format!(
+                            "--pascal-p0 {mhz} MHz outside the sane 100..5000 MHz range"
+                        )));
+                    }
+                    limits[i] = mhz;
+                }
+                if parts.len() == 1 {
+                    limits[1] = limits[0];
+                    limits[2] = limits[0];
+                } else if parts.len() == 2 {
+                    limits[2] = limits[1];
+                }
+                pascal_p0_limits = Some(limits);
+            }
             // 双模：--mode file（默认，vix 整镜像车道）/ --mode patch（mVolt
             // direct patch 车道：romOverride00 通配片段，驱动 init 对内存
             // VBIOS 影像就地改写、免校验）。
@@ -7537,10 +7573,11 @@ fn execute_target(
                     && thermal_temps.is_empty()
                     && factory_clock_khz.is_empty()
                     && factory_offset_khz.is_empty()
+                    && pascal_p0_limits.is_none()
                     && raw_patches.is_empty()
                 {
                     return Err(CliError::new(
-                        "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --patch"
+                        "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 / --patch"
                             .to_string(),
                     ));
                 }
@@ -7552,6 +7589,7 @@ fn execute_target(
                     thermal_temps,
                     factory_clock_khz,
                     factory_offset_khz,
+                    pascal_p0_limits,
                     raw_patches,
                     overwrite_chain: invocation.options.contains_key("overwrite"),
                 };
@@ -7616,9 +7654,10 @@ fn execute_target(
                     && thermal_temps.is_empty()
                     && factory_clock_khz.is_empty()
                     && factory_offset_khz.is_empty()
+                    && pascal_p0_limits.is_none()
                 {
                     return Err(CliError::new(
-                    "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset (auto-patch the live \
+                    "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 (auto-patch the live \
                      image) or --image <file.rom> (externally patched image)"
                         .to_string(),
                 ));
@@ -7630,6 +7669,7 @@ fn execute_target(
                     thermal_temps,
                     factory_clock_khz,
                     factory_offset_khz,
+                    pascal_p0_limits,
                 };
                 let a = run(target, op)?.output;
                 let patched: Vec<Value> = a
