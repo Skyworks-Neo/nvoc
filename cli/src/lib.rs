@@ -1843,7 +1843,7 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "failsafe",
                         "pascal-p0",
                     ])),
-                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these), --pascal-p0 L1[,L2[,L3]] (Pascal VPState P0 limits in MHz; P104-100/P102 mining-card unlock; single value = all three). Safety nets: --auto-apply runs the device-manager disable/enable cycle right after the write, polls the devnode problem code (code 43 = CM_PROB 0x31) and ROLLS BACK THIS COMMAND'S registry changes only (previous vbios bytes + previous romOverride chain restored, second reinit) on failure; --failsafe additionally prints a 15s press-Y confirm after a healthy reinit — a black screen means no Y arrives and the write rolls back automatically. Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
+                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these), --pascal-p0 L1[,L2[,L3]] (Pascal VPState P0 limits in MHz; P104-100/P102 mining-card unlock; single value = all three). Safety nets: --auto-apply runs the device-manager disable/enable cycle right after the write, polls the devnode problem code (code 43 = CM_PROB 0x31) and ROLLS BACK THIS COMMAND'S registry changes only (previous vbios bytes + previous romOverride chain restored, second reinit) on failure; --failsafe [SECS] (default 15) additionally prints a press-Y confirm after a healthy reinit — a black screen means no Y arrives and the write rolls back automatically. Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
                 },
             ),
             (
@@ -1987,6 +1987,7 @@ fn vbios_safety_finish(
     old_vbios: Option<Vec<u8>>,
     old_fragments: Vec<Vec<u8>>,
     failsafe: bool,
+    failsafe_secs: u64,
 ) -> CliResult<Value> {
     use nvoc_core::vbios_override as vbo;
     vbo::trigger_reinit(instance_id)
@@ -2004,7 +2005,9 @@ fn vbios_safety_finish(
     let dead = problem.is_some();
     let mut keep = !dead;
     if !dead && failsafe {
-        let line = "==== KEEP the override? press Y within 15s (anything else / no input = ROLL BACK) ====";
+        let line = format!(
+            "==== KEEP the override? press Y within {failsafe_secs}s (anything else / no input = ROLL BACK) ===="
+        );
         println!("{line}");
         eprintln!("{line}");
         use std::io::Write;
@@ -2017,7 +2020,7 @@ fn vbios_safety_finish(
                 let _ = tx.send(buf.trim().to_lowercase());
             }
         });
-        match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+        match rx.recv_timeout(std::time::Duration::from_secs(failsafe_secs)) {
             Ok(v) if v.starts_with('y') => prompt = Some("y".to_string()),
             Ok(v) => {
                 prompt = Some(if v.is_empty() { "timeout" } else { "n" }.to_string());
@@ -3230,8 +3233,11 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .help("set-vbios-override (both modes): run the device-manager disable/enable cycle right after the write, poll the devnode problem code, and roll back THIS command's registry changes (previous vbios bytes + previous romOverride chain) automatically on code 43"),
         "failsafe" => Arg::new("failsafe")
             .long("failsafe")
-            .action(ArgAction::SetTrue)
-            .help("set-vbios-override (both modes): after a healthy reinit print a 15s press-Y confirm — a black screen means no Y arrives and the write rolls back automatically (same restore path as --auto-apply)"),
+            .value_name("SECS")
+            .action(ArgAction::Set)
+            .num_args(0..=1)
+            .default_missing_value("15")
+            .help("set-vbios-override (both modes): after a healthy reinit print a press-Y confirm with the given timeout (default 15s) — a black screen means no Y arrives and the write rolls back automatically (same restore path as --auto-apply)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -3356,6 +3362,7 @@ fn collect_named_options(
             | "freq"
             | "volt"
             | "dump-records"
+            | "auto-apply"
             | "force"
             | "kmd"
             | "ddc"
@@ -7451,6 +7458,15 @@ fn execute_target(
             // --failsafe（健康后 15 秒按 Y 防呆，黑屏超时自动回退）。
             let auto_apply = invocation.options.contains_key("auto-apply");
             let failsafe = invocation.options.contains_key("failsafe");
+            let failsafe_secs: u64 = invocation
+                .options
+                .get("failsafe")
+                .and_then(|v| v.first())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(15);
+            if failsafe && failsafe_secs == 0 {
+                return Err(CliError::new("--failsafe SECS must be >= 1"));
+            }
             #[cfg(windows)]
             let safety_snapshot = if auto_apply || failsafe {
                 let (instance_id, _) = nvoc_core::operation::match_nvidia_adapter(target)?;
@@ -7718,7 +7734,13 @@ fn execute_target(
             let mut out = out;
             #[cfg(windows)]
             if let Some((instance_id, old_vbios, old_chain)) = safety_snapshot {
-                out["safety"] = vbios_safety_finish(&instance_id, old_vbios, old_chain, failsafe)?;
+                out["safety"] = vbios_safety_finish(
+                    &instance_id,
+                    old_vbios,
+                    old_chain,
+                    failsafe,
+                    failsafe_secs,
+                )?;
                 out["instance_id"] = json!(instance_id);
             }
             let _ = &applied_instance;
@@ -14219,6 +14241,41 @@ mod tests {
         assert_eq!(tx.length, 4);
         assert_eq!(tx.speed_khz, 100);
         assert_eq!(tx.port, Some(2));
+    }
+
+    #[test]
+    fn vbios_safety_options_parse() {
+        let invocation = parse_args([
+            "set-vbios-override",
+            "--mode",
+            "patch",
+            "--power-max-w",
+            "200",
+            "--auto-apply",
+        ])
+        .unwrap();
+        assert!(invocation.options.contains_key("auto-apply"));
+        assert!(!invocation.options.contains_key("failsafe"));
+        let invocation = parse_args([
+            "set-vbios-override",
+            "--mode",
+            "patch",
+            "--power-max-w",
+            "200",
+            "--failsafe",
+            "30",
+        ])
+        .unwrap();
+        assert_eq!(
+            invocation.options.get("failsafe").and_then(|v| v.first()),
+            Some(&"30".to_string())
+        );
+        let invocation =
+            parse_args(["set-vbios-override", "--mode", "file", "--failsafe"]).unwrap();
+        assert_eq!(
+            invocation.options.get("failsafe").and_then(|v| v.first()),
+            Some(&"15".to_string())
+        );
     }
 
     #[test]
