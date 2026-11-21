@@ -1746,6 +1746,116 @@ pub fn factory_clocks(
     Ok(Some((offsets, clocks)))
 }
 
+// ── 温度墙 / 出厂时钟 patch（3x 写面：热墙与 P0 频率的 vBIOS 源头）──
+
+/// 一条热策略温度墙写点。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThermalTempPatch {
+    pub entry_index: usize,
+    /// (镜像内偏移, 旧值, 新值) ×3。
+    pub writes: Vec<(usize, i16, i16)>,
+}
+
+/// 修复首个 legacy 镜像加性校验（patch 车道共用收尾）。
+fn repair_legacy_image_checksum(img: &mut [u8]) -> Result<(), Error> {
+    let base = crate::vbios::legacy::find_image_base(img)
+        .ok_or_else(|| Error::from("vbios: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(())
+}
+
+/// 3x 热策略温度墙写：条目 `entry_index` 的三温度（1/32 ℃ i16 LE，位于
+/// entry+2/+4/+6）全部改写。定位复用 [`thermal_policies`]；写后修复镜像
+/// 加性校验。**驱动节流墙源头**——TU106 样本 #0 class1 [89/89/89] = 主
+/// 温度墙，#2 class1 [81/65/88] = 三阈值策略（慢降/睡眠/关断族）。
+pub fn patch_thermal_policy_temps_3x(
+    img: &mut [u8],
+    ctx: &TableContext,
+    entry_index: usize,
+    temps_raw: [i16; 3],
+) -> Result<ThermalTempPatch, Error> {
+    let entries = thermal_policies(img, ctx)?
+        .ok_or_else(|| Error::from("vbios: thermal policy table not present"))?;
+    let e = entries
+        .iter()
+        .find(|e| e.index == entry_index)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "vbios: thermal policy entry {entry_index} not found (populated: {})",
+                entries
+                    .iter()
+                    .map(|x| x.index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        })?;
+    let mut writes = Vec::with_capacity(3);
+    for (i, raw) in temps_raw.iter().enumerate() {
+        let off = e.offset + 2 + 2 * i;
+        let old = i16::from_le_bytes([img[off], img[off + 1]]);
+        writes.push((off, old, *raw));
+        img[off..off + 2].copy_from_slice(&raw.to_le_bytes());
+    }
+    repair_legacy_image_checksum(img)?;
+    Ok(ThermalTempPatch {
+        entry_index,
+        writes,
+    })
+}
+
+/// 一条出厂时钟写点。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactoryClockPatch {
+    /// false = offsets 表（i32 出厂偏移），true = clocks 表（u32 频率）。
+    pub is_clock: bool,
+    pub entry_index: usize,
+    /// kHz 值域的镜像内偏移（旗标字节后）。
+    pub offset: usize,
+    pub old_khz: i64,
+    pub new_khz: i64,
+}
+
+/// 3x 出厂时钟写：`clocks`（is_clock=true）/`offsets`（false）表条目
+/// `entry_index`（0..2）的 kHz 改写（旗标字节保留，值域 = 旗标后 u32/i32
+/// LE）。**卡面标称 boost 的源头**——TU106 样本 clocks[1] = 1650000 kHz =
+/// 1650 MHz boost；服务器卡 P0 频率上限的第一序 patch 面。定位复用
+/// [`factory_clocks`]（头不合 = None = 未审，拒绝盲写）。
+pub fn patch_factory_clock_3x(
+    img: &mut [u8],
+    ctx: &TableContext,
+    is_clock: bool,
+    entry_index: usize,
+    khz: i64,
+) -> Result<FactoryClockPatch, Error> {
+    let (offsets, clocks) = factory_clocks(img, ctx)?.ok_or_else(|| {
+        Error::from("vbios: factory clock record not present or header unaudited")
+    })?;
+    let entries = if is_clock { &clocks } else { &offsets };
+    let e = entries
+        .iter()
+        .find(|e| e.index == entry_index)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "vbios: factory clock entry {entry_index} not found (0..{})",
+                entries.len()
+            ))
+        })?;
+    let off = e.offset + 1;
+    img[off..off + 4].copy_from_slice(&(khz as u32).to_le_bytes());
+    repair_legacy_image_checksum(img)?;
+    Ok(FactoryClockPatch {
+        is_clock,
+        entry_index,
+        offset: off,
+        old_khz: e.khz,
+        new_khz: khz,
+    })
+}
+
 /// PERF_CF 控制器行（3x；字节 0..22 各条目尺寸同位）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PerfCfController3x {
@@ -2396,6 +2506,87 @@ mod tests {
         let (buf, _legacy, _efi) = ampere_rom();
         // BIT 缺失即失败（fail closed，不猜）。
         assert!(TableContext::new(&buf, Family::Ampere).is_err());
+    }
+
+    #[test]
+    fn thermal_and_factory_patch_roundtrip() {
+        // 真镜像（TU106 Turing）端到端：定位→改写→重解析→邻字节/校验和。
+        let Ok(d0) = std::fs::read("../1.rom") else {
+            eprintln!("skip: 1.rom not present");
+            return;
+        };
+        let Some((family, _)) = detect_family(&d0) else {
+            panic!("1.rom: family undetected");
+        };
+        let ctx = TableContext::new(&d0, family).expect("ctx");
+        let entries = thermal_policies(&d0, &ctx).expect("ok").expect("present");
+        let e0 = entries
+            .iter()
+            .find(|e| e.index == 0)
+            .expect("thermal entry 0");
+        if e0.temperatures_raw == [0, 0, 0] {
+            eprintln!("skip: entry 0 has no populated temps on this image");
+            return;
+        }
+
+        // 温度墙：entry 0 三点 → 95 ℃（1/32 ℃ = 3040）。
+        let mut img = d0.clone();
+        let patch = patch_thermal_policy_temps_3x(&mut img, &ctx, 0, [95 * 32; 3]).expect("patch");
+        assert_eq!(patch.writes.len(), 3);
+        let after_ctx = TableContext::new(&img, family).expect("ctx after");
+        let after = thermal_policies(&img, &after_ctx)
+            .expect("ok")
+            .expect("present");
+        let a0 = after
+            .iter()
+            .find(|e| e.index == 0)
+            .expect("thermal entry 0 after");
+        assert_eq!(a0.temperatures_raw, [95 * 32; 3]);
+        // 其余条目逐值不动。
+        for (b, a) in entries.iter().zip(after.iter()) {
+            if b.index != 0 {
+                assert_eq!(b.temperatures_raw, a.temperatures_raw);
+            }
+        }
+
+        // 出厂时钟：clocks[1] → 2100 MHz；clocks[0]/offsets 不动。
+        let (offs_before, cls_before) = factory_clocks(&img, &after_ctx)
+            .expect("ok")
+            .expect("present");
+        let target_idx = cls_before
+            .iter()
+            .position(|e| e.khz > 0)
+            .expect("a populated clock entry");
+        let old_khz = cls_before[target_idx].khz;
+        let fpatch = patch_factory_clock_3x(
+            &mut img,
+            &after_ctx,
+            true,
+            cls_before[target_idx].index,
+            2_100_000,
+        )
+        .expect("factory patch");
+        assert_eq!(fpatch.old_khz, old_khz);
+        let (offs_after, cls_after) = factory_clocks(&img, &after_ctx)
+            .expect("ok")
+            .expect("present");
+        assert_eq!(cls_after[target_idx].khz, 2_100_000);
+        for (b, a) in cls_before.iter().zip(cls_after.iter()) {
+            if b.index != cls_before[target_idx].index {
+                assert_eq!(b.khz, a.khz);
+            }
+        }
+        for (b, a) in offs_before.iter().zip(offs_after.iter()) {
+            assert_eq!(b.khz, a.khz);
+        }
+
+        // 镜像加性校验归零。
+        let base = crate::vbios::legacy::find_image_base(&img).expect("base");
+        let size =
+            (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+        let end = (base + size).min(img.len());
+        let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+        assert_eq!(sum, 0, "image checksum must stay zero after patch");
     }
 
     #[test]

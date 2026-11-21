@@ -1836,8 +1836,11 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "volt-vmin-mv",
                         "patch",
                         "image",
+                        "thermal-temps",
+                        "factory-clock",
+                        "factory-offset",
                     ])),
-                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write a wildcard romOverride00 fragment for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
+                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these). Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
                 },
             ),
             (
@@ -3119,6 +3122,21 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("FILE")
             .action(ArgAction::Set)
             .help("set-vbios-override: write an externally patched VBIOS image (.rom, vix editor output) as-is instead of auto-patching power"),
+        "thermal-temps" => Arg::new("thermal-temps")
+            .long("thermal-temps")
+            .value_name("INDEX:C1,C2,C3")
+            .action(ArgAction::Append)
+            .help("set-vbios-override (both modes): thermal-policy wall patch, repeatable — write three 1/32C cells of entry INDEX, e.g. --thermal-temps 0:95,95,95 (TU106 #0 class1 [89/89/89] = the primary throttle wall). Sane range -60..200 C"),
+        "factory-clock" => Arg::new("factory-clock")
+            .long("factory-clock")
+            .value_name("INDEX:MHZ")
+            .action(ArgAction::Append)
+            .help("set-vbios-override (both modes): factory boost clock patch, repeatable — P+0x98 clocks table entry INDEX to MHZ (TU106 clocks[1]=1650 MHz is the rated boost; this is the first-order server-card P0 ceiling patch)"),
+        "factory-offset" => Arg::new("factory-offset")
+            .long("factory-offset")
+            .value_name("INDEX:MHZ")
+            .action(ArgAction::Append)
+            .help("set-vbios-override (both modes): factory clock offset patch, repeatable — P+0x98 offsets table entry INDEX to signed MHZ (TU106 offsets[1]=+45 MHz)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -7269,6 +7287,71 @@ fn execute_target(
                     voltage_walls_mv.push((role, mv));
                 }
             }
+            // 温度墙/出厂时钟参数（双模共用）：--thermal-temps INDEX:C1,C2,C3、
+            // --factory-clock INDEX:MHZ、--factory-offset INDEX:MHZ。
+            let mut thermal_temps: Vec<(usize, [i16; 3])> = Vec::new();
+            for spec in invocation
+                .options
+                .get("thermal-temps")
+                .into_iter()
+                .flatten()
+            {
+                let (idx, temps) = spec.split_once(':').ok_or_else(|| {
+                    CliError::new(format!(
+                        "--thermal-temps {spec:?}: expected INDEX:C1,C2,C3 (celsius, e.g. 0:95,95,95)"
+                    ))
+                })?;
+                let idx: usize = idx
+                    .parse()
+                    .map_err(|e| CliError::new(format!("--thermal-temps index {idx:?}: {e}")))?;
+                let mut raw = [0i16; 3];
+                for (i, c) in temps.split(',').enumerate() {
+                    if i >= 3 {
+                        return Err(CliError::new(format!(
+                            "--thermal-temps {spec:?}: at most 3 temps (C1,C2,C3)"
+                        )));
+                    }
+                    let c: f64 = c
+                        .trim()
+                        .parse()
+                        .map_err(|e| CliError::new(format!("--thermal-temps temp {c:?}: {e}")))?;
+                    if !(-60.0..=200.0).contains(&c) {
+                        return Err(CliError::new(format!(
+                            "--thermal-temps temp {c}C outside the sane -60..200 C range"
+                        )));
+                    }
+                    raw[i] = (c * 32.0).round() as i16;
+                }
+                thermal_temps.push((idx, raw));
+            }
+            let mut factory_clock_khz: Vec<(usize, i64)> = Vec::new();
+            let mut factory_offset_khz: Vec<(usize, i64)> = Vec::new();
+            for (key, out) in [
+                ("factory-clock", &mut factory_clock_khz),
+                ("factory-offset", &mut factory_offset_khz),
+            ] {
+                for spec in invocation.options.get(key).into_iter().flatten() {
+                    let (idx, mhz) = spec.split_once(':').ok_or_else(|| {
+                        CliError::new(format!(
+                            "--{key} {spec:?}: expected INDEX:MHZ (e.g. 1:2100; offset may be negative)"
+                        ))
+                    })?;
+                    let idx: usize = idx
+                        .parse()
+                        .map_err(|e| CliError::new(format!("--{key} index {idx:?}: {e}")))?;
+                    let mhz: f64 = mhz
+                        .trim()
+                        .parse()
+                        .map_err(|e| CliError::new(format!("--{key} mhz {mhz:?}: {e}")))?;
+                    let khz = (mhz * 1000.0).round() as i64;
+                    if khz.abs() > 10_000_000 {
+                        return Err(CliError::new(format!(
+                            "--{key}: {mhz} MHz out of the sane range (abs <= 10000 MHz)"
+                        )));
+                    }
+                    out.push((idx, khz));
+                }
+            }
             // 双模：--mode file（默认，vix 整镜像车道）/ --mode patch（mVolt
             // direct patch 车道：romOverride00 通配片段，驱动 init 对内存
             // VBIOS 影像就地改写、免校验）。
@@ -7336,10 +7419,13 @@ fn execute_target(
                     && ocp.is_none()
                     && ocp_def.is_none()
                     && voltage_walls_mv.is_empty()
+                    && thermal_temps.is_empty()
+                    && factory_clock_khz.is_empty()
+                    && factory_offset_khz.is_empty()
                     && raw_patches.is_empty()
                 {
                     return Err(CliError::new(
-                        "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --patch"
+                        "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --patch"
                             .to_string(),
                     ));
                 }
@@ -7348,6 +7434,9 @@ fn execute_target(
                     ocp_milliamps: ocp.map(|a| (a * 1000.0).round() as u32),
                     ocp_default_milliamps: ocp_def.map(|a| (a * 1000.0).round() as u32),
                     voltage_walls_mv,
+                    thermal_temps,
+                    factory_clock_khz,
+                    factory_offset_khz,
                     raw_patches,
                     overwrite_chain: invocation.options.contains_key("overwrite"),
                 };
@@ -7403,9 +7492,15 @@ fn execute_target(
                         .map_err(|e| CliError::new(format!("failed to read --image {path:?}: {e}")))
                 })
                 .transpose()?;
-            if watts.is_none() && image.is_none() && voltage_walls_mv.is_empty() {
+            if watts.is_none()
+                && image.is_none()
+                && voltage_walls_mv.is_empty()
+                && thermal_temps.is_empty()
+                && factory_clock_khz.is_empty()
+                && factory_offset_khz.is_empty()
+            {
                 return Err(CliError::new(
-                    "set-vbios-override: need --power-max-w / --volt-*-mv (auto-patch the live \
+                    "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset (auto-patch the live \
                      image) or --image <file.rom> (externally patched image)"
                         .to_string(),
                 ));
@@ -7414,6 +7509,9 @@ fn execute_target(
                 power_peak_mw: watts.map(|w| (w * 1000.0).round() as u32),
                 image,
                 voltage_walls_mv,
+                thermal_temps,
+                factory_clock_khz,
+                factory_offset_khz,
             };
             let a = run(target, op)?.output;
             let patched: Vec<Value> = a
@@ -7436,6 +7534,18 @@ fn execute_target(
                 "image_len": a.image_len,
                 "cleared_romoverride_fragments": a.cleared_romoverride,
                 "patched_power_entries": patched,
+                "thermal_patches": a.thermal_patches.iter().map(|p| json!({
+                    "source": p.source,
+                    "offset": p.offset,
+                    "old_raw": p.old_raw,
+                    "new_raw": p.new_raw,
+                })).collect::<Vec<_>>(),
+                "factory_clock_patches": a.factory_clock_patches.iter().map(|p| json!({
+                    "source": p.source,
+                    "offset": p.offset,
+                    "old_khz": p.old_raw,
+                    "new_khz": p.new_raw,
+                })).collect::<Vec<_>>(),
                 "previous_override_len": a.previous_len,
                 "value": "vbios",
                 "high_risk": "consumed at the next driver init; verify with nvidia-smi -q (Power Limit -> Max) after restart",

@@ -1041,6 +1041,17 @@ pub struct VbiosOverridePowerPatch {
     pub new_peak_mw: Option<u32>,
 }
 
+/// 通用表面 patch 回执行（温度墙/出厂时钟等非功率面）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbiosSurfacePatch {
+    /// 来源（thermal-wall / factory-clock / factory-offset）。
+    pub source: String,
+    /// 值域的镜像内偏移。
+    pub offset: usize,
+    pub old_raw: i64,
+    pub new_raw: i64,
+}
+
 /// `set-vbios-override` 回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VbiosOverrideApply {
@@ -1049,6 +1060,10 @@ pub struct VbiosOverrideApply {
     pub image_len: usize,
     /// 本地 patch 的功率条目（--image 外部镜像直写时为空）。
     pub patched_entries: Vec<VbiosOverridePowerPatch>,
+    /// 温度墙 patch 回执（--image 直写时为空）。
+    pub thermal_patches: Vec<VbiosSurfacePatch>,
+    /// 出厂时钟 patch 回执（--image 直写时为空）。
+    pub factory_clock_patches: Vec<VbiosSurfacePatch>,
     /// 写入前的旧 override 长度（None = 原本没有）。
     pub previous_len: Option<usize>,
     /// 写入 `vbios` 前清掉的 romOverride 片段数（仿 vix：整镜像车道与
@@ -1079,9 +1094,11 @@ pub struct VbiosDirectPatchEntry {
     pub offset: u32,
     /// 数据 hex。
     pub data_hex: String,
-    /// 写入前的旧值（board-power= mW、OCP= mA、raw= 原始 u32）。
-    pub old_peak_mw: Option<u32>,
-    /// 片段来源：board-power-cap / nvvdd-ocp / raw。
+    /// 写入前的旧值（board-power= mW、OCP= mA、thermal= 1/32℃ i16、
+    /// factory= kHz i32、raw= 原始 u32——统一 i64 容纳各面符号域）。
+    pub old_peak_mw: Option<i64>,
+    /// 片段来源：board-power-cap / nvvdd-ocp / thermal-wall /
+    /// factory-clock / factory-offset / raw。
     pub source: String,
 }
 

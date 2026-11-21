@@ -6290,6 +6290,198 @@ pub struct SetVbiosOverride {
     /// 电压墙目标（role, 毫伏）：live 镜像定位 GB20x rail×VFE 方程墙
     /// （常数墙三点同写 / 曲线墙抬 max 钳位），与 power patch 叠加。
     pub voltage_walls_mv: Vec<(crate::vbios::tables_v3::RailRole, f64)>,
+    /// 温度墙目标（策略条目 index, 三温度 1/32 ℃ i16）：热策略表
+    /// （P+0x50）entry+2/+4/+6 三 i16 改写——驱动节流墙源头（TU106
+    /// #0 class1 [89/89/89] = 主墙）。
+    pub thermal_temps: Vec<(usize, [i16; 3])>,
+    /// 出厂时钟目标（clocks 表条目 index, kHz）：P+0x98 B 表 u32 频率
+    /// 改写——卡面标称 boost/P0 频率源头（TU106 clocks[1] = 1650 MHz）。
+    pub factory_clock_khz: Vec<(usize, i64)>,
+    /// 出厂时钟偏移目标（offsets 表条目 index, kHz，可负）：P+0x98 A 表
+    /// i32 改写（TU106 offsets[1] = +45 MHz）。
+    pub factory_offset_khz: Vec<(usize, i64)>,
+}
+
+/// 温度墙 patch（按镜像族分派：GB20x → 3x；就地写 + 校验修复）。
+#[cfg(windows)]
+fn patch_thermal_temps_any_family(
+    img: &mut [u8],
+    entry_index: usize,
+    temps_raw: [i16; 3],
+) -> Result<Vec<super::result::VbiosSurfacePatch>, Error> {
+    if let Ok(gb) = crate::vbios::gb20x::parse_layout(img) {
+        let p = crate::vbios::gb20x_surfaces::patch_thermal_policy_temps(
+            img,
+            &gb,
+            entry_index,
+            temps_raw,
+        )?;
+        return Ok(p
+            .writes
+            .into_iter()
+            .map(|(off, old, new)| super::result::VbiosSurfacePatch {
+                source: "thermal-wall".to_string(),
+                offset: off,
+                old_raw: i64::from(old),
+                new_raw: i64::from(new),
+            })
+            .collect());
+    }
+    let Some((family, _)) = crate::vbios::tables_v3::detect_family(img) else {
+        return Err(Error::from(
+            "thermal wall: image family unrecognized (neither GB20x nor 3x)",
+        ));
+    };
+    let ctx = crate::vbios::tables_v3::TableContext::new(img, family)
+        .map_err(|e| Error::from(format!("thermal wall: 3x context ({e})")))?;
+    let p =
+        crate::vbios::tables_v3::patch_thermal_policy_temps_3x(img, &ctx, entry_index, temps_raw)?;
+    Ok(p.writes
+        .into_iter()
+        .map(|(off, old, new)| super::result::VbiosSurfacePatch {
+            source: "thermal-wall".to_string(),
+            offset: off,
+            old_raw: i64::from(old),
+            new_raw: i64::from(new),
+        })
+        .collect())
+}
+
+/// 出厂时钟 patch（按镜像族分派；is_clock=false = offsets 表）。
+#[cfg(windows)]
+fn patch_factory_clock_any_family(
+    img: &mut [u8],
+    is_clock: bool,
+    entry_index: usize,
+    khz: i64,
+) -> Result<super::result::VbiosSurfacePatch, Error> {
+    if let Ok(gb) = crate::vbios::gb20x::parse_layout(img) {
+        let p = crate::vbios::gb20x_surfaces::patch_factory_clock(
+            img,
+            &gb,
+            is_clock,
+            entry_index,
+            khz,
+        )?;
+        return Ok(super::result::VbiosSurfacePatch {
+            source: if is_clock {
+                "factory-clock"
+            } else {
+                "factory-offset"
+            }
+            .to_string(),
+            offset: p.offset,
+            old_raw: p.old_khz,
+            new_raw: p.new_khz,
+        });
+    }
+    let Some((family, _)) = crate::vbios::tables_v3::detect_family(img) else {
+        return Err(Error::from(
+            "factory clock: image family unrecognized (neither GB20x nor 3x)",
+        ));
+    };
+    let ctx = crate::vbios::tables_v3::TableContext::new(img, family)
+        .map_err(|e| Error::from(format!("factory clock: 3x context ({e})")))?;
+    let p = crate::vbios::tables_v3::patch_factory_clock_3x(img, &ctx, is_clock, entry_index, khz)?;
+    Ok(super::result::VbiosSurfacePatch {
+        source: if is_clock {
+            "factory-clock"
+        } else {
+            "factory-offset"
+        }
+        .to_string(),
+        offset: p.offset,
+        old_raw: p.old_khz,
+        new_raw: p.new_khz,
+    })
+}
+
+/// 温度墙定位（fragment 车道：只定位不改写）——返回 (offset, current) ×3。
+#[cfg(windows)]
+fn locate_thermal_temps_any_family(
+    image: &[u8],
+    entry_index: usize,
+) -> Result<Vec<(usize, i16)>, Error> {
+    // 两族条目类型不同——分支内归一化成 (index, entry offset)。
+    let listing: Vec<(usize, usize)> = if let Ok(gb) = crate::vbios::gb20x::parse_layout(image) {
+        let es = crate::vbios::gb20x_surfaces::thermal_policies(image, &gb)?
+            .ok_or_else(|| Error::from("vbios: thermal policy table not present"))?;
+        es.iter().map(|e| (e.index, e.offset)).collect()
+    } else {
+        let Some((family, _)) = crate::vbios::tables_v3::detect_family(image) else {
+            return Err(Error::from(
+                "thermal wall: image family unrecognized (neither GB20x nor 3x)",
+            ));
+        };
+        let ctx = crate::vbios::tables_v3::TableContext::new(image, family)
+            .map_err(|e| Error::from(format!("thermal wall: 3x context ({e})")))?;
+        let es = crate::vbios::tables_v3::thermal_policies(image, &ctx)?
+            .ok_or_else(|| Error::from("vbios: thermal policy table not present"))?;
+        es.iter().map(|e| (e.index, e.offset)).collect()
+    };
+    let e_offset = listing
+        .iter()
+        .find(|(i, _)| *i == entry_index)
+        .map(|(_, o)| *o)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "vbios: thermal policy entry {entry_index} not found (populated: {})",
+                listing
+                    .iter()
+                    .map(|(i, _)| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        })?;
+    Ok((0..3)
+        .map(|i| {
+            let off = e_offset + 2 + 2 * i;
+            (off, i16::from_le_bytes([image[off], image[off + 1]]))
+        })
+        .collect())
+}
+
+/// 出厂时钟定位（fragment 车道）——返回 (value offset, current kHz)。
+#[cfg(windows)]
+fn locate_factory_clock_any_family(
+    image: &[u8],
+    is_clock: bool,
+    entry_index: usize,
+) -> Result<(usize, i64), Error> {
+    // 两族条目类型不同——分支内归一化成 (index, value offset, current kHz)。
+    let listing: Vec<(usize, usize, i64)> = if let Ok(gb) = crate::vbios::gb20x::parse_layout(image)
+    {
+        let (offs, cls) =
+            crate::vbios::gb20x_surfaces::factory_clocks(image, &gb)?.ok_or_else(|| {
+                Error::from("vbios: factory clock record not present or header unaudited")
+            })?;
+        let es = if is_clock { &cls } else { &offs };
+        es.iter().map(|e| (e.index, e.offset + 1, e.khz)).collect()
+    } else {
+        let Some((family, _)) = crate::vbios::tables_v3::detect_family(image) else {
+            return Err(Error::from(
+                "factory clock: image family unrecognized (neither GB20x nor 3x)",
+            ));
+        };
+        let ctx = crate::vbios::tables_v3::TableContext::new(image, family)
+            .map_err(|e| Error::from(format!("factory clock: 3x context ({e})")))?;
+        let (offs, cls) =
+            crate::vbios::tables_v3::factory_clocks(image, &ctx)?.ok_or_else(|| {
+                Error::from("vbios: factory clock record not present or header unaudited")
+            })?;
+        let es = if is_clock { &cls } else { &offs };
+        es.iter().map(|e| (e.index, e.offset + 1, e.khz)).collect()
+    };
+    let hit = listing
+        .iter()
+        .find(|(i, _, _)| *i == entry_index)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "vbios: factory clock entry {entry_index} not found (0..{})",
+                listing.len()
+            ))
+        })?;
+    Ok((hit.1, hit.2))
 }
 
 impl GpuOperation for SetVbiosOverride {
@@ -6303,7 +6495,9 @@ impl GpuOperation for SetVbiosOverride {
         #[cfg(windows)]
         {
             let (instance_id, description) = match_nvidia_adapter(target)?;
-            let (image, patched) = if let Some(bytes) = &self.image {
+            let (image, patched, thermal_patches, factory_clock_patches) = if let Some(bytes) =
+                &self.image
+            {
                 if bytes.len() < 512 || bytes[..2] != [0x55, 0xAA] {
                     // vix 接受的是从 legacy image 起的镜像链；55 AA 不在 0
                     // 处的（如带前置头的 dump）直接拒绝，避免写废值。
@@ -6311,7 +6505,7 @@ impl GpuOperation for SetVbiosOverride {
                         "set-vbios-override: --image must start with the 55 AA legacy image",
                     ));
                 }
-                (bytes.clone(), Vec::new())
+                (bytes.clone(), Vec::new(), Vec::new(), Vec::new())
             } else {
                 let mut img = target.nvapi()?.vbios_image().map_err(Error::from)?;
                 let mut patched = Vec::new();
@@ -6321,9 +6515,39 @@ impl GpuOperation for SetVbiosOverride {
                 for (role, mv) in &self.voltage_walls_mv {
                     patch_wall_any_family(&mut img, *role, *mv)?;
                 }
-                if self.power_peak_mw.is_none() && self.voltage_walls_mv.is_empty() {
+                let mut thermal_patches = Vec::new();
+                for (entry_index, temps) in &self.thermal_temps {
+                    thermal_patches.extend(patch_thermal_temps_any_family(
+                        &mut img,
+                        *entry_index,
+                        *temps,
+                    )?);
+                }
+                let mut factory_clock_patches = Vec::new();
+                for (entry_index, khz) in &self.factory_clock_khz {
+                    factory_clock_patches.push(patch_factory_clock_any_family(
+                        &mut img,
+                        true,
+                        *entry_index,
+                        *khz,
+                    )?);
+                }
+                for (entry_index, khz) in &self.factory_offset_khz {
+                    factory_clock_patches.push(patch_factory_clock_any_family(
+                        &mut img,
+                        false,
+                        *entry_index,
+                        *khz,
+                    )?);
+                }
+                if self.power_peak_mw.is_none()
+                    && self.voltage_walls_mv.is_empty()
+                    && self.thermal_temps.is_empty()
+                    && self.factory_clock_khz.is_empty()
+                    && self.factory_offset_khz.is_empty()
+                {
                     return Err(Error::from(
-                        "set-vbios-override: need --power-max-w / --volt-*-mv or --image",
+                        "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset or --image",
                     ));
                 }
                 let patched = patched
@@ -6336,7 +6560,7 @@ impl GpuOperation for SetVbiosOverride {
                         new_peak_mw: p.new_peak_mw,
                     })
                     .collect();
-                (img, patched)
+                (img, patched, thermal_patches, factory_clock_patches)
             };
             // 旧值回执（供回滚对照；读失败不阻断写入本体）。
             let previous_len = crate::vbios_override::read_override(&instance_id)
@@ -6354,6 +6578,8 @@ impl GpuOperation for SetVbiosOverride {
                 image_len: image.len(),
                 cleared_romoverride,
                 patched_entries: patched,
+                thermal_patches,
+                factory_clock_patches,
                 previous_len,
                 restart_hint: "restart Windows (default driver mode) OR disable/enable the GPU in Device Manager (GSP firmware mode) to load; rollback = reset-vbios-override + same restart".to_string(),
             })
@@ -6365,6 +6591,9 @@ impl GpuOperation for SetVbiosOverride {
                 &self.power_peak_mw,
                 &self.image,
                 &self.voltage_walls_mv,
+                &self.thermal_temps,
+                &self.factory_clock_khz,
+                &self.factory_offset_khz,
             );
             Err(Error::from(
                 "vbios override is Windows-only (vix loader registry lane)",
@@ -6392,6 +6621,12 @@ pub struct SetVbiosDirectPatch {
     pub ocp_default_milliamps: Option<u32>,
     /// 电压墙目标（role, 毫伏）——GB20x rail×VFE 方程墙（fragment 车道）。
     pub voltage_walls_mv: Vec<(crate::vbios::tables_v3::RailRole, f64)>,
+    /// 温度墙目标（策略条目 index, 三温度 1/32 ℃ i16）——fragment 车道。
+    pub thermal_temps: Vec<(usize, [i16; 3])>,
+    /// 出厂时钟目标（clocks 表条目 index, kHz）——fragment 车道。
+    pub factory_clock_khz: Vec<(usize, i64)>,
+    /// 出厂时钟偏移目标（offsets 表条目 index, kHz，可负）——fragment 车道。
+    pub factory_offset_khz: Vec<(usize, i64)>,
     /// 原始片段（offset, data LE bytes）——绕过一切自动定位。
     pub raw_patches: Vec<(u32, Vec<u8>)>,
     /// true = --overwrite：清空既有 romOverride 链只写新片段；
@@ -6413,10 +6648,13 @@ impl GpuOperation for SetVbiosDirectPatch {
                 && self.ocp_milliamps.is_none()
                 && self.ocp_default_milliamps.is_none()
                 && self.voltage_walls_mv.is_empty()
+                && self.thermal_temps.is_empty()
+                && self.factory_clock_khz.is_empty()
+                && self.factory_offset_khz.is_empty()
                 && self.raw_patches.is_empty()
             {
                 return Err(Error::from(
-                    "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --patch",
+                    "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --patch",
                 ));
             }
             let (instance_id, description) = match_nvidia_adapter(target)?;
@@ -6435,7 +6673,7 @@ impl GpuOperation for SetVbiosDirectPatch {
                             .iter()
                             .map(|b| format!("{b:02x}"))
                             .collect(),
-                        old_peak_mw: p.old_peak_mw,
+                        old_peak_mw: p.old_peak_mw.map(i64::from),
                         source: "board-power-cap".to_string(),
                     });
                 }
@@ -6452,7 +6690,7 @@ impl GpuOperation for SetVbiosDirectPatch {
                                 .iter()
                                 .map(|b| format!("{b:02x}"))
                                 .collect(),
-                            old_peak_mw: Some(p.old_maximum_raw),
+                            old_peak_mw: Some(i64::from(p.old_maximum_raw)),
                             source: "nvvdd-ocp".to_string(),
                         });
                     }
@@ -6465,7 +6703,7 @@ impl GpuOperation for SetVbiosDirectPatch {
                                 .iter()
                                 .map(|b| format!("{b:02x}"))
                                 .collect(),
-                            old_peak_mw: Some(p.old_default_raw),
+                            old_peak_mw: Some(i64::from(p.old_default_raw)),
                             source: "nvvdd-ocp-default".to_string(),
                         });
                     }
@@ -6483,6 +6721,39 @@ impl GpuOperation for SetVbiosDirectPatch {
                     });
                 }
             }
+            for (entry_index, temps) in &self.thermal_temps {
+                for (i, (off, current)) in locate_thermal_temps_any_family(&image, *entry_index)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    let raw = temps[i];
+                    let bytes = raw.to_le_bytes().to_vec();
+                    new_pairs.push((off as u32, bytes.clone()));
+                    patches.push(super::result::VbiosDirectPatchEntry {
+                        offset: off as u32,
+                        data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                        old_peak_mw: Some(i64::from(current)),
+                        source: "thermal-wall".to_string(),
+                    });
+                }
+            }
+            for (is_clock, targets, source) in [
+                (true, &self.factory_clock_khz, "factory-clock"),
+                (false, &self.factory_offset_khz, "factory-offset"),
+            ] {
+                for (entry_index, khz) in targets {
+                    let (off, current) =
+                        locate_factory_clock_any_family(&image, is_clock, *entry_index)?;
+                    let bytes = (*khz as u32).to_le_bytes().to_vec();
+                    new_pairs.push((off as u32, bytes.clone()));
+                    patches.push(super::result::VbiosDirectPatchEntry {
+                        offset: off as u32,
+                        data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                        old_peak_mw: Some(current),
+                        source: source.to_string(),
+                    });
+                }
+            }
             for (off, bytes) in &self.raw_patches {
                 let old = (*off as usize)
                     .checked_add(4)
@@ -6491,7 +6762,7 @@ impl GpuOperation for SetVbiosDirectPatch {
                 patches.push(super::result::VbiosDirectPatchEntry {
                     offset: *off,
                     data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
-                    old_peak_mw: old,
+                    old_peak_mw: old.map(i64::from),
                     source: if old.is_some() {
                         "raw".to_string()
                     } else {
