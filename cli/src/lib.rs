@@ -1842,8 +1842,12 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "auto-apply",
                         "failsafe",
                         "pascal-p0",
+                        "fan-max",
+                        "perf-cf-target",
+                        "perf-cf-policy",
+                        "pascal-ladder",
                     ])),
-                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these), --pascal-p0 L1[,L2[,L3]] (Pascal VPState P0 limits in MHz; P104-100/P102 mining-card unlock; single value = all three). Safety nets: --auto-apply runs the device-manager disable/enable cycle right after the write, polls the devnode problem code (code 43 = CM_PROB 0x31) and ROLLS BACK THIS COMMAND'S registry changes only (previous vbios bytes + previous romOverride chain restored, second reinit) on failure; --failsafe [SECS] (default 15) additionally prints a press-Y confirm after a healthy reinit — a black screen means no Y arrives and the write rolls back automatically. Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
+                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these), --pascal-p0 L1[,L2[,L3]] (Pascal VPState P0 limits in MHz; P104-100/P102 mining-card unlock; single value = all three); --fan-max CH[:LEVEL] = force the fan curve to LEVEL duty (default = the card's own max) at all temps with RPMs at the rated max — zero-RPM disappears (high-power vBIOS cooling rescue); --perf-cf-target INDEX:RAW = PERF_CF controller target rewrite (TU106 #5 kind3 target=1200000 uV = the 1.2V VMAX); --perf-cf-policy INDEX:ON|OFF = PERF_CF policy active bit; --pascal-ladder MHZ = GP100 (P100) ladder top lift (ladder-only variant). Safety nets: --auto-apply runs the device-manager disable/enable cycle right after the write, polls the devnode problem code (code 43 = CM_PROB 0x31) and ROLLS BACK THIS COMMAND'S registry changes only (previous vbios bytes + previous romOverride chain restored, second reinit) on failure; --failsafe [SECS] (default 15) additionally prints a press-Y confirm after a healthy reinit — a black screen means no Y arrives and the write rolls back automatically. Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
                 },
             ),
             (
@@ -3222,6 +3226,26 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("INDEX:MHZ")
             .action(ArgAction::Append)
             .help("set-vbios-override (both modes): factory clock offset patch, repeatable — P+0x98 offsets table entry INDEX to signed MHZ (TU106 offsets[1]=+45 MHz)"),
+        "fan-max" => Arg::new("fan-max")
+            .long("fan-max")
+            .value_name("CH[:LEVEL]")
+            .action(ArgAction::Append)
+            .help("set-vbios-override (both modes): force a fan channel's curve to a fixed duty (default = the card's own level_maximum = 100%) at all three curve temps, RPMs raised to the rated rpm_maximum, zero-RPM removed — the high-power-vBIOS cooling rescue"),
+        "perf-cf-target" => Arg::new("perf-cf-target")
+            .long("perf-cf-target")
+            .value_name("INDEX:RAW")
+            .action(ArgAction::Append)
+            .help("set-vbios-override (both modes): PERF_CF controller target_raw rewrite (u32, semantic follows kind: 1 = temp-step threshold, 3 = uV voltage cap — TU106 #5 kind3 1200000 = the 1.2V VMAX). See get-vbios --verbose perf_cf"),
+        "perf-cf-policy" => Arg::new("perf-cf-policy")
+            .long("perf-cf-policy")
+            .value_name("INDEX:ON|OFF")
+            .action(ArgAction::Append)
+            .help("set-vbios-override (both modes): PERF_CF policy active-bit (flags 0x80) set/clear"),
+        "pascal-ladder" => Arg::new("pascal-ladder")
+            .long("pascal-ladder")
+            .value_name("MHZ")
+            .action(ArgAction::Set)
+            .help("set-vbios-override (both modes): GP100 (P100) ladder top lift — every ladder entry at the current max frequency is rewritten to MHZ (Pascal fixed-point MHz x 2^15); P100's ladder-only VP table has no profiles so this is its P0 lane"),
         "pascal-p0" => Arg::new("pascal-p0")
             .long("pascal-p0")
             .value_name("L1[,L2[,L3]]")
@@ -7519,6 +7543,98 @@ fn execute_target(
                 }
                 pascal_p0_limits = Some(limits);
             }
+            // 风扇强制：--fan-max CH[:LEVEL]（level 默认 = 卡自身 100%）。
+            let mut fan_force: Vec<(usize, Option<u8>)> = Vec::new();
+            for spec in invocation.options.get("fan-max").into_iter().flatten() {
+                let (ch, level) = spec
+                    .split_once(':')
+                    .map(|(a, b)| (a, Some(b)))
+                    .unwrap_or((spec, None));
+                let ch: usize = ch
+                    .parse()
+                    .map_err(|e| CliError::new(format!("--fan-max channel {ch:?}: {e}")))?;
+                let level: Option<u8> = match level {
+                    Some(v) => {
+                        let n: u16 = v
+                            .trim()
+                            .parse()
+                            .map_err(|e| CliError::new(format!("--fan-max level {v:?}: {e}")))?;
+                        if n > 100 {
+                            return Err(CliError::new(format!(
+                                "--fan-max level {n}% outside 0..100 (duty percent)"
+                            )));
+                        }
+                        Some(n as u8)
+                    }
+                    None => None,
+                };
+                fan_force.push((ch, level));
+            }
+            // PERF_CF：--perf-cf-target INDEX:RAW、--perf-cf-policy INDEX:ON|OFF。
+            let mut perf_cf_targets: Vec<(usize, u32)> = Vec::new();
+            for spec in invocation
+                .options
+                .get("perf-cf-target")
+                .into_iter()
+                .flatten()
+            {
+                let (idx, raw) = spec.split_once(':').ok_or_else(|| {
+                    CliError::new(format!("--perf-cf-target {spec:?}: expected INDEX:RAW"))
+                })?;
+                let idx: usize = idx
+                    .parse()
+                    .map_err(|e| CliError::new(format!("--perf-cf-target index {idx:?}: {e}")))?;
+                let raw: u32 = if let Some(hex) = raw.trim().strip_prefix("0x") {
+                    u32::from_str_radix(hex, 16)
+                        .map_err(|e| CliError::new(format!("--perf-cf-target raw {raw:?}: {e}")))?
+                } else {
+                    raw.parse()
+                        .map_err(|e| CliError::new(format!("--perf-cf-target raw {raw:?}: {e}")))?
+                };
+                perf_cf_targets.push((idx, raw));
+            }
+            let mut perf_cf_policies: Vec<(usize, bool)> = Vec::new();
+            for spec in invocation
+                .options
+                .get("perf-cf-policy")
+                .into_iter()
+                .flatten()
+            {
+                let (idx, state) = spec.split_once(':').ok_or_else(|| {
+                    CliError::new(format!("--perf-cf-policy {spec:?}: expected INDEX:ON|OFF"))
+                })?;
+                let idx: usize = idx
+                    .parse()
+                    .map_err(|e| CliError::new(format!("--perf-cf-policy index {idx:?}: {e}")))?;
+                let active = match state.trim().to_ascii_lowercase().as_str() {
+                    "on" | "1" | "true" => true,
+                    "off" | "0" | "false" => false,
+                    other => {
+                        return Err(CliError::new(format!(
+                            "--perf-cf-policy state {other:?}: expected ON|OFF"
+                        )));
+                    }
+                };
+                perf_cf_policies.push((idx, active));
+            }
+            // GP100 ladder：--pascal-ladder MHZ。
+            let pascal_ladder_mhz: Option<f64> = invocation
+                .options
+                .get("pascal-ladder")
+                .and_then(|v| v.first())
+                .map(|v| {
+                    let mhz: f64 = v
+                        .trim()
+                        .parse()
+                        .map_err(|e| CliError::new(format!("--pascal-ladder {v:?}: {e}")))?;
+                    if !(100.0..=5000.0).contains(&mhz) {
+                        return Err(CliError::new(format!(
+                            "--pascal-ladder {mhz} MHz outside the sane 100..5000 MHz range"
+                        )));
+                    }
+                    Ok(mhz)
+                })
+                .transpose()?;
             // 双模：--mode file（默认，vix 整镜像车道）/ --mode patch（mVolt
             // direct patch 车道：romOverride00 通配片段，驱动 init 对内存
             // VBIOS 影像就地改写、免校验）。
@@ -7590,10 +7706,14 @@ fn execute_target(
                     && factory_clock_khz.is_empty()
                     && factory_offset_khz.is_empty()
                     && pascal_p0_limits.is_none()
+                    && fan_force.is_empty()
+                    && perf_cf_targets.is_empty()
+                    && perf_cf_policies.is_empty()
+                    && pascal_ladder_mhz.is_none()
                     && raw_patches.is_empty()
                 {
                     return Err(CliError::new(
-                        "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 / --patch"
+                        "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 / --fan-max / --perf-cf-target / --perf-cf-policy / --pascal-ladder / --patch"
                             .to_string(),
                     ));
                 }
@@ -7606,6 +7726,10 @@ fn execute_target(
                     factory_clock_khz,
                     factory_offset_khz,
                     pascal_p0_limits,
+                    fan_force,
+                    perf_cf_targets,
+                    perf_cf_policies,
+                    pascal_ladder_mhz,
                     raw_patches,
                     overwrite_chain: invocation.options.contains_key("overwrite"),
                 };
@@ -7671,9 +7795,13 @@ fn execute_target(
                     && factory_clock_khz.is_empty()
                     && factory_offset_khz.is_empty()
                     && pascal_p0_limits.is_none()
+                    && fan_force.is_empty()
+                    && perf_cf_targets.is_empty()
+                    && perf_cf_policies.is_empty()
+                    && pascal_ladder_mhz.is_none()
                 {
                     return Err(CliError::new(
-                    "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 (auto-patch the live \
+                    "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 / --fan-max / --perf-cf-target / --perf-cf-policy / --pascal-ladder (auto-patch the live \
                      image) or --image <file.rom> (externally patched image)"
                         .to_string(),
                 ));
@@ -7686,6 +7814,10 @@ fn execute_target(
                     factory_clock_khz,
                     factory_offset_khz,
                     pascal_p0_limits,
+                    fan_force,
+                    perf_cf_targets,
+                    perf_cf_policies,
+                    pascal_ladder_mhz,
                 };
                 let a = run(target, op)?.output;
                 let patched: Vec<Value> = a

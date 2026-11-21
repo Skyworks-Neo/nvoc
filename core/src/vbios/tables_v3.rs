@@ -2299,6 +2299,164 @@ pub fn power_profiles(
     Ok(out)
 }
 
+/// 风扇强制曲线写点（3x；与 GB20x 同形，曲线基址含 Turing shift）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FanForcePatch {
+    pub channel: usize,
+    pub writes: Vec<(usize, u16, u16)>,
+}
+
+/// 3x 风扇强制最大散热写（语义同 gb20x_surfaces::patch_fan_force；定位
+/// 复用 [`fan_tables`]，曲线基址 = FanChannelRow.policy_offset）。零转速
+/// 随首点 RPM>0 自动消失。
+pub fn patch_fan_force(
+    img: &mut [u8],
+    ctx: &TableContext,
+    channel: usize,
+    level: Option<u8>,
+    rpm: Option<u16>,
+) -> Result<FanForcePatch, Error> {
+    let report = fan_tables(img, ctx)?
+        .ok_or_else(|| Error::from("vbios: fan tables not present (no GPU-driven fan)"))?;
+    let r = report
+        .rows
+        .iter()
+        .find(|r| r.index == channel)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "vbios: fan channel {channel} not found (channels: {})",
+                report
+                    .rows
+                    .iter()
+                    .map(|x| x.index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        })?;
+    let level = level.unwrap_or(r.level_maximum);
+    let rpm = rpm.unwrap_or(r.rpm_maximum);
+    let mut writes = Vec::new();
+    for i in 0..3 {
+        let off = r.policy_offset + 14 + i;
+        let old = u16::from(img[off]);
+        writes.push((off, old, u16::from(level)));
+        img[off] = level;
+    }
+    for i in 0..3 {
+        let off = r.policy_offset + 20 + 4 * i;
+        let old = u16_at(img, off)?;
+        writes.push((off, old, rpm));
+        img[off..off + 2].copy_from_slice(&rpm.to_le_bytes());
+    }
+    if r.rpm_maximum < rpm {
+        let off = r.cooler_offset + 16;
+        writes.push((off, r.rpm_maximum, rpm));
+        img[off..off + 2].copy_from_slice(&rpm.to_le_bytes());
+    }
+    let base = crate::vbios::legacy::find_image_base(img)
+        .ok_or_else(|| Error::from("vbios: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(FanForcePatch { channel, writes })
+}
+
+/// PERF_CF 控制器 target 写点（3x；raw 值域随 kind）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerfCfTargetPatch {
+    pub controller_index: usize,
+    pub offset: usize,
+    pub old_raw: u32,
+    pub new_raw: u32,
+}
+
+/// 3x PERF_CF 控制器 target_raw 写（u32 LE @entry+3）。定位复用
+/// [`perf_cf`]。
+pub fn patch_perf_cf_target_3x(
+    img: &mut [u8],
+    ctx: &TableContext,
+    controller_index: usize,
+    target_raw: u32,
+) -> Result<PerfCfTargetPatch, Error> {
+    let (controllers, _) = perf_cf(img, ctx)?
+        .ok_or_else(|| Error::from("vbios: PERF_CF tables not present or header unaudited"))?;
+    let c = controllers
+        .iter()
+        .find(|c| c.index == controller_index)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "vbios: PERF_CF controller {controller_index} not found (0..{})",
+                controllers.len()
+            ))
+        })?;
+    let off = c.offset + 3;
+    img[off..off + 4].copy_from_slice(&target_raw.to_le_bytes());
+    let base = crate::vbios::legacy::find_image_base(img)
+        .ok_or_else(|| Error::from("vbios: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(PerfCfTargetPatch {
+        controller_index,
+        offset: off,
+        old_raw: c.target_raw,
+        new_raw: target_raw,
+    })
+}
+
+/// PERF_CF 策略激活位写点（3x；flags bit 0x80）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerfCfPolicyPatch {
+    pub policy_index: usize,
+    pub offset: usize,
+    pub old_flags: u8,
+    pub new_flags: u8,
+}
+
+/// 3x PERF_CF 策略激活位写（flags 其余位保留）。
+pub fn patch_perf_cf_policy_3x(
+    img: &mut [u8],
+    ctx: &TableContext,
+    policy_index: usize,
+    active: bool,
+) -> Result<PerfCfPolicyPatch, Error> {
+    let (_, policies) = perf_cf(img, ctx)?
+        .ok_or_else(|| Error::from("vbios: PERF_CF tables not present or header unaudited"))?;
+    let pol = policies
+        .iter()
+        .find(|p| p.index == policy_index)
+        .ok_or_else(|| {
+            Error::from(format!(
+                "vbios: PERF_CF policy {policy_index} not found (0..{})",
+                policies.len()
+            ))
+        })?;
+    let off = pol.offset;
+    let new_flags = if active {
+        pol.flags | 0x80
+    } else {
+        pol.flags & !0x80
+    };
+    img[off] = new_flags;
+    let base = crate::vbios::legacy::find_image_base(img)
+        .ok_or_else(|| Error::from("vbios: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(PerfCfPolicyPatch {
+        policy_index,
+        offset: off,
+        old_flags: pol.flags,
+        new_flags,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::vbios::image_chain::{f32_at, testutil::*};

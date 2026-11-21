@@ -663,6 +663,72 @@ pub struct VpP0LimitPatch {
     pub new_raw: u16,
 }
 
+/// 一条 ladder 频率写点。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VpLadderPatch {
+    pub entry_offset: usize,
+    pub old_raw: u32,
+    pub new_raw: u32,
+    pub old_mhz: f64,
+    pub new_mhz: f64,
+}
+
+/// Pascal GP100（P100）ladder-only 变体：把 ladder 中频率 == 当前最大值
+/// 的全部条目改写为 `mhz`（Pascal 编码 = MHz × 2^15 u32 LE）——曲线顶部
+/// 整体抬升，形状其余部分不动。**GP100 服务器卡 P0 频率上限的 vBIOS
+/// 源头**（P100 实测仅 ladder 无 profiles；消费级 Pascal 走 profiles 车
+/// 道即 [`patch_vp_p0_limits`]）。写后修复首个 legacy 镜像加性校验。
+pub fn patch_pascal_ladder_max(img: &mut [u8], mhz: f64) -> Result<Vec<VpLadderPatch>, Error> {
+    let tables = find_vp_tables(img);
+    let table = tables
+        .iter()
+        .find(|t| !t.entries.is_empty())
+        .ok_or_else(|| Error::from("vbios: no VP ladder table in any image"))?;
+    if table.generation != VpGeneration::Pascal {
+        return Err(Error::from(
+            "vbios: ladder freq encoding for this generation is not the Pascal              fixed-point form (fail closed)",
+        ));
+    }
+    let max_mhz = table
+        .entries
+        .iter()
+        .map(|e| e.freq_mhz())
+        .fold(f64::NEG_INFINITY, f64::max);
+    let new_raw = (mhz * 32768.0).round() as i64;
+    if !(0..=0xFFFF_FFFF).contains(&new_raw) {
+        return Err(Error::from(format!(
+            "vbios: ladder {mhz} MHz out of the u32 fixed-point domain"
+        )));
+    }
+    let mut patches = Vec::new();
+    for e in &table.entries {
+        if (e.freq_mhz() - max_mhz).abs() < 0.01 {
+            let off = e.offset;
+            let new_raw = new_raw as u32;
+            let old_raw = e.raw;
+            patches.push(VpLadderPatch {
+                entry_offset: off,
+                old_raw,
+                new_raw,
+                old_mhz: e.freq_mhz(),
+                new_mhz: mhz,
+            });
+            img[off..off + 4].copy_from_slice(&new_raw.to_le_bytes());
+        }
+    }
+    if patches.is_empty() {
+        return Err(Error::from("vbios: ladder max-frequency entries not found"));
+    }
+    let base = crate::vbios::legacy::find_image_base(img)
+        .ok_or_else(|| Error::from("vbios: 55 AA base not found for checksum repair"))?;
+    let size = (u32::from(u16::from(img[base + 2]) | u16::from(img[base + 3]) << 8) as usize) * 512;
+    let end = (base + size).min(img.len());
+    img[end - 1] = 0;
+    let sum = img[base..end].iter().fold(0u8, |a, &x| a.wrapping_add(x));
+    img[end - 1] = sum.wrapping_neg();
+    Ok(patches)
+}
+
 /// Pascal VPState P0 上限写：P0 profile（id 0x0F）三档 limit_raw（半 MHz
 /// 直存 ×2，字段偏移 = 世代 profile_field_offsets 的 [0]/[1]/[4]）。定位
 /// 复用 [`find_vp_tables`]（首张带 profiles 的表）。**Pascal-only fail

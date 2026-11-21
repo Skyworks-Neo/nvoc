@@ -6303,6 +6303,14 @@ pub struct SetVbiosOverride {
     /// Pascal VPState P0 上限（三档 MHz）：VP profiles P0（id 0x0F）半
     /// MHz 直存改写——矿卡 P104-100/P102 与消费级 Pascal 的 P0 频率源头。
     pub pascal_p0_limits: Option<[f64; 3]>,
+    /// 风扇强制最大散热目标（channel, 自定义 level——None = 卡自身 100%）。
+    pub fan_force: Vec<(usize, Option<u8>)>,
+    /// PERF_CF 控制器 target 写（index, raw u32；kind1=温度阈值/kind3=µV）。
+    pub perf_cf_targets: Vec<(usize, u32)>,
+    /// PERF_CF 策略激活位（index, true=置 0x80/false=清）。
+    pub perf_cf_policies: Vec<(usize, bool)>,
+    /// Pascal GP100 ladder 顶部抬升（MHz）——P100 专用车道。
+    pub pascal_ladder_mhz: Option<f64>,
 }
 
 /// 温度墙 patch（按镜像族分派：GB20x → 3x；就地写 + 校验修复）。
@@ -6399,6 +6407,116 @@ fn patch_factory_clock_any_family(
     })
 }
 
+/// 风扇强制最大散热 patch（按镜像族分派：GB20x → 3x）。
+#[cfg(windows)]
+fn patch_fan_force_any_family(
+    img: &mut [u8],
+    channel: usize,
+    level: Option<u8>,
+    rpm: Option<u16>,
+) -> Result<Vec<super::result::VbiosSurfacePatch>, Error> {
+    if let Ok(gb) = crate::vbios::gb20x::parse_layout(img) {
+        let p = crate::vbios::gb20x_surfaces::patch_fan_force(img, &gb, channel, level, rpm)?;
+        return Ok(p
+            .writes
+            .into_iter()
+            .map(|(off, old, new)| super::result::VbiosSurfacePatch {
+                source: "fan-force".to_string(),
+                offset: off,
+                old_raw: i64::from(old),
+                new_raw: i64::from(new),
+            })
+            .collect());
+    }
+    let Some((family, _)) = crate::vbios::tables_v3::detect_family(img) else {
+        return Err(Error::from(
+            "fan force: image family unrecognized (neither GB20x nor 3x)",
+        ));
+    };
+    let ctx = crate::vbios::tables_v3::TableContext::new(img, family)
+        .map_err(|e| Error::from(format!("fan force: 3x context ({e})")))?;
+    let p = crate::vbios::tables_v3::patch_fan_force(img, &ctx, channel, level, rpm)?;
+    Ok(p.writes
+        .into_iter()
+        .map(|(off, old, new)| super::result::VbiosSurfacePatch {
+            source: "fan-force".to_string(),
+            offset: off,
+            old_raw: i64::from(old),
+            new_raw: i64::from(new),
+        })
+        .collect())
+}
+
+/// PERF_CF 控制器 target patch（按镜像族分派）。
+#[cfg(windows)]
+fn patch_perf_cf_target_any_family(
+    img: &mut [u8],
+    controller_index: usize,
+    target_raw: u32,
+) -> Result<super::result::VbiosSurfacePatch, Error> {
+    if let Ok(gb) = crate::vbios::gb20x::parse_layout(img) {
+        let p = crate::vbios::gb20x_surfaces::patch_perf_cf_target(
+            img,
+            &gb,
+            controller_index,
+            target_raw,
+        )?;
+        return Ok(super::result::VbiosSurfacePatch {
+            source: "perf-cf-target".to_string(),
+            offset: p.offset,
+            old_raw: i64::from(p.old_raw),
+            new_raw: i64::from(p.new_raw),
+        });
+    }
+    let Some((family, _)) = crate::vbios::tables_v3::detect_family(img) else {
+        return Err(Error::from(
+            "perf-cf: image family unrecognized (neither GB20x nor 3x)",
+        ));
+    };
+    let ctx = crate::vbios::tables_v3::TableContext::new(img, family)
+        .map_err(|e| Error::from(format!("perf-cf: 3x context ({e})")))?;
+    let p =
+        crate::vbios::tables_v3::patch_perf_cf_target_3x(img, &ctx, controller_index, target_raw)?;
+    Ok(super::result::VbiosSurfacePatch {
+        source: "perf-cf-target".to_string(),
+        offset: p.offset,
+        old_raw: i64::from(p.old_raw),
+        new_raw: i64::from(p.new_raw),
+    })
+}
+
+/// PERF_CF 策略激活位 patch（按镜像族分派）。
+#[cfg(windows)]
+fn patch_perf_cf_policy_any_family(
+    img: &mut [u8],
+    policy_index: usize,
+    active: bool,
+) -> Result<super::result::VbiosSurfacePatch, Error> {
+    if let Ok(gb) = crate::vbios::gb20x::parse_layout(img) {
+        let p = crate::vbios::gb20x_surfaces::patch_perf_cf_policy(img, &gb, policy_index, active)?;
+        return Ok(super::result::VbiosSurfacePatch {
+            source: "perf-cf-policy".to_string(),
+            offset: p.offset,
+            old_raw: i64::from(p.old_flags),
+            new_raw: i64::from(p.new_flags),
+        });
+    }
+    let Some((family, _)) = crate::vbios::tables_v3::detect_family(img) else {
+        return Err(Error::from(
+            "perf-cf: image family unrecognized (neither GB20x nor 3x)",
+        ));
+    };
+    let ctx = crate::vbios::tables_v3::TableContext::new(img, family)
+        .map_err(|e| Error::from(format!("perf-cf: 3x context ({e})")))?;
+    let p = crate::vbios::tables_v3::patch_perf_cf_policy_3x(img, &ctx, policy_index, active)?;
+    Ok(super::result::VbiosSurfacePatch {
+        source: "perf-cf-policy".to_string(),
+        offset: p.offset,
+        old_raw: i64::from(p.old_flags),
+        new_raw: i64::from(p.new_flags),
+    })
+}
+
 /// Pascal P0 上限 patch（就地写 + 校验修复）。
 #[cfg(windows)]
 fn patch_pascal_p0_any_family(
@@ -6442,6 +6560,86 @@ fn locate_pascal_p0_any_family(image: &[u8]) -> Result<Vec<(usize, u16)>, Error>
             (off, u16::from_le_bytes([image[off], image[off + 1]]))
         })
         .collect())
+}
+
+/// 风扇强制定位（fragment 车道）——(offset, current, new) 混排
+/// （levels 1B / rpms 2B，调用方按值域选字节宽度）。
+#[cfg(windows)]
+fn locate_fan_force_any_family(
+    image: &[u8],
+    channel: usize,
+    level: Option<u8>,
+) -> Result<Vec<(usize, u16, u32)>, Error> {
+    // 两族 row 类型不同——按族内联读取所需字节。
+    let fan = if let Ok(gb) = crate::vbios::gb20x::parse_layout(image) {
+        let rows = crate::vbios::gb20x_surfaces::fan_coolers(image, &gb)?;
+        rows.map(|rs| {
+            rs.iter()
+                .map(|r| {
+                    (
+                        r.index,
+                        r.offset,
+                        r.policy_offset,
+                        r.level_maximum,
+                        r.rpm_maximum,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+    } else {
+        let Some((family, _)) = crate::vbios::tables_v3::detect_family(image) else {
+            return Err(Error::from(
+                "fan force: image family unrecognized (neither GB20x nor 3x)",
+            ));
+        };
+        let ctx = crate::vbios::tables_v3::TableContext::new(image, family)
+            .map_err(|e| Error::from(format!("fan force: 3x context ({e})")))?;
+        crate::vbios::tables_v3::fan_tables(image, &ctx)?.map(|rep| {
+            rep.rows
+                .iter()
+                .map(|r| {
+                    (
+                        r.index,
+                        r.cooler_offset,
+                        r.policy_offset,
+                        r.level_maximum,
+                        r.rpm_maximum,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let fan = fan.ok_or_else(|| Error::from("vbios: fan tables not present"))?;
+    let (_, cooler_off, policy_off, level_max, rpm_max) = fan
+        .iter()
+        .find(|(i, ..)| *i == channel)
+        .copied()
+        .ok_or_else(|| {
+            Error::from(format!(
+                "vbios: fan channel {channel} not found (channels: {})",
+                fan.iter()
+                    .map(|(i, ..)| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        })?;
+    let level = level.unwrap_or(level_max);
+    let mut out = Vec::new();
+    for i in 0..3 {
+        let off = policy_off + 14 + i;
+        out.push((off, u16::from(image[off]), u32::from(level)));
+    }
+    for i in 0..3 {
+        let off = policy_off + 20 + 4 * i;
+        let cur = u16::from(image[off]) | (u16::from(image[off + 1]) << 8);
+        out.push((off, cur, u32::from(rpm_max)));
+    }
+    let rpm_off = cooler_off + 16;
+    let cur = u16::from(image[rpm_off]) | (u16::from(image[rpm_off + 1]) << 8);
+    if rpm_max > cur {
+        out.push((rpm_off, cur, u32::from(rpm_max)));
+    }
+    Ok(out)
 }
 
 /// 温度墙定位（fragment 车道：只定位不改写）——返回 (offset, current) ×3。
@@ -6591,15 +6789,44 @@ impl GpuOperation for SetVbiosOverride {
                 if let Some(limits) = &self.pascal_p0_limits {
                     factory_clock_patches.extend(patch_pascal_p0_any_family(&mut img, *limits)?);
                 }
+                for (channel, level) in &self.fan_force {
+                    factory_clock_patches.extend(patch_fan_force_any_family(
+                        &mut img, *channel, *level, None,
+                    )?);
+                }
+                for (index, raw) in &self.perf_cf_targets {
+                    factory_clock_patches
+                        .push(patch_perf_cf_target_any_family(&mut img, *index, *raw)?);
+                }
+                for (index, active) in &self.perf_cf_policies {
+                    factory_clock_patches
+                        .push(patch_perf_cf_policy_any_family(&mut img, *index, *active)?);
+                }
+                if let Some(mhz) = &self.pascal_ladder_mhz {
+                    let ladder_patches =
+                        crate::vbios::legacy::patch_pascal_ladder_max(&mut img, *mhz)?;
+                    factory_clock_patches.extend(ladder_patches.into_iter().map(|p| {
+                        super::result::VbiosSurfacePatch {
+                            source: "pascal-ladder".to_string(),
+                            offset: p.entry_offset,
+                            old_raw: i64::from(p.old_raw),
+                            new_raw: i64::from(p.new_raw),
+                        }
+                    }));
+                }
                 if self.power_peak_mw.is_none()
                     && self.voltage_walls_mv.is_empty()
                     && self.thermal_temps.is_empty()
                     && self.factory_clock_khz.is_empty()
                     && self.factory_offset_khz.is_empty()
                     && self.pascal_p0_limits.is_none()
+                    && self.fan_force.is_empty()
+                    && self.perf_cf_targets.is_empty()
+                    && self.perf_cf_policies.is_empty()
+                    && self.pascal_ladder_mhz.is_none()
                 {
                     return Err(Error::from(
-                        "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 or --image",
+                        "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 / --fan-max / --perf-cf-target / --perf-cf-policy / --pascal-ladder or --image",
                     ));
                 }
                 let patched = patched
@@ -6647,6 +6874,10 @@ impl GpuOperation for SetVbiosOverride {
                 &self.factory_clock_khz,
                 &self.factory_offset_khz,
                 &self.pascal_p0_limits,
+                &self.fan_force,
+                &self.perf_cf_targets,
+                &self.perf_cf_policies,
+                &self.pascal_ladder_mhz,
             );
             Err(Error::from(
                 "vbios override is Windows-only (vix loader registry lane)",
@@ -6682,6 +6913,14 @@ pub struct SetVbiosDirectPatch {
     pub factory_offset_khz: Vec<(usize, i64)>,
     /// Pascal VPState P0 上限（三档 MHz）——fragment 车道。
     pub pascal_p0_limits: Option<[f64; 3]>,
+    /// 风扇强制最大散热目标（channel, 自定义 level——None = 卡自身 100%）。
+    pub fan_force: Vec<(usize, Option<u8>)>,
+    /// PERF_CF 控制器 target 写（index, raw u32；kind1=温度阈值/kind3=µV）。
+    pub perf_cf_targets: Vec<(usize, u32)>,
+    /// PERF_CF 策略激活位（index, true=置 0x80/false=清）。
+    pub perf_cf_policies: Vec<(usize, bool)>,
+    /// Pascal GP100 ladder 顶部抬升（MHz）——P100 专用车道。
+    pub pascal_ladder_mhz: Option<f64>,
     /// 原始片段（offset, data LE bytes）——绕过一切自动定位。
     pub raw_patches: Vec<(u32, Vec<u8>)>,
     /// true = --overwrite：清空既有 romOverride 链只写新片段；
@@ -6707,10 +6946,14 @@ impl GpuOperation for SetVbiosDirectPatch {
                 && self.factory_clock_khz.is_empty()
                 && self.factory_offset_khz.is_empty()
                 && self.pascal_p0_limits.is_none()
+                && self.fan_force.is_empty()
+                && self.perf_cf_targets.is_empty()
+                && self.perf_cf_policies.is_empty()
+                && self.pascal_ladder_mhz.is_none()
                 && self.raw_patches.is_empty()
             {
                 return Err(Error::from(
-                    "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 / --patch",
+                    "set-vbios-override --mode patch: need --power-max-w / --ocp-amps / --nvvdd-ocp-amps-default / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset / --pascal-p0 / --fan-max / --perf-cf-target / --perf-cf-policy / --pascal-ladder / --patch",
                 ));
             }
             let (instance_id, description) = match_nvidia_adapter(target)?;
@@ -6822,6 +7065,47 @@ impl GpuOperation for SetVbiosDirectPatch {
                         data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
                         old_peak_mw: Some(i64::from(current)),
                         source: "pascal-p0".to_string(),
+                    });
+                }
+            }
+            if let Some(mhz) = &self.pascal_ladder_mhz {
+                let tables = crate::vbios::legacy::find_vp_tables(&image);
+                let table = tables
+                    .iter()
+                    .find(|t| !t.entries.is_empty())
+                    .ok_or_else(|| Error::from("vbios: no VP ladder table in any image"))?;
+                let max_mhz = table
+                    .entries
+                    .iter()
+                    .map(|e| e.freq_mhz())
+                    .fold(f64::NEG_INFINITY, f64::max);
+                for e in &table.entries {
+                    if (e.freq_mhz() - max_mhz).abs() < 0.01 {
+                        let new_raw = (mhz * 32768.0).round() as u32;
+                        let bytes = new_raw.to_le_bytes().to_vec();
+                        new_pairs.push((e.offset as u32, bytes.clone()));
+                        patches.push(super::result::VbiosDirectPatchEntry {
+                            offset: e.offset as u32,
+                            data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                            old_peak_mw: Some(i64::from(e.raw)),
+                            source: "pascal-ladder".to_string(),
+                        });
+                    }
+                }
+            }
+            for (channel, level) in &self.fan_force {
+                for (off, current, new) in locate_fan_force_any_family(&image, *channel, *level)? {
+                    let bytes = if new > 0xFF {
+                        (new as u16).to_le_bytes().to_vec()
+                    } else {
+                        vec![new as u8]
+                    };
+                    new_pairs.push((off as u32, bytes.clone()));
+                    patches.push(super::result::VbiosDirectPatchEntry {
+                        offset: off as u32,
+                        data_hex: bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                        old_peak_mw: Some(i64::from(current)),
+                        source: "fan-force".to_string(),
                     });
                 }
             }
