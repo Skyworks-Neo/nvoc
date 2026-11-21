@@ -1839,8 +1839,10 @@ fn command_specs() -> &'static [(Command, CommandSpec)] {
                         "thermal-temps",
                         "factory-clock",
                         "factory-offset",
+                        "auto-apply",
+                        "failsafe",
                     ])),
-                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these). Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
+                    ..CommandSpec::new("set-vbios-override", Group::Power, "Write a VBIOS override into the selected GPU's display-class driver key (admin). --mode file (default, vix lane): patch the LIVE image's BIT 'P'+0x2C power-budget cap entry only (cap_entry slot / tag 0x21 — nvidia-smi Max Power Limit source; a blind full-table rewrite bricks driver init with code 43, the 2026-11-16 Turing lesson), repair the checksum, and write the `vbios` REG_BINARY whole image; --image <file.rom> writes an externally patched image as-is (GPU-independent) — on Blackwell use an nvflash-grade full extraction (the live GetVbiosImage read may carry only the core segment there; Turing live == nvflash, byte-verified). --mode patch (mVolt direct lane): write wildcard romOverride00 fragments for the same cap byte — the driver applies fragments in-place to the in-memory VBIOS shadow at init, no checksum/signature validation afterwards; applies on GPU disable/enable (RTX 50 needs no GSP toggle). Full-surface patches (both modes): --thermal-temps INDEX:C1,C2,C3 (thermal-policy wall, 1/32C cells — TU106 #0 class1 [89/89/89] is the primary wall), --factory-clock INDEX:MHZ (P+0x98 clocks table = the rated boost / P0 ceiling source; TU106 clocks[1]=1650 MHz), --factory-offset INDEX:MHZ (signed clock offset; server-card P0 unlock = raise these). Safety nets: --auto-apply runs the device-manager disable/enable cycle right after the write, polls the devnode problem code (code 43 = CM_PROB 0x31) and ROLLS BACK THIS COMMAND'S registry changes only (previous vbios bytes + previous romOverride chain restored, second reinit) on failure; --failsafe additionally prints a 15s press-Y confirm after a healthy reinit — a black screen means no Y arrives and the write rolls back automatically. Both modes take effect at the next driver init; rollback = reset-vbios-override (clears vbios AND the romOverride chain). Turing --mode file is EXPERIMENTAL (vix docs; may land code 43 — the override is simply rejected and reset recovers). HIGH RISK: a rejected image bricks GPU init until the value is deleted")
                 },
             ),
             (
@@ -1975,6 +1977,85 @@ fn render_root_help() -> String {
 }
 
 /// `nvoc-cli list [GROUP]`: scriptable grouped command listing.
+/// VBIOS override 安全网：设备禁用/启用一轮 → 轮询 devnode 问题码 →
+/// （failsafe）15 秒按 Y 确认 → 失败/超时回退**本次指令**的注册表更改
+/// （旧 vbios 字节 + 旧 romOverride 链全量还原 + 第二轮 reinit）。
+#[cfg(windows)]
+fn vbios_safety_finish(
+    instance_id: &str,
+    old_vbios: Option<Vec<u8>>,
+    old_fragments: Vec<Vec<u8>>,
+    failsafe: bool,
+) -> CliResult<Value> {
+    use nvoc_core::vbios_override as vbo;
+    vbo::trigger_reinit(instance_id)
+        .map_err(|e| CliError::new(format!("--auto-apply reinit: {e}")))?;
+    let mut problem: Option<u32> = None;
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        if let Ok(Some(p)) = vbo::device_problem(instance_id) {
+            problem = Some(p);
+            break;
+        }
+    }
+    let mut rolled_back = false;
+    let mut prompt: Option<String> = None;
+    let dead = problem.is_some();
+    let mut keep = !dead;
+    if !dead && failsafe {
+        let line = "==== KEEP the override? press Y within 15s (anything else / no input = ROLL BACK) ====";
+        println!("{line}");
+        eprintln!("{line}");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            if std::io::stdin().read_line(&mut buf).is_ok() {
+                let _ = tx.send(buf.trim().to_lowercase());
+            }
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+            Ok(v) if v.starts_with('y') => prompt = Some("y".to_string()),
+            Ok(v) => {
+                prompt = Some(if v.is_empty() { "timeout" } else { "n" }.to_string());
+                keep = false;
+            }
+            Err(_) => {
+                prompt = Some("timeout".to_string());
+                keep = false;
+            }
+        }
+    }
+    if !keep {
+        // 回退**本次**更改：romOverride 链全量还原 + vbios 值还原
+        // （file 车道清掉的链随快照恢复），第二轮 reinit 回到基线。
+        let _ = vbo::clear_romoverride_all(instance_id);
+        match &old_vbios {
+            Some(bytes) => {
+                let _ = vbo::write_override(instance_id, bytes);
+            }
+            None => {
+                let _ = vbo::delete_vbios_value(instance_id);
+            }
+        }
+        let _ = vbo::write_romoverride_fragments(instance_id, &old_fragments);
+        let _ = vbo::trigger_reinit(instance_id);
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        rolled_back = true;
+    }
+    Ok(json!({
+        "reinit": true,
+        "health": match problem {
+            Some(code) => format!("problem(CM_PROB {code:#x})"),
+            None => "ok".to_string(),
+        },
+        "prompt": prompt,
+        "rolled_back": rolled_back,
+    }))
+}
+
 /// reset-vbios-override：GPU 无关纯注册表路径（run_invocation 短路进入，Windows-only）。
 /// GPU 代码 43 / 驱动拒载 override 时这是唯一的恢复入口——vix loader 的
 /// unload 同样不依赖 GPU 存活。
@@ -3137,6 +3218,14 @@ fn command_specific_arg(name: &'static str) -> Arg {
             .value_name("INDEX:MHZ")
             .action(ArgAction::Append)
             .help("set-vbios-override (both modes): factory clock offset patch, repeatable — P+0x98 offsets table entry INDEX to signed MHZ (TU106 offsets[1]=+45 MHz)"),
+        "auto-apply" => Arg::new("auto-apply")
+            .long("auto-apply")
+            .action(ArgAction::SetTrue)
+            .help("set-vbios-override (both modes): run the device-manager disable/enable cycle right after the write, poll the devnode problem code, and roll back THIS command's registry changes (previous vbios bytes + previous romOverride chain) automatically on code 43"),
+        "failsafe" => Arg::new("failsafe")
+            .long("failsafe")
+            .action(ArgAction::SetTrue)
+            .help("set-vbios-override (both modes): after a healthy reinit print a 15s press-Y confirm — a black screen means no Y arrives and the write rolls back automatically (same restore path as --auto-apply)"),
         _ => unreachable!("unknown command-specific option {name}"),
     }
 }
@@ -7352,6 +7441,32 @@ fn execute_target(
                     out.push((idx, khz));
                 }
             }
+            // 安全网旗标：--auto-apply（写后自动禁用/启用 + code43 回退）、
+            // --failsafe（健康后 15 秒按 Y 防呆，黑屏超时自动回退）。
+            let auto_apply = invocation.options.contains_key("auto-apply");
+            let failsafe = invocation.options.contains_key("failsafe");
+            #[cfg(windows)]
+            let safety_snapshot = if auto_apply || failsafe {
+                let (instance_id, _) = nvoc_core::operation::match_nvidia_adapter(target)?;
+                Some((
+                    instance_id.clone(),
+                    nvoc_core::vbios_override::read_override(&instance_id)
+                        .ok()
+                        .flatten(),
+                    nvoc_core::vbios_override::read_romoverride_fragments(&instance_id)
+                        .ok()
+                        .map(|frs| frs.iter().map(|f| f.raw.clone()).collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                ))
+            } else {
+                None
+            };
+            #[cfg(not(windows))]
+            if auto_apply || failsafe {
+                return Err(CliError::new(
+                    "--auto-apply/--failsafe are Windows-only (SetupDi device cycle)",
+                ));
+            }
             // 双模：--mode file（默认，vix 整镜像车道）/ --mode patch（mVolt
             // direct patch 车道：romOverride00 通配片段，驱动 init 对内存
             // VBIOS 影像就地改写、免校验）。
@@ -7361,7 +7476,7 @@ fn execute_target(
                 .and_then(|v| v.first())
                 .map(String::as_str)
                 .unwrap_or("file");
-            if mode == "patch" {
+            let (out, applied_instance) = if mode == "patch" {
                 let watts = invocation
                     .options
                     .get("power-max-w")
@@ -7453,104 +7568,121 @@ fn execute_target(
                         })
                     })
                     .collect();
-                return Ok(json!({
-                    "mode": "patch",
-                    "merge": if invocation.options.contains_key("overwrite") { "overwrite" } else { "append" },
-                    "instance_id": a.instance_id,
-                    "description": a.description,
-                    "fragments_written": a.fragments_written,
-                    "kept_existing": a.kept_existing,
-                    "replaced_existing": a.replaced_existing,
-                    "patches": patches,
-                    "value_family": "romOverride00..",
-                    "high_risk": "driver applies fragments in-place to the in-memory VBIOS shadow at init; verify with nvidia-smi -q (Power Limit -> Max) after GPU disable/enable",
-                    "restart_hint": a.restart_hint,
-                }));
-            }
-            if mode != "file" {
+                (
+                    json!({
+                        "mode": "patch",
+                        "merge": if invocation.options.contains_key("overwrite") { "overwrite" } else { "append" },
+                        "instance_id": a.instance_id,
+                        "description": a.description,
+                        "fragments_written": a.fragments_written,
+                        "kept_existing": a.kept_existing,
+                        "replaced_existing": a.replaced_existing,
+                        "patches": patches,
+                        "value_family": "romOverride00..",
+                        "high_risk": "driver applies fragments in-place to the in-memory VBIOS shadow at init; verify with nvidia-smi -q (Power Limit -> Max) after GPU disable/enable",
+                        "restart_hint": a.restart_hint,
+                    }),
+                    a.instance_id.clone(),
+                )
+            } else if mode != "file" {
                 return Err(CliError::new(format!(
                     "set-vbios-override: unknown --mode {mode:?} (expected file | patch)"
                 )));
-            }
-            // --mode file（默认）：vix 整镜像车道。HIGH RISK：管理员 + 驱动
-            // 重启才生效；输出回滚路径。
-            let watts = invocation
-                .options
-                .get("power-max-w")
-                .and_then(|v| v.first())
-                .map(|s| {
-                    s.parse::<f64>()
-                        .map_err(|e| CliError::new(format!("--power-max-w: {e}")))
-                })
-                .transpose()?;
-            let image = invocation
-                .options
-                .get("image")
-                .and_then(|v| v.first())
-                .map(|path| {
-                    std::fs::read(path)
-                        .map_err(|e| CliError::new(format!("failed to read --image {path:?}: {e}")))
-                })
-                .transpose()?;
-            if watts.is_none()
-                && image.is_none()
-                && voltage_walls_mv.is_empty()
-                && thermal_temps.is_empty()
-                && factory_clock_khz.is_empty()
-                && factory_offset_khz.is_empty()
-            {
-                return Err(CliError::new(
+            } else {
+                // --mode file（默认）：vix 整镜像车道。HIGH RISK：管理员 + 驱动
+                // 重启才生效；输出回滚路径。
+                let watts = invocation
+                    .options
+                    .get("power-max-w")
+                    .and_then(|v| v.first())
+                    .map(|s| {
+                        s.parse::<f64>()
+                            .map_err(|e| CliError::new(format!("--power-max-w: {e}")))
+                    })
+                    .transpose()?;
+                let image = invocation
+                    .options
+                    .get("image")
+                    .and_then(|v| v.first())
+                    .map(|path| {
+                        std::fs::read(path).map_err(|e| {
+                            CliError::new(format!("failed to read --image {path:?}: {e}"))
+                        })
+                    })
+                    .transpose()?;
+                if watts.is_none()
+                    && image.is_none()
+                    && voltage_walls_mv.is_empty()
+                    && thermal_temps.is_empty()
+                    && factory_clock_khz.is_empty()
+                    && factory_offset_khz.is_empty()
+                {
+                    return Err(CliError::new(
                     "set-vbios-override: need --power-max-w / --volt-*-mv / --thermal-temps / --factory-clock / --factory-offset (auto-patch the live \
                      image) or --image <file.rom> (externally patched image)"
                         .to_string(),
                 ));
-            }
-            let op = SetVbiosOverride {
-                power_peak_mw: watts.map(|w| (w * 1000.0).round() as u32),
-                image,
-                voltage_walls_mv,
-                thermal_temps,
-                factory_clock_khz,
-                factory_offset_khz,
-            };
-            let a = run(target, op)?.output;
-            let patched: Vec<Value> = a
-                .patched_entries
-                .iter()
-                .map(|p| {
-                    json!({
-                        "index": p.index,
-                        "offset": p.offset,
-                        "tag": format!("{:#04x}", p.tag),
-                        "old_peak_mw": p.old_peak_mw,
-                        "new_peak_mw": p.new_peak_mw,
+                }
+                let op = SetVbiosOverride {
+                    power_peak_mw: watts.map(|w| (w * 1000.0).round() as u32),
+                    image,
+                    voltage_walls_mv,
+                    thermal_temps,
+                    factory_clock_khz,
+                    factory_offset_khz,
+                };
+                let a = run(target, op)?.output;
+                let patched: Vec<Value> = a
+                    .patched_entries
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "index": p.index,
+                            "offset": p.offset,
+                            "tag": format!("{:#04x}", p.tag),
+                            "old_peak_mw": p.old_peak_mw,
+                            "new_peak_mw": p.new_peak_mw,
+                        })
                     })
-                })
-                .collect();
-            Ok(json!({
-                "mode": "file",
-                "instance_id": a.instance_id,
-                "description": a.description,
-                "image_len": a.image_len,
-                "cleared_romoverride_fragments": a.cleared_romoverride,
-                "patched_power_entries": patched,
-                "thermal_patches": a.thermal_patches.iter().map(|p| json!({
-                    "source": p.source,
-                    "offset": p.offset,
-                    "old_raw": p.old_raw,
-                    "new_raw": p.new_raw,
-                })).collect::<Vec<_>>(),
-                "factory_clock_patches": a.factory_clock_patches.iter().map(|p| json!({
-                    "source": p.source,
-                    "offset": p.offset,
-                    "old_khz": p.old_raw,
-                    "new_khz": p.new_raw,
-                })).collect::<Vec<_>>(),
-                "previous_override_len": a.previous_len,
-                "value": "vbios",
-                "high_risk": "consumed at the next driver init; verify with nvidia-smi -q (Power Limit -> Max) after restart",
-                "restart_hint": a.restart_hint,
-            }))
+                    .collect();
+                (
+                    json!({
+                    "mode": "file",
+                    "instance_id": a.instance_id,
+                    "description": a.description,
+                    "image_len": a.image_len,
+                    "cleared_romoverride_fragments": a.cleared_romoverride,
+                    "patched_power_entries": patched,
+                    "thermal_patches": a.thermal_patches.iter().map(|p| json!({
+                        "source": p.source,
+                        "offset": p.offset,
+                        "old_raw": p.old_raw,
+                        "new_raw": p.new_raw,
+                    })).collect::<Vec<_>>(),
+                    "factory_clock_patches": a.factory_clock_patches.iter().map(|p| json!({
+                        "source": p.source,
+                        "offset": p.offset,
+                        "old_khz": p.old_raw,
+                        "new_khz": p.new_raw,
+                    })).collect::<Vec<_>>(),
+                    "previous_override_len": a.previous_len,
+                    "value": "vbios",
+                    "high_risk": "consumed at the next driver init; verify with nvidia-smi -q (Power Limit -> Max) after restart",
+                    "restart_hint": a.restart_hint,
+                    }),
+                    a.instance_id.clone(),
+                )
+            };
+            // 安全网收尾：reinit → 健康判定 →（failsafe）15 秒按 Y → 回退本次更改。
+            #[cfg(windows)]
+            let mut out = out;
+            #[cfg(windows)]
+            if let Some((instance_id, old_vbios, old_chain)) = safety_snapshot {
+                out["safety"] = vbios_safety_finish(&instance_id, old_vbios, old_chain, failsafe)?;
+                out["instance_id"] = json!(instance_id);
+            }
+            let _ = &applied_instance;
+            Ok(out)
         }
         Command::ResetVbiosOverride => {
             // vix loader 车道清除（幂等）。

@@ -17,17 +17,22 @@
 pub use windows_impl::{
     DisplayAdapter, FragmentMergeReport, RomOverrideFragment, SessionState, VBIOS_VALUE_NAME,
     VbiosOverrideEntry, build_romoverride_fragment, clear_all_nvidia_overrides, clear_override,
-    clear_romoverride_all, enumerate_display_adapters, merge_romoverride_chain, read_override,
-    read_romoverride_fragments, read_session_state, write_override, write_romoverride_fragments,
+    clear_romoverride_all, delete_vbios_value, device_problem, enumerate_display_adapters,
+    merge_romoverride_chain, read_override, read_romoverride_fragments, read_session_state,
+    trigger_reinit, write_override, write_romoverride_fragments,
 };
 
 #[cfg(windows)]
 mod windows_impl {
     use crate::Error;
     use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-        SETUP_DI_GET_CLASS_DEVS_FLAGS, SETUP_DI_REGISTRY_PROPERTY, SP_DEVINFO_DATA,
+        CM_Get_DevNode_Status, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CONFIGRET, CR_SUCCESS,
+        DICS_DISABLE, DICS_ENABLE, DICS_FLAG_CONFIGSPECIFIC, DIF_PROPERTYCHANGE, DN_HAS_PROBLEM,
+        HDEVINFO, SETUP_DI_GET_CLASS_DEVS_FLAGS, SETUP_DI_REGISTRY_PROPERTY,
+        SP_CLASSINSTALL_HEADER, SP_DEVINFO_DATA, SP_PROPCHANGE_PARAMS, SetupDiChangeState,
         SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
         SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceRegistryPropertyW, SetupDiOpenDevRegKey,
+        SetupDiSetClassInstallParamsW,
     };
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_ITEMS};
     use windows_sys::Win32::System::Registry::{
@@ -670,6 +675,143 @@ mod windows_impl {
             let r = RegDeleteValueW(hkey, name.as_ptr());
             RegCloseKey(hkey);
             Ok(r == 0)
+        }
+    }
+
+    /// 仅删除 `vbios` 值（不动 romOverride 链）——file 车道回退用。
+    pub fn delete_vbios_value(instance_id: &str) -> Result<bool, Error> {
+        unsafe {
+            let hkey = open_driver_key(instance_id, KEY_READ | KEY_WRITE)?;
+            let name = wide_name(VBIOS_VALUE_NAME);
+            let r = RegDeleteValueW(hkey, name.as_ptr());
+            RegFlushKey(hkey);
+            RegCloseKey(hkey);
+            Ok(r == 0)
+        }
+    }
+
+    /// 定位实例 → (devinfo, devinfo data)。调用方负责
+    /// SetupDiDestroyDeviceInfoList。
+    fn open_adapter_devinfo(instance_id: &str) -> Result<(HDEVINFO, SP_DEVINFO_DATA), Error> {
+        unsafe {
+            let devinfo = SetupDiGetClassDevsW(
+                &GUID_DEVCLASS_DISPLAY,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                DIGCF_PRESENT,
+            );
+            if devinfo == 0 {
+                return Err(Error::from("SetupDiGetClassDevsW failed"));
+            }
+            let want = wide_name(instance_id);
+            let mut index = 0u32;
+            loop {
+                let mut dev = std::mem::zeroed::<SP_DEVINFO_DATA>();
+                dev.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+                if SetupDiEnumDeviceInfo(devinfo, index, &mut dev) == 0 {
+                    SetupDiDestroyDeviceInfoList(devinfo);
+                    return Err(Error::from(format!(
+                        "adapter instance {instance_id:?} not found (SetupDi)"
+                    )));
+                }
+                let mut len = 0u32;
+                SetupDiGetDeviceInstanceIdW(devinfo, &dev, std::ptr::null_mut(), 0, &mut len);
+                let mut buf = vec![0u16; len as usize];
+                if SetupDiGetDeviceInstanceIdW(devinfo, &dev, buf.as_mut_ptr(), len, &mut len) != 0
+                    && buf[..len as usize]
+                        .windows(1)
+                        .take_while(|w| w[0] != 0)
+                        .count()
+                        == want.len().saturating_sub(1)
+                {
+                    // 宽字符比对（去掉结尾 NUL）。
+                    let id: Vec<u16> = buf[..len as usize]
+                        .iter()
+                        .copied()
+                        .take_while(|&c| c != 0)
+                        .collect();
+                    if id == want[..want.len() - 1] {
+                        return Ok((devinfo, dev));
+                    }
+                }
+                index += 1;
+            }
+        }
+    }
+
+    /// 设备管理器禁用/启用一轮（DICS_DISABLE → ~1.5s → DICS_ENABLE，
+    /// CONFIGSPECIFIC 域）——驱动卸载/重载即重读 override。
+    pub fn trigger_reinit(instance_id: &str) -> Result<(), Error> {
+        let (devinfo, mut dev) = open_adapter_devinfo(instance_id)?;
+        let r = unsafe {
+            let mut propchange = std::mem::zeroed::<SP_PROPCHANGE_PARAMS>();
+            propchange.ClassInstallHeader.cbSize =
+                std::mem::size_of::<SP_CLASSINSTALL_HEADER>() as u32;
+            propchange.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
+            propchange.StateChange = DICS_DISABLE;
+            propchange.Scope = DICS_FLAG_CONFIGSPECIFIC;
+            propchange.HwProfile = 0;
+            let set = SetupDiSetClassInstallParamsW(
+                devinfo,
+                &dev,
+                &propchange.ClassInstallHeader,
+                std::mem::size_of::<SP_PROPCHANGE_PARAMS>() as u32,
+            );
+            let dis = if set != 0 {
+                SetupDiChangeState(devinfo, &mut dev)
+            } else {
+                0
+            };
+            if set != 0 && dis != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                propchange.StateChange = DICS_ENABLE;
+                let set2 = SetupDiSetClassInstallParamsW(
+                    devinfo,
+                    &dev,
+                    &propchange.ClassInstallHeader,
+                    std::mem::size_of::<SP_PROPCHANGE_PARAMS>() as u32,
+                );
+                let en = if set2 != 0 {
+                    SetupDiChangeState(devinfo, &mut dev)
+                } else {
+                    0
+                };
+                if set2 != 0 && en != 0 { Some(()) } else { None }
+            } else {
+                None
+            }
+        };
+        unsafe {
+            SetupDiDestroyDeviceInfoList(devinfo);
+        }
+        match r {
+            Some(()) => Ok(()),
+            None => Err(Error::from(
+                "SetupDi property-change/disable-enable failed (admin required?)",
+            )),
+        }
+    }
+
+    /// 设备问题码：`Some(CM_PROB)` = DN_HAS_PROBLEM（code 43 = 0x31）；
+    /// `None` = 健康（或设备不在位）。
+    pub fn device_problem(instance_id: &str) -> Result<Option<u32>, Error> {
+        let wide = wide_name(instance_id);
+        let mut devinst = 0u32;
+        let loc: CONFIGRET =
+            unsafe { CM_Locate_DevNodeW(&mut devinst, wide.as_ptr(), CM_LOCATE_DEVNODE_NORMAL) };
+        if loc != CR_SUCCESS {
+            return Ok(None);
+        }
+        let mut status = 0u32;
+        let mut problem = 0u32;
+        let r: CONFIGRET = unsafe { CM_Get_DevNode_Status(&mut status, &mut problem, devinst, 0) };
+        if r != CR_SUCCESS {
+            return Ok(None);
+        }
+        if status & DN_HAS_PROBLEM != 0 {
+            Ok(Some(problem))
+        } else {
+            Ok(None)
         }
     }
 }

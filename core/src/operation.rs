@@ -6166,7 +6166,7 @@ fn patch_wall_any_family(
 
 /// 目标适配器解析结果（instance_id + 描述）。
 #[cfg(windows)]
-fn match_nvidia_adapter(target: &GpuTarget<'_>) -> Result<(String, String), Error> {
+pub fn match_nvidia_adapter(target: &GpuTarget<'_>) -> Result<(String, String), Error> {
     let adapters = crate::vbios_override::enumerate_display_adapters()?;
     let nvidia: Vec<_> = adapters.into_iter().filter(|a| a.is_nvidia).collect();
     if nvidia.is_empty() {

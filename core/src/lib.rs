@@ -142,3 +142,6 @@ pub fn last_status_error() -> Option<String> {
 pub fn clear_status_error() {
     ::nvapi::clear_status_error()
 }
+
+#[cfg(windows)]
+pub use operation::match_nvidia_adapter;
