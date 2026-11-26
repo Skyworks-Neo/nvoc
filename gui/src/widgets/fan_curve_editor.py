@@ -193,7 +193,19 @@ class FanCurveEditor(ctk.CTkFrame):
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.figure import Figure
 
-        self.fig = Figure(figsize=(5.2, 2.4), dpi=96)
+        # Matplotlib is unaware of the Xft DPI that renders the rest of the
+        # UI: bake the same effective scale into the figure DPI so chart
+        # text stays the same physical size as the surrounding labels.
+        # Division by the backend's own device-pixel-ratio keeps the
+        # effective dpi at 100*scale instead of doubling it on X11.
+        fig_dpi = 96
+        try:
+            scale = self.app._effective_ui_scale()
+            ratio = max(1.0, float(self.app._matplotlib_dpi_ratio()))
+            fig_dpi = max(48, round(100 * scale / ratio))
+        except Exception:
+            pass
+        self.fig = Figure(figsize=(5.2, 2.4), dpi=fig_dpi)
         self.fig.patch.set_facecolor(_CHART_BG)
         self.ax = self.fig.add_subplot(111)
         self.ax2 = self.ax.twinx()

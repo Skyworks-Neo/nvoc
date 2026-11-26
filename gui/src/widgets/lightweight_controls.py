@@ -8,7 +8,9 @@ from typing import List, Optional, Tuple
 
 import customtkinter as ctk
 
-# Mouse-wheel scroll multiplier: canvas "units" per wheel notch.
+from src.ui_scale import ui_px_scale
+
+# Mouse-wheel scroll multiplier: canvas "units" per wheel notch
 _WHEEL_STEP_UNITS = 6
 
 
@@ -171,9 +173,12 @@ class CanvasSlider(ctk.CTkFrame):
         # forever — state correct, pixels stale.
         self._geometry_dirty = False
 
-        self._track_pad_x = 8
-        self._track_h = 6
-        self._thumb_r = 8
+        # Raw tk.Canvas geometry is not CTk-scaled; match it to the factor
+        # with which Xft renders the surrounding point-sized text.
+        self._s = ui_px_scale(self)
+        self._track_pad_x = round(8 * self._s)
+        self._track_h = round(6 * self._s)
+        self._thumb_r = round(8 * self._s)
         self._command_after_id = None
         self._pending_command_value = None
         self._command_interval_ms = 16
@@ -181,7 +186,12 @@ class CanvasSlider(ctk.CTkFrame):
         # width=1: a bare tk.Canvas requests 378px by default, which grid
         # treats as a hard minimum and clips sibling columns in narrow cards.
         self._canvas = tk.Canvas(
-            self, width=1, height=24, highlightthickness=0, bd=0, bg="#2b2b2b"
+            self,
+            width=1,
+            height=round(24 * self._s),
+            highlightthickness=0,
+            bd=0,
+            bg="#2b2b2b",
         )
         self._canvas.pack(fill="both", expand=True)
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -402,12 +412,18 @@ class SegmentRangeSelector(ctk.CTkFrame):
         # the native P-State pin fallback only accepts a single P-State, so
         # the selector collapses to one fused handle.
         self._point_mode = False
-        self._pad_x = 18
-        self._line_y = 26
-        self._node_r = 5
-        self._handle_r = 9
-        self._track_w = 4
-        self._hit_radius = 16
+        # Raw canvas pixels are not CTk-scaled; derive them from the
+        # display factor so labels/summary do not collide inside a
+        # fixed-height 70-px canvas on HiDPI X11.
+        self._s = ui_px_scale(self)
+        self._pad_x = round(18 * self._s)
+        self._line_y = round(26 * self._s)
+        self._node_r = round(5 * self._s)
+        self._handle_r = round(9 * self._s)
+        self._track_w = round(4 * self._s)
+        self._hit_radius = round(16 * self._s)
+        self._label_dy = round(20 * self._s)
+        self._summary_dy = round(9 * self._s)
 
         self.grid_columnconfigure(0, weight=1)
 
@@ -415,7 +431,12 @@ class SegmentRangeSelector(ctk.CTkFrame):
         # height as the toggle-selector's watt subtitles, centered — a separate
         # label row sat lower and left-anchored.
         self._canvas = tk.Canvas(
-            self, width=1, height=70, highlightthickness=0, bd=0, bg="#2b2b2b"
+            self,
+            width=1,
+            height=round(70 * self._s),
+            highlightthickness=0,
+            bd=0,
+            bg="#2b2b2b",
         )
         self._canvas.grid(row=0, column=0, sticky="ew")
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -666,7 +687,7 @@ class SegmentRangeSelector(ctk.CTkFrame):
             )
             c.create_text(
                 x,
-                self._line_y + 20,
+                self._line_y + self._label_dy,
                 text=label,
                 fill=label_fill,
                 font=("Segoe UI", 10, "bold"),
@@ -680,12 +701,14 @@ class SegmentRangeSelector(ctk.CTkFrame):
         # text inside the canvas when the selection rides an edge node.
         text_w = self._summary_font.measure(self._summary_text)
         mid_x = (positions[self._start_idx] + positions[self._end_idx]) / 2.0
+        margin = 2 * self._s
         summary_x = min(
-            max(mid_x, text_w / 2 + 2), max(text_w / 2 + 2, w - text_w / 2 - 2)
+            max(mid_x, text_w / 2 + margin),
+            max(text_w / 2 + margin, w - text_w / 2 - margin),
         )
         c.create_text(
             summary_x,
-            h - 9,
+            h - self._summary_dy,
             text=self._summary_text,
             fill="#7e8da1",
             font=self._summary_font,
@@ -712,16 +735,28 @@ class SegmentToggleSelector(ctk.CTkFrame):
         self._command = command
         self._state = "normal"
         self._selected_idx = None  # type: Optional[int]
-        self._pad_x = 18
+        # Same raw-tk compensation as SegmentRangeSelector: the canvas and
+        # its coordinates do not follow CTk's widget scaling, the point
+        # fonts do.
+        self._s = ui_px_scale(self)
+        self._pad_x = round(18 * self._s)
         # Track position mirrors the range selector: vertically centered in
         # the canvas with room below for the labels + watt subtitles.
-        self._line_y = 20
-        self._node_r = 5
+        self._line_y = round(20 * self._s)
+        self._node_r = round(5 * self._s)
+        self._label_dy = round(16 * self._s)
+        self._subtitle_dy = round(13 * self._s)
+        self._track_w = round(4 * self._s)
 
         self.grid_columnconfigure(0, weight=1)
 
         self._canvas = tk.Canvas(
-            self, width=1, height=62, highlightthickness=0, bd=0, bg="#2b2b2b"
+            self,
+            width=1,
+            height=round(62 * self._s),
+            highlightthickness=0,
+            bd=0,
+            bg="#2b2b2b",
         )
         self._canvas.grid(row=0, column=0, sticky="ew")
         self._canvas.bind("<Configure>", lambda _e: self._redraw())
@@ -840,8 +875,8 @@ class SegmentToggleSelector(ctk.CTkFrame):
         node_fill = "#707070" if disabled else "#9aa7b5"
 
         has_subtitle = any(self._subtitles)
-        label_y = self._line_y + 16
-        sub_y = label_y + 13
+        label_y = self._line_y + self._label_dy
+        sub_y = label_y + self._subtitle_dy
 
         x0 = positions[0]
         x1 = positions[-1]
@@ -851,7 +886,7 @@ class SegmentToggleSelector(ctk.CTkFrame):
             x1,
             self._line_y,
             fill=base_track,
-            width=4,
+            width=self._track_w,
             capstyle=tk.ROUND,
         )
 
@@ -860,10 +895,10 @@ class SegmentToggleSelector(ctk.CTkFrame):
             # Selected style matches the SegmentRangeSelector handles:
             # white fill + blue outline (single-select: only ONE handle).
             if is_selected:
-                radius = 9
+                radius = round(9 * self._s)
                 fill = "#f5f7fb"
                 outline = "#59b0ff"
-                outline_w = 2
+                outline_w = max(1, round(2 * self._s))
             else:
                 radius = self._node_r
                 fill = node_fill
@@ -919,14 +954,23 @@ class LiteCheckbutton(tk.Frame):
         self._variable = variable
         self._command = command
         self._font = font
-        self._box = box
         self._bg = bg
         self._fg = fg
         self._state = "normal"
         self._hovered = False
+        # Raw tk.Frame/Canvas in a CTk layout: scale the box and paddings
+        # with the same factor that renders the point font.
+        self._s = ui_px_scale(self)
+        self._box = max(8, round(box * self._s))
+        self._pad = round(10 * self._s)
 
         self._canvas = tk.Canvas(
-            self, width=1, height=box + 8, highlightthickness=0, bd=0, bg=bg
+            self,
+            width=1,
+            height=round((box + 8) * self._s),
+            highlightthickness=0,
+            bd=0,
+            bg=bg,
         )
         self._canvas.pack(fill="both", expand=True)
         self._canvas.bind("<Button-1>", self._on_click)
@@ -989,8 +1033,8 @@ class LiteCheckbutton(tk.Frame):
             text_w = tk_font.Font(root=self, font=self._font).measure(self._text)
         except Exception:
             text_w = 8 * len(self._text)
-        w = text_w + 10 + self._box
-        h = c.winfo_height() or self._box + 8
+        w = text_w + self._pad + self._box
+        h = c.winfo_height() or self._box + 8 * self._s
         try:
             c.configure(width=max(w, c.winfo_width()))
         except Exception:
@@ -1002,7 +1046,7 @@ class LiteCheckbutton(tk.Frame):
         disabled = self._state == "disabled"
 
         c.create_text(
-            x1 - b - 10,
+            x1 - b - self._pad,
             h // 2,
             text=self._text,
             anchor="e",
@@ -1027,7 +1071,7 @@ class LiteCheckbutton(tk.Frame):
                 x1 - b // 2,
                 y0 + b - m,
                 fill="#ffffff",
-                width=2,
+                width=max(1, round(2 * self._s)),
                 capstyle=tk.ROUND,
             )
             c.create_line(
@@ -1036,7 +1080,7 @@ class LiteCheckbutton(tk.Frame):
                 x1 - m,
                 y0 + m,
                 fill="#ffffff",
-                width=2,
+                width=max(1, round(2 * self._s)),
                 capstyle=tk.ROUND,
             )
         else:
@@ -1052,7 +1096,7 @@ class LiteCheckbutton(tk.Frame):
                 max(3, b // 5),
                 fill="#3a3a3a" if not disabled else "#333333",
                 outline=border,
-                width=2,
+                width=max(1, round(2 * self._s)),
             )
 
 
@@ -1082,6 +1126,12 @@ class LiteButton(ctk.CTkFrame):
         self._corner_radius = max(3, int(corner_radius))
         self._hovered = False
         self._pressed = False
+        self._s = ui_px_scale(self)
+        # Width is a minimum, not a cap: the label font is rendered by Xft
+        # at the display factor while the canvas width comes from CTk's
+        # scaling, and "Segoe UI" substitutes to wider faces on Linux.
+        self._base_width = width
+        self._fit_guard = False
 
         self.grid_propagate(False)
         self.pack_propagate(False)
@@ -1194,6 +1244,28 @@ class LiteButton(ctk.CTkFrame):
         c = self._canvas
         w = max(1, c.winfo_width())
         h = max(1, c.winfo_height())
+        if self._s > 1.0 and not self._fit_guard:
+            # Grow the frame when the rendered label would not fit. The
+            # canvas clips its text at the widget edge, so a fixed logical
+            # width tuned on Windows cannot be trusted with the substituted
+            # Linux face at a different DPI.
+            try:
+                text_w = tk_font.Font(
+                    root=self, family="Segoe UI", size=10, weight="bold"
+                ).measure(self._text)
+                need = max(
+                    self._base_width,
+                    round((text_w + 24 * self._s) / self._s),
+                )
+                if need > self._base_width and need > w / self._s:
+                    self._fit_guard = True
+                    try:
+                        self._base_width = need
+                        super().configure(width=need)
+                    finally:
+                        self._fit_guard = False
+            except Exception:
+                pass
         c.delete("all")
         r = min(self._corner_radius, h // 2)
 

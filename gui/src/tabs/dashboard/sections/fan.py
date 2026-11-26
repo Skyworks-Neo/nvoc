@@ -13,6 +13,7 @@ from typing import Callable, Optional, Protocol, Sequence
 import customtkinter as ctk
 
 from src.backend.base import FanSettings, GuiBackend
+from src.ui_scale import ui_px_scale
 from src.widgets.lightweight_controls import (
     ct_button_font,
     LiteButton,
@@ -198,9 +199,23 @@ class FanLevelSelector(tk.Frame):
         self._value = 60
         self._syncing = False
         self._active = True
+        # Raw-tk canvas geometry is not CTk-scaled; keep it in step with
+        # the Xft-rendered point labels.
+        self._s = ui_px_scale(self)
+        self._track_y = round(self._TRACK_Y * self._s)
+        self._node_r = round(self._NODE_R * self._s)
+        self._handle_r = round(self._HANDLE_R * self._s)
+        self._pad_x = round(self._PAD_X * self._s)
+        self._label_dy = round(22 * self._s)
+        self._track_w = round(4 * self._s)
 
         self._canvas = tk.Canvas(
-            self, width=1, height=48, highlightthickness=0, bd=0, bg=bg
+            self,
+            width=1,
+            height=round(48 * self._s),
+            highlightthickness=0,
+            bd=0,
+            bg=bg,
         )
         self._canvas.pack(fill="both", expand=True)
         self._canvas.bind("<Button-1>", self._on_click)
@@ -214,8 +229,8 @@ class FanLevelSelector(tk.Frame):
     # ── geometry helpers ──────────────────────────────────────────────
     def _track(self):
         w = max(1, self._canvas.winfo_width())
-        x0 = self._PAD_X
-        x1 = max(x0 + 1, w - self._PAD_X)
+        x0 = self._pad_x
+        x1 = max(x0 + 1, w - self._pad_x)
         return x0, x1
 
     def _value_to_x(self, value: float) -> float:
@@ -314,27 +329,27 @@ class FanLevelSelector(tk.Frame):
 
         c.create_line(
             x0,
-            self._TRACK_Y,
+            self._track_y,
             x1,
-            self._TRACK_Y,
+            self._track_y,
             fill="#3a3a3a",
-            width=4,
+            width=self._track_w,
             capstyle=tk.ROUND,
         )
 
         for node, color in zip(self._NODES, self._NODE_COLORS):
             nx = self._value_to_x(node)
             c.create_oval(
-                nx - self._NODE_R,
-                self._TRACK_Y - self._NODE_R,
-                nx + self._NODE_R,
-                self._TRACK_Y + self._NODE_R,
+                nx - self._node_r,
+                self._track_y - self._node_r,
+                nx + self._node_r,
+                self._track_y + self._node_r,
                 fill=color,
                 outline="",
             )
             c.create_text(
                 nx,
-                self._TRACK_Y + 22,
+                self._track_y + self._label_dy,
                 text=str(node),
                 fill="#7e8da1",
                 font=("Segoe UI", 8, "bold"),
@@ -345,13 +360,13 @@ class FanLevelSelector(tk.Frame):
         if self._active:
             hx = self._value_to_x(self._value)
             c.create_oval(
-                hx - self._HANDLE_R,
-                self._TRACK_Y - self._HANDLE_R,
-                hx + self._HANDLE_R,
-                self._TRACK_Y + self._HANDLE_R,
+                hx - self._handle_r,
+                self._track_y - self._handle_r,
+                hx + self._handle_r,
+                self._track_y + self._handle_r,
                 fill="#f5f7fb",
                 outline="#59b0ff",
-                width=2,
+                width=max(1, round(2 * self._s)),
             )
 
 

@@ -8,6 +8,12 @@ single source of truth is `[workspace.package].version` in the root
 
 ## [Unreleased]
 
+### Fixed
+
+- gui: Linux HiDPI scaling now derives its factor from the `Xft.dpi` X
+  resource and applies it to CustomTkinter, Tk, raw-tk canvas geometry, and
+  matplotlib chart DPI; Windows behavior is unchanged.
+
 ## [0.3.1-alpha.1] — 2026-10-25
 
 ### Added
