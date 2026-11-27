@@ -16,6 +16,7 @@
 pub mod audit;
 pub mod auth;
 pub mod backend;
+pub mod build_info;
 pub mod config;
 pub mod controller;
 pub mod history;

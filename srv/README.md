@@ -210,6 +210,7 @@ unchanged from the legacy service).
 |---|---|
 | `GET /status` | top-level `mode`/`interval_ms`/`target_c`; per-GPU temps (core/hotspot/memory/board, 1/256 °C via ThermChannel where populated), written & measured fan duty, `cap_mhz`/`core_clock_mhz` on frequency loops, last PID decomposition — term values `p/i/d` **plus the effective gains `kp/ki/kd`** and the (possibly learned) `base_percent`; null when the PID did not run this tick; zone/failsafe state |
 | `GET /config` | effective runtime configuration |
+| `GET /version` | build identity: `{"version":"...","git_hash":"..."}` (commit the binary was built from) |
 | `POST /pid?target_c=&target=&kp=&ki=&kd=&base_percent=&min_percent=&max_percent=&emergency_delta_c=&idle_delta_c=&temp_guard_c=&min_mhz=&max_mhz=&write_deadband_percent=&adaptive_base=&interval_ms=&sensor=` | partial update of the **active loop's** parameters (`[pid]` for `fan_temp`, `[freq]` for the frequency loops), validated atomically, live |
 | `POST /mode?value=auto\|pid\|manual` | switch control mode (`auto` hands fans back to the driver) |
 | `POST /loop?value=fan_temp\|freq_temp\|freq_power` | switch the active control loop (restores the old actuator, hands over in the same tick) |
@@ -327,7 +328,37 @@ net start nvoc_service
 standalone `failure-actions` subcommand re-applies them on demand.)
 
 Logs: `%PROGRAMDATA%\nvoc\logs\nvoc-srv.log` (100 MB × 2 rotation; stdout/stderr
-are redirected there in service mode).
+are redirected there in service mode). The first line of each start is the
+build identity: `nvoc_service <version> (<git hash>) starting`; the same two
+values are served by `GET /version`.
+
+#### Scripted deploy
+
+`srv/deploy.ps1` automates the cycle — build (release) → stop → install/start
+→ health check. By default it registers **from the build output directory**;
+pass `-InstallDir X` to stage the binaries into a stable out-of-repo directory
+and register from there instead (a registration pointing into the build output
+dangles when that tree is cleaned/moved). `-SkipBuild` reuses existing release
+binaries; `-NoStart` leaves the service stopped.
+
+```powershell
+# elevated PowerShell
+cd srv
+.\deploy.ps1                 # default: register from the build output dir
+.\deploy.ps1 -InstallDir X   # stage into X and register from there
+```
+
+`srv/verify_deploy.ps1` is a standalone post-deploy acceptance check (no
+elevation needed): it auto-detects the live registration (the registered
+binary must exist and sit outside the repo), asserts `GET /version` and the
+startup log agree on the build identity, checks the `/config` shape and the
+CSRF/range guards on the mutation routes, and performs one reversible PID
+setpoint write. It exits non-zero on any FAIL.
+
+```powershell
+.\verify_deploy.ps1                          # verify the live install
+.\verify_deploy.ps1 -ExpectedGitHash <hash>  # also hard-assert the embedded hash
+```
 
 ### Linux (systemd)
 

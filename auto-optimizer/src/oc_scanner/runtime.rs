@@ -55,7 +55,7 @@ where
             }
             Err(e) => {
                 eprintln!("{} failed: {:?}", label, e);
-                let s_lower = format!("{:?}", &e).to_lowercase();
+                let s_lower = format!("{:?}", e).to_lowercase();
                 last_err = Some(e);
 
                 if s_lower.contains("gpunotpowered") {

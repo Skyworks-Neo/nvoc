@@ -60,6 +60,14 @@ fn service_main(_arguments: Vec<OsString>) {
     };
     crate::logging::redirect_stdio_to(&log_path);
 
+    // Build identity first, before anything that can fail, so a deployed
+    // service is always attributable to a commit (see `verify_deploy.ps1`).
+    info!(
+        "nvoc_service {} ({}) starting",
+        crate::build_info::BUILD_VERSION,
+        crate::build_info::BUILD_GIT_HASH
+    );
+
     let config = match crate::config::load_file(&crate::config::default_config_path()) {
         Ok(c) => c,
         Err(e) => {
