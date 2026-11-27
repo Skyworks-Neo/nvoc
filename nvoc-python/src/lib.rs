@@ -766,19 +766,9 @@ fn normalize_info(target: &GpuTarget<'_>) -> PyResultValue {
 
 fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     let status = run(target, QueryGpuStatus).map_err(to_py_err)?.output;
-    // NOTE on NVML: this function is the GUI/TUI 1Hz dashboard poll and must
-    // NOT call any NVML device-level query (`power_usage`,
-    // `enforced_power_limit`, `pcie_throughput`, ...). Those segfault inside
-    // nvml.dll on a stale device handle during dGPU power-state transitions
-    // (D3cold↔D0), and NVAPI recovers BEFORE NVML's handle state in that window
-    // — so there is no pre-call liveness proof that makes NVML safe. The only
-    // previously-live NVML reads were `power_usage`, `enforced_power_limit`, and
-    // the PCIe block; all three are now either replaced by NVAPI
-    // (`power_w` ← NVAPI PowerMonitor Board rail) or served from the
-    // process-level `POWER_LIMIT_CACHE` (filled by the info path). NVAPI
-    // returns clean error codes on a lost dGPU (no deref), so the NVAPI reads
-    // below are all segfault-safe — they simply yield nothing and the dashboard
-    // shows `---`.
+    // The Windows dashboard poll must avoid NVML device-level queries:
+    // nvml.dll can crash on a stale handle during dGPU power transitions.
+    // Use NVAPI for board power there. Linux NVML backfills are below.
     let mut map = Map::new();
     map.insert("gpu_id".into(), u64_value(target.id.0 as u64));
     map.insert("gpu_id_hex".into(), text(format!("0x{:04X}", target.id.0)));
@@ -965,28 +955,8 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             }
         }
     }
-    // Live board power draw (watts). PREFER the NVAPI PowerMonitor "Board"
-    // rail (InputTotalBoard, pwr_rail 245/223) over NVML's
-    // `nvmlDeviceGetPowerUsage`:
-    //
-    //   - SAME semantic (total board power draw ≈ nvidia-smi's power_usage).
-    //   - NVAPI returns a clean NvAPI_Status error when the dGPU is
-    //     D3cold/GCOFF; NVML's `nvmlDeviceGetPowerUsage` segfaults inside
-    //     nvml.dll on the stale handle (verified: INVALID_POINTER_READ at
-    //     nvmlDeviceGetPowerUsage+0x268, killing NVOC-GUI when the user
-    //     switches to 核显模式 / powers the dGPU off). The NVML call is a
-    //     native segfault — uncatchable by `panic="abort"` or any try/except,
-    //     so it MUST be prevented, not caught.
-    //   - Zero extra cost: `status.power_rails` is already populated by
-    //     `Gpu::status()` above (the NVAPI PowerMonitor sweep). No new NVAPI
-    //     call, no dGPU wake — the dashboard's 1Hz poll does NOT wake the GPU.
-    //
-    // NVML's `nvmlDeviceGetPowerUsage` is intentionally NOT used as a fallback.
-    // It segfaults inside nvml.dll on a stale handle during dGPU transitions
-    // (verified: `nvmlDeviceGetPowerUsage+0x268`), and NVAPI recovers before
-    // NVML in that window so no pre-call check can make it safe. If neither
-    // NVAPI path yields a reading, `power_w` is simply omitted (`---`).
-    let mut power_w_set = false;
+    // Prefer the NVAPI board-total rails. The legacy power-topology map
+    // stores percentages, so its values cannot backfill board watts.
     if let Some(rails) = &status.power_rails {
         // InputTotalBoard (245) / InputTotalBoard2 (223) = total board power,
         // the GPU-Z "Board Power" equivalent of NVML power_usage. Prefer 245
@@ -997,16 +967,7 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
             .or_else(|| rails.iter().find(|r| r.pwr_rail == 223 && r.pwr_mw > 0));
         if let Some(r) = board {
             map.insert("power_w".into(), f64_value(r.pwr_mw as f64 / 1000.0));
-            power_w_set = true;
         }
-    }
-    if !power_w_set
-        && let Some((_channel, power)) = status.power.iter().next()
-        && let Some(watts) = first_number_in_display(power)
-    {
-        // Legacy NVAPI power-topology fallback (dimensionless % on some GPUs,
-        // but real watts where present). Does not touch NVML.
-        map.insert("power_w".into(), f64_value(watts));
     }
     // Current enforced power limit (the live TGP cap, watts). NVML-only
     // (`nvmlDeviceGetEnforcedPowerLimit`, same "Current Power Limit" nvidia-smi
@@ -1146,16 +1107,18 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
         map.insert("pcie_lanes".into(), u64_value(lanes as u64));
     }
 
-    // Linux-only poll-time NVML backfill (RTX PRO 6000 Blackwell, 2026-10-11):
-    // the Windows ban above is an nvml.dll D3cold stale-handle failure mode;
-    // Linux server drivers have no such transition path (live-verified by the
-    // audit's NVML sweep, reverse/linux-580.173.02/probe/nvml-sweep2.txt).
-    // Fills the two dashboard rows the Linux shim leaves empty:
-    // - VRAM: NVAPI GetMemoryInfo unimplemented (get-status "Memory: N/A")
-    // - PCIe link gen + replay counter: GpuStatus carries lanes only
+    // Linux-only NVML backfill. Windows keeps the poll-time nvml.dll
+    // restriction above. Some Linux mobile GPUs expose the NVAPI board
+    // rail descriptor without a reading, while NVML reports board watts.
+    // The other backfills cover memory and PCIe fields omitted by the shim.
     #[cfg(target_os = "linux")]
     {
         if let Ok(nvml) = target.nvml() {
+            if !map.contains_key("power_w")
+                && let Some(watts) = nvoc_core::nvml::query_nvml_power_draw_watts(nvml, target.id.0)
+            {
+                map.insert("power_w".into(), f64_value(f64::from(watts)));
+            }
             if status.memory.is_none()
                 && let Some((used_kib, total_kib, free_kib)) =
                     nvoc_core::nvml::query_nvml_memory_kib(nvml, target.id.0)

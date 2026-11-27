@@ -8,6 +8,11 @@ single source of truth is `[workspace.package].version` in the root
 
 ## [Unreleased]
 
+### Fixed
+
+- pynvoc: backfill missing Linux dashboard board power from NVML so GUI
+  and TUI can display watts when the NVAPI board rail has no reading.
+
 ## [0.3.1-alpha.1] — 2026-10-25
 
 ### Added
