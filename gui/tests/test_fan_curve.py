@@ -4,6 +4,7 @@ the NativeBackend activate path (editor state → driver write)."""
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 from src.backend.base import FanSettings
@@ -12,6 +13,7 @@ from src.tabs.dashboard.sections.fan import FanControlController
 from src.widgets.fan_curve_editor import (
     FanCurveEditor,
     clamp_curve_points,
+    figure_dpi,
     percent_to_rpm,
     rpm_to_percent,
 )
@@ -307,3 +309,36 @@ def test_activate_fan_curve_without_table_reports_unreadable() -> None:
 
     assert app.native.set_calls == []
     assert "unreadable" in (app.outputs[-1] or "")
+
+
+class _ScaleApp:
+    """App stand-in exposing only the DPI hooks ``figure_dpi`` reads."""
+
+    def __init__(self, scale: float, ratio: float) -> None:
+        self._scale = scale
+        self._ratio = ratio
+
+    def _effective_ui_scale(self) -> float:
+        return self._scale
+
+    def _matplotlib_dpi_ratio(self) -> float:
+        return self._ratio
+
+
+def test_figure_dpi_windows_keeps_fixed_96(monkeypatch) -> None:
+    """Regression: the Linux Xft formula must not leak onto Windows, where
+    matplotlib already applies Tk's DPI ratio and the chart layout is
+    verified at the fixed 96-dpi figure."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert figure_dpi(_ScaleApp(2.0, 2.0)) == 96
+
+
+def test_figure_dpi_linux_compensates_backend_ratio(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert figure_dpi(_ScaleApp(2.0, 2.0)) == 100
+    assert figure_dpi(_ScaleApp(1.5, 1.5)) == 100
+
+
+def test_figure_dpi_linux_falls_back_when_scale_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert figure_dpi(object()) == 96

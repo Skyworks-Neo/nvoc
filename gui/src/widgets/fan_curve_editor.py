@@ -17,6 +17,7 @@ policy=curve activates whatever slot/points this editor currently holds.
 
 from __future__ import annotations
 
+import sys
 from typing import List, Optional, Tuple
 
 import customtkinter as ctk
@@ -85,6 +86,28 @@ def clamp_curve_points(
         repaired.append((t, r))
         prev_t, prev_r = t, r
     return repaired
+
+
+def figure_dpi(app) -> int:
+    """Figure dpi for the curve chart (96 keeps the pre-Linux-DPI layout).
+
+    On Linux the Xft factor must be baked into the figure dpi so chart text
+    tracks the CTk/Tk-scaled UI. Matplotlib's TkAgg applies its own device
+    pixel ratio on top of the constructor dpi (``winfo_fpixels('1i') / 96``
+    on Linux), so divide by it to keep the effective dpi at ``100 * scale``
+    instead of doubling. Windows already has the backend applying Tk's DPI
+    ratio and its surrounding layout is unchanged, so it keeps the fixed
+    96-dpi figure; applying the Linux formula there would enlarge the chart
+    by the floor multiplier (1.25x at 100% scaling, more at 125%+).
+    """
+    if not sys.platform.startswith("linux"):
+        return 96
+    try:
+        scale = float(app._effective_ui_scale())
+        ratio = max(1.0, float(app._matplotlib_dpi_ratio()))
+        return max(48, round(100 * scale / ratio))
+    except Exception:
+        return 96
 
 
 class FanCurveEditor(ctk.CTkFrame):
@@ -194,18 +217,11 @@ class FanCurveEditor(ctk.CTkFrame):
         from matplotlib.figure import Figure
 
         # Matplotlib is unaware of the Xft DPI that renders the rest of the
-        # UI: bake the same effective scale into the figure DPI so chart
-        # text stays the same physical size as the surrounding labels.
-        # Division by the backend's own device-pixel-ratio keeps the
-        # effective dpi at 100*scale instead of doubling it on X11.
-        fig_dpi = 96
-        try:
-            scale = self.app._effective_ui_scale()
-            ratio = max(1.0, float(self.app._matplotlib_dpi_ratio()))
-            fig_dpi = max(48, round(100 * scale / ratio))
-        except Exception:
-            pass
-        self.fig = Figure(figsize=(5.2, 2.4), dpi=fig_dpi)
+        # UI: on Linux, bake the same effective scale into the figure DPI so
+        # chart text stays the same physical size as the surrounding labels.
+        # ``figure_dpi`` divides by the backend's own device-pixel-ratio
+        # there, and leaves Windows on its established 96-dpi figure.
+        self.fig = Figure(figsize=(5.2, 2.4), dpi=figure_dpi(self.app))
         self.fig.patch.set_facecolor(_CHART_BG)
         self.ax = self.fig.add_subplot(111)
         self.ax2 = self.ax.twinx()
