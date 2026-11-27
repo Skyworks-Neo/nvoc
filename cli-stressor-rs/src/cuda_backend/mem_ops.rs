@@ -36,6 +36,10 @@ impl CudaBackend {
             PrecisionKind::FP32 | PrecisionKind::TF32 => 4usize,
             PrecisionKind::FP64 => 8usize,
             PrecisionKind::FP8E4M3FN => 1usize,
+            // FP4/INT4 are cublasLt GEMM-only modes (kernel_precision_compatible
+            // soft-skips them for mem_ops); the 1-byte spelling is only for
+            // match exhaustiveness.
+            PrecisionKind::FP4E2M1 | PrecisionKind::INT4 => 1usize,
             PrecisionKind::INT8 => 1usize,
             PrecisionKind::INT16 => 2usize,
             PrecisionKind::INT32 => 4usize,
@@ -190,6 +194,10 @@ impl CudaBackend {
             PrecisionKind::FP32 | PrecisionKind::TF32 => 4usize,
             PrecisionKind::FP64 => 8usize,
             PrecisionKind::FP8E4M3FN => 1usize,
+            // FP4/INT4 are cublasLt GEMM-only modes (kernel_precision_compatible
+            // soft-skips them for mem_ops); the 1-byte spelling is only for
+            // match exhaustiveness.
+            PrecisionKind::FP4E2M1 | PrecisionKind::INT4 => 1usize,
             PrecisionKind::INT8 => 1usize,
             PrecisionKind::INT16 => 2usize,
             PrecisionKind::INT32 => 4usize,

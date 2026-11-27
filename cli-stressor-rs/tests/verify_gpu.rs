@@ -284,7 +284,8 @@ fn sampled_check_identity_diagnostic() {
     // Case 1: recompute I*B = B against c = B.
     let s1: SampleStats = engine
         .debug_sample_check(
-            &stream, &ident_dev, &b_dev, &b_dev, n, false, false, 0, &samples, 0.01, 0.01,
+            &stream, &ident_dev, &b_dev, &b_dev, n, false, false, 0, 0, None, None, 0, &samples,
+            0.01, 0.01,
         )
         .unwrap();
     println!(
@@ -295,7 +296,8 @@ fn sampled_check_identity_diagnostic() {
     // Case 2: recompute B*I = B against c = B.
     let s2: SampleStats = engine
         .debug_sample_check(
-            &stream, &b_dev, &ident_dev, &b_dev, n, false, false, 0, &samples, 0.01, 0.01,
+            &stream, &b_dev, &ident_dev, &b_dev, n, false, false, 0, 0, None, None, 0, &samples,
+            0.01, 0.01,
         )
         .unwrap();
     println!(
@@ -342,7 +344,8 @@ fn sampled_check_random_full_gemmc_check() {
 
     engine
         .gemm_check(
-            &stream, &a_dev, &b_dev, &c_dev, n, false, false, 0, &samples, 0.01, 0.01,
+            &stream, &a_dev, &b_dev, &c_dev, n, false, false, 0, 0, None, None, 0, &samples, 0.01,
+            0.01,
         )
         .unwrap();
     let full = "ran";
@@ -351,7 +354,8 @@ fn sampled_check_random_full_gemmc_check() {
     println!("drained_detail={}", drained);
     let sample: SampleStats = engine
         .debug_sample_check(
-            &stream, &a_dev, &b_dev, &c_dev, n, false, false, 0, &samples, 0.01, 0.01,
+            &stream, &a_dev, &b_dev, &c_dev, n, false, false, 0, 0, None, None, 0, &samples, 0.01,
+            0.01,
         )
         .unwrap();
     println!(

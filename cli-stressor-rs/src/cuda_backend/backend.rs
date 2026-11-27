@@ -1,6 +1,7 @@
 //! [`CudaBackend`] definition, constructor, and the [`Backend`] trait impl that
 //! dispatches to the per-workload submodules (`gemm`, `mem_ops`, `atomic`, …).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys as cublas_sys};
@@ -16,6 +17,7 @@ use cli_stressor_rs::{
 use super::atomic::build_atomic_kernel;
 use super::device::query_device_info_for_index;
 use super::gemm::GemmPathConfig;
+use super::gemm_lt::{LtLane, LtOptions, LtShapeKey};
 use super::verify_kernels::VerifyEngine;
 
 #[cfg(feature = "vulkan")]
@@ -36,6 +38,19 @@ pub struct CudaBackend {
     pub(super) aux_streams: Vec<Arc<CudaStream>>,
     pub(super) blas: CudaBlas,
     pub(super) aux_blas: Vec<CudaBlas>,
+    /// cublasLt lanes (one per stream): descriptor cache + heuristic lists
+    /// for the FP16/BF16/FP8/FP4/INT8/INT4 GEMM stress paths.
+    pub(super) lt: LtLane,
+    pub(super) aux_lt: Vec<LtLane>,
+    /// Shapes already covered by a first-encounter `[GEMM-LT]` algo report.
+    pub(super) lt_reported: HashSet<LtShapeKey>,
+    /// First-encounter algo report lines (consumed by the verdict JSON).
+    pub(super) gemm_algo_reports: Vec<String>,
+    /// `--gemm-legacy-cublas`: route FP16/BF16/INT8 GEMM stress through the
+    /// classic cublas path instead of cublasLt (A/B comparability).
+    pub(super) gemm_legacy_cublas: bool,
+    /// `--fp8-fast-accum`: FP8 GEMM uses CUBLASLT_MATMUL_DESC_FAST_ACCUM.
+    pub(super) fp8_fast_accum: bool,
     pub(super) _atomic_module: Option<Arc<CudaModule>>,
     pub(super) atomic_fn: Option<CudaFunction>,
     pub(super) _intalu_module: Option<Arc<CudaModule>>,
@@ -168,6 +183,15 @@ impl CudaBackend {
         };
         // INT ALU kernel is arch-targeted (needs DeviceInfo), so query SM first.
         let info = query_device_info_for_index(gpu_index)?;
+        // cublasLt lanes (one per stream) for the FP16/BF16/FP8/FP4/INT8/INT4
+        // GEMM stress paths; options arrive post-construction via
+        // [`Self::configure_gemm_lt`].
+        let lt_sm_major = info.compute_capability.map_or(0, |(major, _)| major);
+        let lt = LtLane::new(&stream, lt_sm_major, LtOptions::default())?;
+        let aux_lt = vec![
+            LtLane::new(&stream2, lt_sm_major, LtOptions::default())?,
+            LtLane::new(&stream3, lt_sm_major, LtOptions::default())?,
+        ];
         let (intalu_module, intalu_fn) = match super::int_alu::build_intalu_kernel(&ctx, &info) {
             Ok((module, func)) => (Some(module), Some(func)),
             Err(err) => {
@@ -222,6 +246,12 @@ impl CudaBackend {
             aux_streams: vec![stream2, stream3],
             blas,
             aux_blas: vec![blas2, blas3],
+            lt,
+            aux_lt,
+            lt_reported: HashSet::new(),
+            gemm_algo_reports: Vec::new(),
+            gemm_legacy_cublas: false,
+            fp8_fast_accum: false,
             _atomic_module: atomic_module,
             atomic_fn,
             _intalu_module: intalu_module,
@@ -233,6 +263,33 @@ impl CudaBackend {
             gpu_fill: None,
             info,
         })
+    }
+
+    /// Configure the cublasLt GEMM lane behavior (CLI wiring; defaults keep
+    /// every path on the Lt lane with the library's top heuristic pick).
+    pub fn configure_gemm_lt(
+        &mut self,
+        heuristic_count: usize,
+        algo_index: Option<usize>,
+        listing: bool,
+        legacy_cublas: bool,
+        fp8_fast_accum: bool,
+    ) {
+        for lane in std::iter::once(&mut self.lt).chain(self.aux_lt.iter_mut()) {
+            lane.set_options(LtOptions {
+                heuristic_count,
+                algo_index,
+                listing,
+            });
+        }
+        self.gemm_legacy_cublas = legacy_cublas;
+        self.fp8_fast_accum = fp8_fast_accum;
+    }
+
+    /// Consume the accumulated `[GEMM-LT]` first-encounter algo report lines
+    /// (verdict JSON side channel; also printed live as they happen).
+    pub fn take_gemm_algo_reports(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.gemm_algo_reports)
     }
 
     /// Opt-in the address-walk slab (lazy allocation; --verify-slab). The
@@ -382,6 +439,11 @@ impl Backend for CudaBackend {
                 })
             }
             PrecisionKind::FP8E4M3FN => Err(BackendError::Other(
+                "precision not supported in CUDA backend".to_string(),
+            )),
+            // FP4/INT4 are cublasLt GEMM-only modes with packed half-byte
+            // operands — no FP upload path (has_fp_upload_path excludes them).
+            PrecisionKind::FP4E2M1 | PrecisionKind::INT4 => Err(BackendError::Other(
                 "precision not supported in CUDA backend".to_string(),
             )),
             // INT precisions are exercised through the dedicated `gemm` (INT8)
@@ -678,12 +740,13 @@ impl Backend for CudaBackend {
             .unwrap_or((0, 0))
     }
 
-    fn validate_int8_exact(
+    fn validate_int_exact(
         &mut self,
+        kind: PrecisionKind,
         size: usize,
         seed: u64,
     ) -> Result<(bool, Option<String>), BackendError> {
-        self.validate_int8_exact_impl(size, seed)
+        self.validate_int_exact_impl(kind, size, seed)
     }
 }
 

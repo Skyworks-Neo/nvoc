@@ -10,11 +10,16 @@ use half::{bf16, f16};
 
 use cli_stressor_rs::{
     BackendError, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig, choose_tolerance,
-    cpu_reference_int8, make_random_host_matrix,
+    cpu_reference_int_tn, cpu_reference_int4_tn, int4_pack, make_random_host_matrix,
 };
+// FP8/FP4 operand codecs are cuda12-only (cuda-11040 has no FP8/FP4 datatype
+// bindings and those stress arms are cfg-excluded).
+#[cfg(not(feature = "cuda11"))]
+use cli_stressor_rs::{Fp4ScaleMode, fp4_quantize_matrix, fp8_e4m3_quantize};
 use cudarc::driver::ValidAsZeroBits;
 
 use super::backend::CudaBackend;
+use super::gemm_lt::{LtDtype, LtShapeKey};
 
 pub(super) struct GemmPathConfig<'a> {
     pub spec: &'a PrecisionSpec,
@@ -25,6 +30,14 @@ pub(super) struct GemmPathConfig<'a> {
     pub seed: u64,
     pub stream_mode: StreamMode,
     pub verify: VerifyConfig,
+}
+
+/// Per-lane operand bundle for one Lt GEMM op (host data + FP4 block scales).
+struct LtOpData<AB> {
+    a: Vec<AB>,
+    b: Vec<AB>,
+    scale_a: Vec<u8>,
+    scale_b: Vec<u8>,
 }
 
 /// Tolerance for the sampled cross-check, scaled for the accumulation length:
@@ -39,24 +52,30 @@ fn sample_tolerance(spec: &PrecisionSpec, size: usize) -> (f32, f32) {
 impl CudaBackend {
     /// Ride-on-load verification for one finished GEMM burst: a full scan of
     /// the C buffers (non-finite / zero / |C| sum) plus sampled dot-product
-    /// cross-checks recomputed from the same A/B the GEMM consumed.
+    /// cross-checks recomputed from the same A/B the GEMM consumed. `AB` is
+    /// the operand element type, `CT` the C output element type (they differ
+    /// for the cublasLt FP8/FP4 paths: u8 operands, f16 outputs).
     #[allow(clippy::too_many_arguments)]
-    fn run_gemm_verify<T: DeviceRepr + ValidAsZeroBits>(
+    fn run_gemm_verify<AB: DeviceRepr + ValidAsZeroBits, CT: DeviceRepr + ValidAsZeroBits>(
         &mut self,
         spec: &PrecisionSpec,
-        a_devs: &[cudarc::driver::CudaSlice<T>],
-        b_devs: &[cudarc::driver::CudaSlice<T>],
-        c_devs: &[cudarc::driver::CudaSlice<T>],
+        a_devs: &[cudarc::driver::CudaSlice<AB>],
+        b_devs: &[cudarc::driver::CudaSlice<AB>],
+        c_devs: &[cudarc::driver::CudaSlice<CT>],
         size: usize,
         ta: bool,
         tb: bool,
         tc: u32,
+        ab_code: u32,
+        scale_a: Option<&[cudarc::driver::CudaSlice<u8>]>,
+        scale_b: Option<&[cudarc::driver::CudaSlice<u8>]>,
         seed: u64,
         verify: VerifyConfig,
     ) -> Result<(), BackendError> {
         if self.verify.is_none() || !verify.enabled || !verify.due(verify.gemm_every, seed) {
             return Ok(());
         }
+        let scale_cols = size as u32;
         let streams: Vec<_> = (0..a_devs.len())
             .map(|l| self.stream_for_lane(l).clone())
             .collect();
@@ -76,6 +95,10 @@ impl CudaBackend {
                     ta,
                     tb,
                     tc,
+                    ab_code,
+                    scale_a.map(|s| &s[lane]),
+                    scale_b.map(|s| &s[lane]),
+                    scale_cols,
                     atol_f,
                     rtol_f,
                 )?;
@@ -100,10 +123,334 @@ impl CudaBackend {
                 ta,
                 tb,
                 tc,
+                ab_code,
+                scale_a.map(|s| &s[lane]),
+                scale_b.map(|s| &s[lane]),
+                scale_cols,
                 &samples,
                 atol,
                 rtol,
             )?;
+        }
+        Ok(())
+    }
+}
+
+impl CudaBackend {
+    /// Shared cublasLt GEMM stress runner: per-lane buffer prep via the
+    /// dtype-specific `prep` closure, plan build with the first-encounter
+    /// `[GEMM-LT]` algo report (candidate timing under `--gemm-algo-list`),
+    /// warmup/burst loops, and the ride-on-load verify. `tc_code`/`ab_code`
+    /// are the verify kernels' C/operand type codes.
+    #[allow(clippy::too_many_arguments)]
+    fn run_gemm_path_lt<AB, CT, Prep>(
+        &mut self,
+        dtype: LtDtype,
+        spec: &PrecisionSpec,
+        size: usize,
+        ta: bool,
+        tb: bool,
+        fast_accum: bool,
+        warmup_iters: u32,
+        burst_iters: u32,
+        stream_mode: StreamMode,
+        seed: u64,
+        rng: &mut StdRng,
+        verify: VerifyConfig,
+        verify_operands: bool,
+        tc_code: u32,
+        ab_code: u32,
+        mut prep: Prep,
+    ) -> Result<f64, BackendError>
+    where
+        AB: DeviceRepr + ValidAsZeroBits,
+        CT: DeviceRepr + ValidAsZeroBits,
+        Prep: FnMut(&mut StdRng, usize) -> LtOpData<AB>,
+    {
+        let lane_count = Self::lane_count(stream_mode);
+        let key = LtShapeKey {
+            dtype,
+            size: size as u32,
+            ta,
+            tb,
+            fast_accum,
+        };
+
+        // Per-lane operand buffers (FP4 also carries one scale byte per
+        // 16/32-element block).
+        let mut a_devs = Vec::with_capacity(lane_count);
+        let mut b_devs = Vec::with_capacity(lane_count);
+        let mut c_devs = Vec::with_capacity(lane_count);
+        let mut scale_a_devs: Option<Vec<cudarc::driver::CudaSlice<u8>>> = None;
+        let mut scale_b_devs: Option<Vec<cudarc::driver::CudaSlice<u8>>> = None;
+        for lane in 0..lane_count {
+            let op = prep(rng, size);
+            let stream = self.stream_for_lane(lane);
+            a_devs.push(
+                stream
+                    .clone_htod(&op.a)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+            b_devs.push(
+                stream
+                    .clone_htod(&op.b)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+            c_devs.push(
+                stream
+                    .alloc_zeros::<CT>(size * size)
+                    .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
+            if !op.scale_a.is_empty() {
+                scale_a_devs.get_or_insert_with(Vec::new).push(
+                    stream
+                        .clone_htod(&op.scale_a)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+            if !op.scale_b.is_empty() {
+                scale_b_devs.get_or_insert_with(Vec::new).push(
+                    stream
+                        .clone_htod(&op.scale_b)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+            }
+        }
+
+        // First-encounter plan build + algo report. The heuristic query runs
+        // on lane 0; other lanes build their own (identical) plans lazily at
+        // first launch. Zero candidates prints no report (the Unsupported
+        // error from the first launch carries the diagnosis) — the key is
+        // still marked so the report does not repeat per op.
+        let candidates = self.lt_for_lane_mut(0).heuristic_count(key)?;
+        let selected = self.lt_options().algo_index.unwrap_or(0);
+        if !self.lt_reported.contains(&key) {
+            self.lt_reported.insert(key);
+            if candidates > 0 {
+                let config = self
+                    .lt_for_lane(0)
+                    .algo_config_at(key, selected.min(candidates - 1))
+                    .unwrap_or_else(|| "n/a".to_string());
+                let line = format!(
+                    "[GEMM-LT] {} {}x{} ta={} tb={} | algo #{}/{}: {} ws={:.1}MiB",
+                    dtype.name(),
+                    size,
+                    size,
+                    if ta { "T" } else { "N" },
+                    if tb { "T" } else { "N" },
+                    selected,
+                    candidates,
+                    config,
+                    self.lt_for_lane(0).workspace_mib(),
+                );
+                println!("{}", line);
+                self.gemm_algo_reports
+                    .push(line.trim_start_matches("[GEMM-LT] ").to_string());
+                if self.lt_options().listing && candidates > 1 {
+                    self.list_gemm_lt_candidates(
+                        key,
+                        candidates,
+                        &a_devs[0],
+                        &b_devs[0],
+                        &mut c_devs[0],
+                        scale_a_devs.as_ref().map(|s| &s[0]),
+                        scale_b_devs.as_ref().map(|s| &s[0]),
+                        dtype,
+                    )?;
+                }
+            }
+        }
+
+        // alpha/beta: f32 for the float compute types, i32 for COMPUTE_32I.
+        let alpha_f: f32 = 1.0;
+        let beta_f: f32 = 0.0;
+        let alpha_i: i32 = 1;
+        let beta_i: i32 = 0;
+        let (alpha_ptr, beta_ptr): (*const std::ffi::c_void, *const std::ffi::c_void) = match dtype
+        {
+            LtDtype::Int8 | LtDtype::Int4 => (
+                (&alpha_i as *const i32) as *const _,
+                (&beta_i as *const i32) as *const _,
+            ),
+            _ => (
+                (&alpha_f as *const f32) as *const _,
+                (&beta_f as *const f32) as *const _,
+            ),
+        };
+
+        // One launch on `lane` (device-pointer guards scoped to the launch).
+        let mut launch_lane = |backend: &mut CudaBackend,
+                               lane: usize,
+                               algo_index: usize|
+         -> Result<(), BackendError> {
+            let stream = backend.stream_for_lane(lane).clone();
+            let (a_ptr, _ga) = a_devs[lane].device_ptr(&stream);
+            let (b_ptr, _gb) = b_devs[lane].device_ptr(&stream);
+            let (c_ptr, _gc) = c_devs[lane].device_ptr_mut(&stream);
+            let sa = scale_a_devs.as_ref().map(|s| s[lane].device_ptr(&stream));
+            let sb = scale_b_devs.as_ref().map(|s| s[lane].device_ptr(&stream));
+            backend.lt_for_lane_mut(lane).launch(
+                &stream,
+                key,
+                algo_index,
+                a_ptr as *const _,
+                b_ptr as *const _,
+                c_ptr as *mut _,
+                sa.map(|(p, _)| p as *const _),
+                sb.map(|(p, _)| p as *const _),
+                alpha_ptr,
+                beta_ptr,
+            )
+        };
+
+        for _ in 0..warmup_iters {
+            for lane in 0..lane_count {
+                launch_lane(self, lane, selected)?;
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+        let op_start = Instant::now();
+        for _ in 0..burst_iters {
+            for lane in 0..lane_count {
+                launch_lane(self, lane, selected)?;
+            }
+        }
+        for lane in 0..lane_count {
+            self.stream_for_lane(lane)
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        }
+
+        if verify_operands {
+            self.run_gemm_verify(
+                spec,
+                &a_devs,
+                &b_devs,
+                &c_devs,
+                size,
+                ta,
+                tb,
+                tc_code,
+                ab_code,
+                scale_a_devs.as_deref(),
+                scale_b_devs.as_deref(),
+                seed,
+                verify,
+            )?;
+        }
+        Ok(op_start.elapsed().as_secs_f64())
+    }
+
+    /// `--gemm-algo-list`: time every heuristic candidate for a freshly met
+    /// shape (lane 0, fixed iters each) and print a TFLOPS table — the
+    /// built-in form of the unlocked-ada-gemm "enumerate + time" probe for
+    /// diagnosing suboptimal kernel selection (e.g. the FP16 bimodal 49/63
+    /// TF readings on unlocked cards).
+    #[allow(clippy::too_many_arguments)]
+    fn list_gemm_lt_candidates<AB, CT>(
+        &mut self,
+        key: LtShapeKey,
+        candidates: usize,
+        a: &cudarc::driver::CudaSlice<AB>,
+        b: &cudarc::driver::CudaSlice<AB>,
+        c: &mut cudarc::driver::CudaSlice<CT>,
+        scale_a: Option<&cudarc::driver::CudaSlice<u8>>,
+        scale_b: Option<&cudarc::driver::CudaSlice<u8>>,
+        dtype: LtDtype,
+    ) -> Result<(), BackendError>
+    where
+        AB: DeviceRepr + ValidAsZeroBits,
+        CT: DeviceRepr + ValidAsZeroBits,
+    {
+        const LIST_ITERS: u32 = 3;
+        println!("[GEMM-LT] candidate list (timed, lane 0, {LIST_ITERS} iters each):");
+        let stream = self.stream_for_lane(0).clone();
+        let alpha_f: f32 = 1.0;
+        let beta_f: f32 = 0.0;
+        let alpha_i: i32 = 1;
+        let beta_i: i32 = 0;
+        let (alpha_ptr, beta_ptr): (*const std::ffi::c_void, *const std::ffi::c_void) = match dtype
+        {
+            LtDtype::Int8 | LtDtype::Int4 => (
+                (&alpha_i as *const i32) as *const _,
+                (&beta_i as *const i32) as *const _,
+            ),
+            _ => (
+                (&alpha_f as *const f32) as *const _,
+                (&beta_f as *const f32) as *const _,
+            ),
+        };
+        let (a_ptr, _ga) = a.device_ptr(&stream);
+        let (b_ptr, _gb) = b.device_ptr(&stream);
+        let (c_ptr, _gc) = c.device_ptr_mut(&stream);
+        // Pointers captured once (the SyncOnDrop guards stay alive in `sa`/`sb`
+        // for the whole listing).
+        let sa = scale_a.map(|s| s.device_ptr(&stream));
+        let sb = scale_b.map(|s| s.device_ptr(&stream));
+        let sa_ptr = sa
+            .as_ref()
+            .map_or(std::ptr::null::<std::ffi::c_void>(), |(p, _)| {
+                *p as *const std::ffi::c_void
+            });
+        let sb_ptr = sb
+            .as_ref()
+            .map_or(std::ptr::null::<std::ffi::c_void>(), |(p, _)| {
+                *p as *const std::ffi::c_void
+            });
+        // Only FP4 shapes carry scale pointers; None keeps the descriptor
+        // free of A/B_SCALE_POINTER attributes on the other dtypes.
+        let sa_arg = scale_a.is_some().then_some(sa_ptr);
+        let sb_arg = scale_b.is_some().then_some(sb_ptr);
+        for idx in 0..candidates {
+            // One warmup launch per candidate, then the timed window.
+            self.lt_for_lane_mut(0).launch(
+                &stream,
+                key,
+                idx,
+                a_ptr as *const _,
+                b_ptr as *const _,
+                c_ptr as *mut _,
+                sa_arg,
+                sb_arg,
+                alpha_ptr,
+                beta_ptr,
+            )?;
+            stream
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            let start = Instant::now();
+            for _ in 0..LIST_ITERS {
+                self.lt_for_lane_mut(0).launch(
+                    &stream,
+                    key,
+                    idx,
+                    a_ptr as *const _,
+                    b_ptr as *const _,
+                    c_ptr as *mut _,
+                    sa_arg,
+                    sb_arg,
+                    alpha_ptr,
+                    beta_ptr,
+                )?;
+            }
+            stream
+                .synchronize()
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            let elapsed = start.elapsed().as_secs_f64();
+            let tflops = if elapsed > 0.0 {
+                2.0 * (key.size as f64).powi(3) * LIST_ITERS as f64 / elapsed / 1e12
+            } else {
+                0.0
+            };
+            let config = self
+                .lt_for_lane(0)
+                .algo_config_at(key, idx)
+                .unwrap_or_else(|| "n/a".to_string());
+            println!("[GEMM-LT]   #{idx}: {tflops:8.2} TFLOPS | {config}");
         }
         Ok(())
     }
@@ -141,6 +488,7 @@ impl CudaBackend {
 
         match spec.kind {
             PrecisionKind::BF16 => {
+                if self.gemm_legacy_cublas {
                 let cfg = GemmConfig {
                     transa: op_a,
                     transb: op_b,
@@ -223,12 +571,46 @@ impl CudaBackend {
                     transpose_a,
                     transpose_b,
                     3,
+                    3,
+                    None,
+                    None,
                     seed,
                     verify,
                 )?;
                 Ok(op_start.elapsed().as_secs_f64())
+                } else {
+                // Default cublasLt lane (see the FP16 arm for the rationale).
+                self.run_gemm_path_lt::<bf16, bf16, _>(
+                    LtDtype::Bf16,
+                    spec,
+                    size,
+                    transpose_a,
+                    transpose_b,
+                    false,
+                    warmup_iters,
+                    burst_iters,
+                    stream_mode,
+                    seed,
+                    &mut rng,
+                    verify,
+                    true,
+                    3,
+                    3,
+                    |rng, sz| {
+                        let a_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        LtOpData {
+                            a: a_host.data.iter().map(|v| bf16::from_f32(*v)).collect(),
+                            b: b_host.data.iter().map(|v| bf16::from_f32(*v)).collect(),
+                            scale_a: Vec::new(),
+                            scale_b: Vec::new(),
+                        }
+                    },
+                )
+                }
             }
             PrecisionKind::FP16 => {
+                if self.gemm_legacy_cublas {
                 let cfg = GemmConfig {
                     transa: op_a,
                     transb: op_b,
@@ -307,10 +689,45 @@ impl CudaBackend {
                     transpose_a,
                     transpose_b,
                     2,
+                    2,
+                    None,
+                    None,
                     seed,
                     verify,
                 )?;
                 Ok(op_start.elapsed().as_secs_f64())
+                } else {
+                // Default cublasLt lane: same CUBLAS_COMPUTE_32F/f32-scale
+                // semantics as the classic GemmEx call above, plus the
+                // heuristic candidate report and algo pinning.
+                self.run_gemm_path_lt::<f16, f16, _>(
+                    LtDtype::F16,
+                    spec,
+                    size,
+                    transpose_a,
+                    transpose_b,
+                    false,
+                    warmup_iters,
+                    burst_iters,
+                    stream_mode,
+                    seed,
+                    &mut rng,
+                    verify,
+                    true,
+                    2,
+                    2,
+                    |rng, sz| {
+                        let a_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        LtOpData {
+                            a: a_host.data.iter().map(|v| f16::from_f32(*v)).collect(),
+                            b: b_host.data.iter().map(|v| f16::from_f32(*v)).collect(),
+                            scale_a: Vec::new(),
+                            scale_b: Vec::new(),
+                        }
+                    },
+                )
+                }
             }
             PrecisionKind::FP32 | PrecisionKind::TF32 => {
                 let cfg = GemmConfig {
@@ -389,6 +806,9 @@ impl CudaBackend {
                     transpose_a,
                     transpose_b,
                     0,
+                    0,
+                    None,
+                    None,
                     seed,
                     verify,
                 )?;
@@ -473,12 +893,16 @@ impl CudaBackend {
                     transpose_a,
                     transpose_b,
                     1,
+                    1,
+                    None,
+                    None,
                     seed,
                     verify,
                 )?;
                 Ok(op_start.elapsed().as_secs_f64())
             }
             PrecisionKind::INT8 => {
+                if self.gemm_legacy_cublas {
                 // cuBLAS typed INT8 GEMM: C(i32) = A(i8) * B(i8). With
                 // computeType = CUBLAS_COMPUTE_32I and algo = DEFAULT_TENSOR_OP,
                 // cuBLAS auto-dispatches to the IMMA INT8 tensor cores on
@@ -606,10 +1030,200 @@ impl CudaBackend {
                         .map_err(|err| BackendError::Other(err.to_string()))?;
                 }
                 Ok(op_start.elapsed().as_secs_f64())
+                } else {
+                // Default cublasLt lane: the IMMA tensor-op path is TN-only,
+                // so the transpose flags are forced to T/N. The classic path's
+                // randomized transposes (transpose_prob) mostly fall off the
+                // tensor-core kernels onto the slower DP4A/scalar paths — the
+                // [GEMM-LT] algo report makes the selection visible, and
+                // --gemm-algo-list times the candidates.
+                self.run_gemm_path_lt::<i8, i32, _>(
+                    LtDtype::Int8,
+                    spec,
+                    (size + 15) & !15,
+                    true,
+                    false,
+                    false,
+                    warmup_iters,
+                    burst_iters,
+                    stream_mode,
+                    seed,
+                    &mut rng,
+                    verify,
+                    false, // No ride-on-load sampled check: i32 dot products
+                           // exceed 2^24 and the f32 compare would be
+                           // inexact; the periodic exact sidecar covers INT8.
+                    8,     // C output: i32 (stats scan only, unused here)
+                    0,     // A/B operand code unused (no verify)
+                    |rng, sz| {
+                        let a_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        LtOpData {
+                            a: a_host
+                                .data
+                                .iter()
+                                .map(|v| (*v * 127.0).clamp(-127.0, 127.0) as i8)
+                                .collect(),
+                            b: b_host
+                                .data
+                                .iter()
+                                .map(|v| (*v * 127.0).clamp(-127.0, 127.0) as i8)
+                                .collect(),
+                            scale_a: Vec::new(),
+                            scale_b: Vec::new(),
+                        }
+                    },
+                )
+                }
             }
+            // cublasLt FP8 (E4M3FN): TN layout is mandatory and the leading
+            // dimensions must be 16-byte multiples (mirrors the INT8 size
+            // rounding). FAST_ACCUM is opt-in (--fp8-fast-accum): the default
+            // segmented-accumulation path is precision-safe at any K
+            // (unlocked-ada-gemm measured 10-15% relative error at large K on
+            // the fast path), which matters for the ride-on-load compare.
+            #[cfg(not(feature = "cuda11"))]
+            PrecisionKind::FP8E4M3FN => {
+                let size = (size + 15) & !15;
+                self.run_gemm_path_lt::<u8, f16, _>(
+                    LtDtype::Fp8E4m3,
+                    spec,
+                    size,
+                    true,
+                    false,
+                    self.fp8_fast_accum,
+                    warmup_iters,
+                    burst_iters,
+                    stream_mode,
+                    seed,
+                    &mut rng,
+                    verify,
+                    true,
+                    2, // C output: f16
+                    4, // A/B operand: fp8-e4m3 bytes
+                    |rng, sz| {
+                        let a_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        LtOpData {
+                            a: a_host.data.iter().map(|v| fp8_e4m3_quantize(*v)).collect(),
+                            b: b_host.data.iter().map(|v| fp8_e4m3_quantize(*v)).collect(),
+                            scale_a: Vec::new(),
+                            scale_b: Vec::new(),
+                        }
+                    },
+                )
+            }
+            #[cfg(feature = "cuda11")]
             PrecisionKind::FP8E4M3FN => Err(BackendError::Other(
-                "GEMM path unsupported for FP8".to_string(),
+                "FP8 GEMM requires the cuda12 build (CUDA 11.8+ header surface); rebuild without --features cuda11"
+                    .to_string(),
             )),
+            // cublasLt FP4 (E2M1 + block scales): Blackwell FP4 tensor cores
+            // (SM100/SM103/SM120) on a CUDA 12.8+/R570+ cublasLt. TN is
+            // mandatory; sizes round to a 32-element multiple (scale block +
+            // byte packing + ld alignment). NVFP4 (VEC16_E4M3 scales) is
+            // preferred; its absence in the heuristics falls back to MXFP4
+            // (VEC32_UE8M0).
+            #[cfg(not(feature = "cuda11"))]
+            PrecisionKind::FP4E2M1 => {
+                let size = (size + 31) & !31;
+                let probe_key = LtShapeKey {
+                    dtype: LtDtype::Fp4Nvfp4,
+                    size: size as u32,
+                    ta: true,
+                    tb: false,
+                    fast_accum: false,
+                };
+                let nv_count = self.lt_for_lane_mut(0).heuristic_count(probe_key)?;
+                let (dtype, mode, ab_code) = if nv_count > 0 {
+                    (LtDtype::Fp4Nvfp4, Fp4ScaleMode::Nvfp4, 5u32)
+                } else {
+                    println!(
+                        "[GEMM-LT] FP4 NVFP4 scale mode unavailable (driver cublasLt < 12.8?); falling back to MXFP4 (UE8M0 block scales)"
+                    );
+                    (LtDtype::Fp4Mxfp4, Fp4ScaleMode::Mxfp4, 6u32)
+                };
+                self.run_gemm_path_lt::<u8, f16, _>(
+                    dtype,
+                    spec,
+                    size,
+                    true,
+                    false,
+                    false,
+                    warmup_iters,
+                    burst_iters,
+                    stream_mode,
+                    seed,
+                    &mut rng,
+                    verify,
+                    true,
+                    2, // C output: f16
+                    ab_code,
+                    move |rng, sz| {
+                        let a_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let (a_packed, a_scales) =
+                            fp4_quantize_matrix(&a_host.data, sz, mode);
+                        let (b_packed, b_scales) =
+                            fp4_quantize_matrix(&b_host.data, sz, mode);
+                        LtOpData {
+                            a: a_packed,
+                            b: b_packed,
+                            scale_a: a_scales,
+                            scale_b: b_scales,
+                        }
+                    },
+                )
+            }
+            #[cfg(feature = "cuda11")]
+            PrecisionKind::FP4E2M1 => Err(BackendError::Other(
+                "FP4 GEMM requires the cuda12 build (CUDA 12.8+ header surface)".to_string(),
+            )),
+            // cublasLt INT4 (CUDA_R_4I): IMMA 4-bit integer tensor ops, TN
+            // mandatory, sizes round to a 32-element multiple (2 nibbles per
+            // byte + ld alignment). The sampled cross-check is exact (products
+            // ≤ 64·K < 2^24) with atol/rtol = 0, plus the periodic exact
+            // integer sidecar.
+            PrecisionKind::INT4 => {
+                let size = (size + 31) & !31;
+                self.run_gemm_path_lt::<u8, i32, _>(
+                    LtDtype::Int4,
+                    spec,
+                    size,
+                    true,
+                    false,
+                    false,
+                    warmup_iters,
+                    burst_iters,
+                    stream_mode,
+                    seed,
+                    &mut rng,
+                    verify,
+                    true,
+                    8, // C output: i32
+                    7, // A/B operand: packed signed nibbles
+                    |rng, sz| {
+                        let a_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let a_q: Vec<i8> = a_host
+                            .data
+                            .iter()
+                            .map(|v| ((*v * 7.5).round() as i8).clamp(-8, 7))
+                            .collect();
+                        let b_q: Vec<i8> = b_host
+                            .data
+                            .iter()
+                            .map(|v| ((*v * 7.5).round() as i8).clamp(-8, 7))
+                            .collect();
+                        LtOpData {
+                            a: int4_pack(&a_q),
+                            b: int4_pack(&b_q),
+                            scale_a: Vec::new(),
+                            scale_b: Vec::new(),
+                        }
+                    },
+                )
+            }
             // cuBLAS exposes no integer-GEMM compute path for INT16/INT32
             // (CUDA_R_16I / CUDA_R_32I are storage types only). Integer ALU
             // stress for those widths is provided by the `intalu` kernel type.
@@ -674,91 +1288,153 @@ impl CudaBackend {
         Ok(())
     }
 
-    /// Exact INT8 GEMM validation: quantized host reference vs device C with
-    /// strict i32 equality. Runs a small matrix at the validate cadence so the
-    /// host reference cost stays in the tens of milliseconds.
-    pub(super) fn validate_int8_exact_impl(
+    /// Exact INT8/INT4 GEMM validation: quantized host reference vs device C
+    /// with strict integer equality. Runs the same cublasLt TN path as the
+    /// stress op (a small matrix at the validate cadence keeps the host
+    /// reference cost in the tens of milliseconds).
+    pub(super) fn validate_int_exact_impl(
         &mut self,
+        kind: PrecisionKind,
         size: usize,
         seed: u64,
     ) -> Result<(bool, Option<String>), BackendError> {
-        let size = (size + 15) & !15;
+        let (dtype, round_mask, quant_scale, quant_min, quant_max) = match kind {
+            PrecisionKind::INT8 => (LtDtype::Int8, 15usize, 127.0f64, -127i64, 127i64),
+            PrecisionKind::INT4 => (LtDtype::Int4, 31usize, 7.5f64, -8i64, 7i64),
+            _ => {
+                return Err(BackendError::Other(
+                    "exact INT validation only covers INT8/INT4".to_string(),
+                ));
+            }
+        };
+        let size = (size + round_mask) & !round_mask;
         let mut rng = StdRng::seed_from_u64(seed);
         let a_host_f = make_random_host_matrix(size, rng.random::<u64>());
         let b_host_f = make_random_host_matrix(size, rng.random::<u64>());
-        let a_host: Vec<i8> = a_host_f
-            .data
-            .iter()
-            .map(|v| (*v * 127.0).clamp(-127.0, 127.0) as i8)
-            .collect();
-        let b_host: Vec<i8> = b_host_f
-            .data
-            .iter()
-            .map(|v| (*v * 127.0).clamp(-127.0, 127.0) as i8)
-            .collect();
+        let quant =
+            |v: f32| ((v as f64 * quant_scale).round() as i64).clamp(quant_min, quant_max) as i8;
+        let a_q: Vec<i8> = a_host_f.data.iter().map(|v| quant(*v)).collect();
+        let b_q: Vec<i8> = b_host_f.data.iter().map(|v| quant(*v)).collect();
 
-        let a_dev = self
-            .stream
-            .clone_htod(&a_host)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-        let b_dev = self
-            .stream
-            .clone_htod(&b_host)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-        let mut c_dev = self
-            .stream
-            .alloc_zeros::<i32>(size * size)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
+        // cublasLt TN launch on the same lane as the stress op (lane 0).
+        let stream = self.stream.clone();
+        let key = LtShapeKey {
+            dtype,
+            size: size as u32,
+            ta: true,
+            tb: false,
+            fast_accum: false,
+        };
+        let pinned = self.lt_options().algo_index.unwrap_or(0);
+        let host_c: Vec<i32> = match dtype {
+            LtDtype::Int8 => {
+                let a_dev = self
+                    .stream
+                    .clone_htod(&a_q)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                let b_dev = self
+                    .stream
+                    .clone_htod(&b_q)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                let mut c_dev = self
+                    .stream
+                    .alloc_zeros::<i32>(size * size)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                self.launch_lt_tn(&stream, key, pinned, &a_dev, &b_dev, &mut c_dev)?;
+                self.stream
+                    .synchronize()
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                let host = self
+                    .stream
+                    .clone_dtoh(&c_dev)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                self.stream
+                    .synchronize()
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                host
+            }
+            LtDtype::Int4 => {
+                let a_packed = int4_pack(&a_q);
+                let b_packed = int4_pack(&b_q);
+                let a_dev = self
+                    .stream
+                    .clone_htod(&a_packed)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                let b_dev = self
+                    .stream
+                    .clone_htod(&b_packed)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                let mut c_dev = self
+                    .stream
+                    .alloc_zeros::<i32>(size * size)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                self.launch_lt_tn(&stream, key, pinned, &a_dev, &b_dev, &mut c_dev)?;
+                self.stream
+                    .synchronize()
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                let host = self
+                    .stream
+                    .clone_dtoh(&c_dev)
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                self.stream
+                    .synchronize()
+                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                host
+            }
+            _ => unreachable!("guarded by the kind match above"),
+        };
 
-        let m = size as i32;
-        let alpha: i32 = 1;
-        let beta: i32 = 0;
-        let op = cublas_sys::cublasOperation_t::CUBLAS_OP_N;
-        Self::launch_int8_gemm(
-            &self.blas,
-            &self.stream,
-            op,
-            op,
-            m,
-            m,
-            m,
-            &alpha,
-            &a_dev,
-            m,
-            &b_dev,
-            m,
-            &beta,
-            &mut c_dev,
-            m,
-            cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32I,
-            cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
-            cublas_sys::cudaDataType::CUDA_R_8I,
-            cublas_sys::cudaDataType::CUDA_R_8I,
-            cublas_sys::cudaDataType::CUDA_R_32I,
-        )?;
-        self.stream
-            .synchronize()
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-        let c_dev_host: Vec<i32> = self
-            .stream
-            .clone_dtoh(&c_dev)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-        self.stream
-            .synchronize()
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-
-        let reference = cpu_reference_int8(&a_host, &b_host, size);
-        for (idx, (actual, expected)) in c_dev_host.iter().zip(reference.iter()).enumerate() {
+        // Exact integer reference for the TN identity (rayon-parallel).
+        let reference = match dtype {
+            LtDtype::Int8 => cpu_reference_int_tn(&a_q, &b_q, size),
+            LtDtype::Int4 => {
+                let a_packed = int4_pack(&a_q);
+                let b_packed = int4_pack(&b_q);
+                cpu_reference_int4_tn(&a_packed, &b_packed, size)
+            }
+            _ => unreachable!("guarded by the kind match above"),
+        };
+        for (idx, (actual, expected)) in host_c.iter().zip(reference.iter()).enumerate() {
             if actual != expected {
                 let (i, j) = (idx / size, idx % size);
                 return Ok((
                     false,
                     Some(format!(
-                        "int8 exact mismatch at [{i},{j}]: device={actual} reference={expected}"
+                        "{} exact mismatch at [{i},{j}]: device={actual} reference={expected}",
+                        dtype.name()
                     )),
                 ));
             }
         }
         Ok((true, None))
+    }
+
+    /// One cublasLt TN INT GEMM launch (alpha=1, beta=0, i32 C) on lane 0.
+    fn launch_lt_tn<AB: DeviceRepr + ValidAsZeroBits>(
+        &mut self,
+        stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+        key: LtShapeKey,
+        algo_index: usize,
+        a: &cudarc::driver::CudaSlice<AB>,
+        b: &cudarc::driver::CudaSlice<AB>,
+        c: &mut cudarc::driver::CudaSlice<i32>,
+    ) -> Result<(), BackendError> {
+        let (a_ptr, _ga) = a.device_ptr(stream);
+        let (b_ptr, _gb) = b.device_ptr(stream);
+        let (c_ptr, _gc) = c.device_ptr_mut(stream);
+        let alpha: i32 = 1;
+        let beta: i32 = 0;
+        self.lt_for_lane_mut(0).launch(
+            stream,
+            key,
+            algo_index,
+            a_ptr as *const _,
+            b_ptr as *const _,
+            c_ptr as *mut _,
+            None,
+            None,
+            (&alpha as *const i32) as *const _,
+            (&beta as *const i32) as *const _,
+        )
     }
 }

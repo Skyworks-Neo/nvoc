@@ -7,6 +7,8 @@
 //!   impl (the dispatcher that fans out to the workload modules).
 //! - [`lanes`]: multi-stream lane selection (`stream_for_lane` / `blas_for_lane`).
 //! - [`gemm`]: cuBLAS GEMM stress path (FP precisions).
+//! - [`gemm_lt`]: cublasLt GEMM lane (heuristic enumeration + algo
+//!   reporting/pinning) for FP16/BF16/FP8/FP4/INT8/INT4.
 //! - [`mem_ops`]: memcpy / memset / sgeam (transpose & elementwise) / reduction.
 //! - [`atomic`]: atomic-operation stress kernel (custom NVRTC).
 //! - [`gpu_fill`]: opt-in device-side stress-buffer generation (NVRTC).
@@ -17,6 +19,7 @@ mod atomic;
 mod backend;
 mod device;
 mod gemm;
+mod gemm_lt;
 mod gpu_fill;
 mod int_alu;
 mod kernels;

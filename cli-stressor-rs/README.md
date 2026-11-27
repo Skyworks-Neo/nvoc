@@ -60,16 +60,18 @@
 | FP64 | `fp64` | `gemm` | cuBLAS `gemm` | 全部 SM（部分老卡性能受限） |
 | FP32 | `fp32` | `gemm` | cuBLAS `gemm` | 全部 SM |
 | TF32 | `tf32` | `gemm` | cuBLAS `gemm`（Tensor Core） | SM ≥ 8.0（A100 / 30 系+） |
-| FP16 | `fp16` | `gemm` | cuBLAS `gemm` | 全部 SM |
-| BF16 | `bf16` | `gemm` | cuBLAS `gemm`（Tensor Core） | SM ≥ 8.0（A100 / 30 系+） |
-| FP8 | `fp8` | ⚠️ 未实现 | — | — |
-| **INT8** | `int8` / `i8` | `gemm` **_或_** `intalu` | cuBLAS `gemm_ex`（IMMA TC）**或** 自定义 DP4A/MAD 内核 | SM ≥ 5.0；IMMA TC 需 SM ≥ 7.5（Turing+） |
+| FP16 | `fp16` | `gemm` | cublasLt `CUDA_R_16F`（默认）**或**经典 cuBLAS（`--gemm-legacy-cublas`） | 全部 SM |
+| BF16 | `bf16` | `gemm` | cublasLt `CUDA_R_16BF`（默认）**或**经典 cuBLAS | SM ≥ 8.0（A100 / 30 系+） |
+| **FP8** | `fp8` | `gemm` | cublasLt `CUDA_R_8F_E4M3FN`（E4M3FN，`COMPUTE_32F`，TN；ride-on-load 采样校验） | SM ≥ 8.9（40 系+）；驱动 cublasLt 需 CUDA 11.8+（R520+） |
+| **FP4** | `fp4` | `gemm` | cublasLt `CUDA_R_4F_E2M1` + 块缩放（NVFP4 优先，回退 MXFP4；TN；采样校验） | SM 100/103/120（50 系+）；驱动 cublasLt 需 CUDA 12.8+（R570+） |
+| **INT8** | `int8` / `i8` | `gemm` **_或_** `intalu` | cublasLt `CUDA_R_8I`→`CUDA_R_32I`（IMMA TC，TN 默认）或 `intalu` 自定义 DP4A/MAD 内核；经典 `gemm_ex` 经 `--gemm-legacy-cublas` 保留 | SM ≥ 5.0；IMMA TC 需 SM ≥ 7.5（Turing+） |
+| **INT4** | `int4` / `i4` | `gemm` | cublasLt `CUDA_R_4I`→`CUDA_R_32I`（IMMA TC，TN；采样 + 精确 sidecar 双重校验） | SM ≥ 7.5；**运行时可用性取决于驱动 cublasLt 是否返回 `CUDA_R_4I` 候选**（无候选时干净报错） |
 | **INT16** | `int16` / `i16` | `intalu` **_仅_** ¹ | 自定义 NVRTC（标量 int16 MAD链） | 全部 SM |
 | **INT32** | `int32` / `i32` | `intalu` **_仅_** ¹ | 自定义 NVRTC（标量 int32 MAD链） | 全部 SM |
 
 > ¹ **INT16/INT32 无 cuBLAS GEMM 路径**（`CUDA_R_16I` / `CUDA_R_32I` 仅为存储类型，无 `computeType`）。若需压力测试 INT16/INT32，必须同时指定 `--kernel-types intalu`。工具会在启动时主动报错并退出，避免空转。
 
-> **INT4 / INT64 / INT6**：`CUDA_R_4I` 和 `CUDA_R_64I` 在 cuBLAS 中为纯存储类型，**无 GEMM 计算路径**（cuBLAS 12.9 仅支持 `CUDA_R_8I` → `CUDA_R_32I` 的整数 GEMM）。INT4 tensor core 硬件在 SM 8.0+ 存在（PTX `mma.s32.s4.s4.s32`），但 cuBLAS 不暴露，需自行 inline PTX 实现；INT6 在 CUDA 中不存在；INT64 标量乘加极慢，无法有效占满 GPU 核心。综合判断：**暂无添加规划**。
+> **INT4 可用性注记**：PTX `mma.s4` 硬件在 SM 8.0+ 存在，cuBLASLt 文档的类型组合表含 `CUDA_R_4I` + `CUBLAS_COMPUTE_32I`（SM80+ IMMA），但不同驱动版本的启发式可能不返回候选。工具在运行时实测：无候选即报错退出（不静默空转）——这正是"读回是唯一判据"的口径；有候选则采样校验 + 周期精确 sidecar 双重把关。INT6 在 CUDA 中不存在；INT64 标量乘加极慢，无法有效占满 GPU 核心。
 
 ### 精度 ↔ Kernel 兼容矩阵
 
@@ -78,9 +80,9 @@
 | 精度 | GEMM | IntAlu | Mem* / Atomic |
 |---|---|---|---|
 | FP64 / FP32 / TF32 / FP16 / BF16 | ✅ | — | ✅ |
+| FP8 / FP4 / INT4 | ✅（cublasLt 专用） | — | ❌ |
 | INT8 | ✅（推荐） | ✅（纯 ALU 备用） | ✅ |
 | INT16 / INT32 | ❌ ² | ✅ | ✅ |
-| FP8 | ❌ | — | — |
 
 > ² INT16/INT32 + `gemm` 会在启动时被 `kernel_precision_compatible` 检测到并直接退出，附带 "add `intalu` to --kernel-types" 提示。
 
@@ -181,17 +183,36 @@ precisions = ["fp32"]
 burst_iters = 64
 ```
 
+### cublasLt 车道与 kernel 自选
+
+FP16/BF16/FP8/FP4/INT8/INT4 的 GEMM 压力路径默认走 **cublasLt**（与经典 `cublasGemmEx` 语义对齐：FP16/BF16 同为 `CUBLAS_COMPUTE_32F` + f32 scale，读数口径可比）。每个新的（精度, 尺寸, 转置）组合首次遇到时打印一行选中 kernel 的身份：
+
+```
+[GEMM-LT] FP16 4096x4096 ta=T tb=N | algo #0/8: id=8 tile=34 stages=2 splitk=1 red=0 swz=1 ws=4.0MiB
+```
+
+- cublasLt API 不暴露 SASS kernel 名；tile/stages/split-K/reduction/swizzle 配置属性即用户可见的 kernel 身份（SASS 符号需 NCU）。
+- 解锁卡（如解锁 RTX 4090）的 FP16 端到端读数双峰（49/63 TF）根因是库内静态启发式按出厂半速模型选了次优 kernel（参见 [Harry-Chen/unlocked-ada-gemm](https://github.com/Harry-Chen/unlocked-ada-gemm) 与[原始博客](https://harrychen.xyz/2026/11/17/unlocked-rtx-4090-gemm-perf/)）。`--gemm-algo-list` 内建"枚举候选 + 逐个计时"探针，`--gemm-algo-index N` 可手动钉住候选 N；报告行同时写入 verdict JSON 的 `precisions[].gemm_algos`。
+
+| Flag | 说明 |
+|---|---|
+| `--gemm-heuristics <N>` | 每形状请求的启发式候选数 [8] |
+| `--gemm-algo-index <N>` | 全局钉住候选 N（0 = 库默认；某形状候选数不足时报错并打印实际数量） |
+| `--gemm-algo-list` | 首遇形状对全部候选计时打 TFLOPS 表（lane 0，各 3 iter） |
+| `--gemm-legacy-cublas` | FP16/BF16/INT8 回退经典 cublas 车道（矩阵收录口径 A/B 对照） |
+| `--fp8-fast-accum` | FP8 启用 `CUBLASLT_MATMUL_DESC_FAST_ACCUM`（更快但大 K 相对误差累积 10–15%；默认分段累加精度安全） |
+
 ### 代际兼容性参考
 
 #### INTEGER 路径
 
 | 路径 | 机制 | 最低 SM | Tensor Core | 说明 |
 |---|---|---|---|---|
-| INT8 GEMM | cuBLAS `gemm_ex` `CUDA_R_8I`→`CUDA_R_32I`、`CUBLAS_COMPUTE_32I`、`DEFAULT_TENSOR_OP` | SM ≥ 5.0（标量）；**SM ≥ 7.5 IMMA TC** | cuBLAS 自动分发：Turing+/Ampere/Ada/Hopper/Blackwell 走 IMMA；更老卡走 DP4A 或标量 | 推荐 INT8 路径 |
+| INT8 GEMM | cublasLt `CUDA_R_8I`→`CUDA_R_32I`、`CUBLAS_COMPUTE_32I`（TN 强制，IMMA 保证命中）；经典 `gemm_ex`+`DEFAULT_TENSOR_OP` 经 `--gemm-legacy-cublas` 保留 | SM ≥ 5.0（标量）；**SM ≥ 7.5 IMMA TC** | Lt TN 强制命中 IMMA；经典车道随机转置下仅 ~25% op 是 TN（其余落 DP4A/标量） | 推荐 INT8 路径 |
 | INT8 DP4A `__dp4a`（IntAlu） | NVRTC intrinsic | SM ≥ 6.1（Pascal GP100/GP10x） | INT8 点积 ALU（非 mma） | `__CUDA_ARCH__>=610` 守卫 |
 | INT16 ALU（IntAlu） | 标量 int16 MAD | 全部 SM | 无（无 INT16 tensor core） | 通用，实测 RTX 3060 ~1.6 TIOPs |
 | INT32 ALU（IntAlu） | 标量 int32 MAD | 全部 SM | 无 | 通用 |
-| INT4 Tensor Core | PTX `mma.m16n8k64.s32.s4.s4.s32` | SM ≥ 8.0 | SM ≥ 8.0 **硬件存在**但 cuBLAS 12.9 不暴露，需自行 inline PTX | ⚠️ 未实现 |
+| INT4 GEMM | cublasLt `CUDA_R_4I`→`CUDA_R_32I`（TN，2 nibble/byte） | SM ≥ 7.5（文档组合表 SM80+ IMMA） | SM ≥ 8.0 `mma.s4` 硬件；**候选存在性由驱动实测**（无候选即报错） | 采样校验精确（乘积 ≤ 64·K < 2²⁴）+ 周期精确 sidecar |
 
 > **单次构建跨代覆盖**：NVRTC `compile_ptx_with_opts(arch="compute_XX")` 生成虚拟架构 PTX，驱动在加载模块时 JIT 编译到真实 SASS。`compute_90` 上限 + `__CUDA_ARCH__` 守卫使单个二进制覆盖 Pascal → Blackwell。
 
@@ -201,16 +222,20 @@ burst_iters = 64
 |---|---|
 | FP64 / FP32 / FP16 GEMM | 全部 SM 可用 |
 | TF32 / BF16 GEMM | SM ≥ 8.0（Ampere / 30 系+），旧架构自动跳过 |
-| FP8 GEMM | 尚未实现 |
+| FP8 GEMM | cublasLt E4M3FN，SM ≥ 8.9（40 系+）；FAST_ACCUM 默认关 |
+| FP4 GEMM | cublasLt E2M1 + 块缩放，SM 100/103/120（50 系+）；40 系自动 SKIP |
 | Atomic kernel | SM ≥ 7.5（Turing+）；更老卡自动禁用 |
 | Mem* / Reduction | 全部 SM 可用 |
 
 ### 注意事项
 
-- TF32 和 BF16 均使用 cuBLAS 的数学模式切换；BF16 需要 SM80+（Ampere 及以后），旧架构会自动跳过并给出明确提示。FP8 尚未实现。
-- **INT8 GEMM** 使用 cuBLAS `cublasGemmEx` + `CUDA_R_8I` → `CUBLAS_COMPUTE_32I`。cuBLAS 自动分发到 IMMA tensor core（Turing+/SM ≥ 7.5）或 DP4A/标量回退。SM < 7.5 的 GPU 会收到警告提示（路径仍可用，仅吞吐较低）。INT8 tensor-op 路径要求矩阵维度为 **16 的倍数**；工具自动将奇数/未对齐尺寸向上对齐至 `(size + 15) & !15`。
+- TF32 和 BF16 均使用 cuBLAS 的数学模式切换；BF16 需要 SM80+（Ampere 及以后），旧架构会自动跳过并给出明确提示。FP16/BF16/FP8/FP4/INT8/INT4 GEMM 默认走 cublasLt 车道（见上文"cublasLt 车道与 kernel 自选"）；FP32/TF32/FP64 仍走经典 cuBLAS（TF32 依赖 `cublasSetMathMode`）。
+- **INT8 GEMM** 默认走 cublasLt TN（`CUDA_R_8I`→`CUDA_R_32I`，`CUBLAS_COMPUTE_32I`）：IMMA 张量核路径只支持 Aᵀ·B 布局，Lt 强制 TN 后必然命中；经典 `cublasGemmEx` 车道的随机转置（`transpose_prob=0.5`）下仅 ~25% 的 op 是 TN，其余落在 DP4A/标量路径。SM < 7.5 的 GPU 收到警告提示（路径仍可用，仅吞吐较低）。INT8 张量核路径要求矩阵维度为 **16 的倍数**；工具自动将奇数/未对齐尺寸向上对齐至 `(size + 15) & !15`。INT8 无 ride-on-load 采样校验（i32 点积超 2²⁴，f32 比较不精确），由周期精确整数 sidecar（`cpu_reference_int_tn`）覆盖。
+- **FP8 GEMM** 走 cublasLt E4M3FN + `COMPUTE_32F` + f16 输出，TN 布局为 cublasLt 硬性要求（`transpose_prob` 不适用，报告行显示 ta=T tb=N）；尺寸自动对齐到 16 的倍数。`--fp8-fast-accum` 启用 FAST_ACCUM 快路径（约 90% 峰值但大 K 相对误差累积 10–15%）；默认分段累加路径精度安全。操作数由 f32 随机矩阵 RN-even 量化到 E4M3FN（`fp8_e4m3_quantize`），采样校验从同一 A/B 精确重算。
+- **FP4 GEMM** 走 cublasLt E2M1 + 块缩放（NVFP4：16 元素块 + E4M3 scale，优先；驱动无候选时回退 MXFP4：32 元素块 + UE8M0 2 的幂 scale），TN 布局，尺寸对齐到 32 的倍数；仅 Blackwell（SM100/103/120）+ CUDA 12.8+ 驱动可用，否则报错。
+- **INT4 GEMM** 走 cublasLt `CUDA_R_4I`（2 nibble/byte，low nibble 先），TN 布局，尺寸对齐到 32 的倍数；周期精确 sidecar（`cpu_reference_int4_tn`）+ 采样校验（乘积 ≤ 64·K < 2²⁴，f32 精确，容差 0）。
 - **INT16 / INT32** 无 cuBLAS GEMM 路径（`CUDA_R_16I` / `CUDA_R_32I` 为纯存储类型）。若指定了这些精度但未在 `--kernel-types` 中加入 `intalu`，工具会**主动报错退出**（不空转、不假死）。
-- 校验路径使用 CPU FP64 GEMM，并按元素比较容差。**INT 精度跳过校验**（`IntAlu` 为不可比对 hash 链，`INT8 GEMM` 尚无 CPU 参考实现），日志中会标注 "validation skipped for INT path"。
+- 校验路径使用 CPU FP64 GEMM，并按元素比较容差。INT 精度跳过 FP 校验（`IntAlu` 为不可比对 hash 链；INT8/INT4 GEMM 由精确整数 sidecar 覆盖；FP8/FP4 由 ride-on-load 采样校验覆盖）。
 - 兼容性总结（2026-05-13 记录）：
   - CUDA 13 + `cuda13.dll` 在 10 系 GPU / Pascal 上不可用，编译成功也可能跑不起来。
   - 较老驱动组合下，CUDA 13 可能出现 `CUBLAS_STATUS_NOT_INITIALIZED` 或 `CUBLAS_STATUS_ARCH_MISMATCH`。
@@ -257,16 +282,18 @@ burst_iters = 64
 | FP64 | `fp64` | `gemm` | cuBLAS `gemm` | All SM (performance-limited on some older cards) |
 | FP32 | `fp32` | `gemm` | cuBLAS `gemm` | All SM |
 | TF32 | `tf32` | `gemm` | cuBLAS `gemm` (Tensor Core) | SM ≥ 8.0 (A100 / 30-series+) |
-| FP16 | `fp16` | `gemm` | cuBLAS `gemm` | All SM |
-| BF16 | `bf16` | `gemm` | cuBLAS `gemm` (Tensor Core) | SM ≥ 8.0 (A100 / 30-series+) |
-| FP8 | `fp8` | ⚠️ unimplemented | — | — |
-| **INT8** | `int8` / `i8` | `gemm` **_or_** `intalu` | cuBLAS `gemm_ex` (IMMA TC) **or** custom DP4A/MAD kernel | SM ≥ 5.0; IMMA TC requires SM ≥ 7.5 (Turing+) |
+| FP16 | `fp16` | `gemm` | cublasLt `CUDA_R_16F` (default) **or** classic cuBLAS (`--gemm-legacy-cublas`) | All SM |
+| BF16 | `bf16` | `gemm` | cublasLt `CUDA_R_16BF` (default) **or** classic cuBLAS | SM ≥ 8.0 (A100 / 30-series+) |
+| **FP8** | `fp8` | `gemm` | cublasLt `CUDA_R_8F_E4M3FN` (E4M3FN, `COMPUTE_32F`, TN; ride-on-load sampled check) | SM ≥ 8.9 (40-series+); driver cublasLt needs CUDA 11.8+ (R520+) |
+| **FP4** | `fp4` | `gemm` | cublasLt `CUDA_R_4F_E2M1` + block scales (NVFP4 preferred, MXFP4 fallback; TN; sampled check) | SM 100/103/120 (50-series+); driver cublasLt needs CUDA 12.8+ (R570+) |
+| **INT8** | `int8` / `i8` | `gemm` **_or_** `intalu` | cublasLt `CUDA_R_8I`→`CUDA_R_32I` (IMMA TC, TN default) or the custom DP4A/MAD `intalu` kernel; classic `gemm_ex` kept via `--gemm-legacy-cublas` | SM ≥ 5.0; IMMA TC requires SM ≥ 7.5 (Turing+) |
+| **INT4** | `int4` / `i4` | `gemm` | cublasLt `CUDA_R_4I`→`CUDA_R_32I` (IMMA TC, TN; sampled + exact sidecar checks) | SM ≥ 7.5; **runtime availability depends on the driver's cublasLt returning `CUDA_R_4I` candidates** (clean error when none) |
 | **INT16** | `int16` / `i16` | `intalu` **_only_** ¹ | Custom NVRTC (scalar int16 MAD chain) | All SM |
 | **INT32** | `int32` / `i32` | `intalu` **_only_** ¹ | Custom NVRTC (scalar int32 MAD chain) | All SM |
 
 > ¹ **INT16/INT32 have no cuBLAS GEMM path** (`CUDA_R_16I` / `CUDA_R_32I` are storage types only, with no corresponding `computeType`). To stress INT16/INT32 you must also specify `--kernel-types intalu`. The tool detects the missing combination at startup and exits with a clear error (no silent spin).
 
-> **INT4 / INT64 / INT6**: `CUDA_R_4I` and `CUDA_R_64I` exist in cuBLAS as storage-only types with **no GEMM compute path** (cuBLAS 12.9 only supports `CUDA_R_8I` → `CUDA_R_32I` for integer GEMM). INT4 tensor core hardware _does_ exist on SM 8.0+ (PTX `mma.s32.s4.s4.s32`) but cuBLAS does not expose it — inline PTX would be required. INT6 does not exist in CUDA. INT64 scalar MAD is too slow to saturate GPU cores. Verdict: **not planned**.
+> **INT4 availability note**: INT4 tensor-core hardware exists on SM 8.0+ (PTX `mma.s4`), and the cuBLASLt type-combination table lists `CUDA_R_4I` + `CUBLAS_COMPUTE_32I` (SM80+ IMMA) — but different driver releases may return no heuristic candidates. The tool probes at runtime: no candidates → clean error exit (no silent spin), per the "readback is the only verdict" doctrine; when candidates exist, both the ride-on-load sampled check and the periodic exact sidecar guard correctness. INT6 does not exist in CUDA. INT64 scalar MAD is too slow to saturate GPU cores.
 
 ### Precision ↔ Kernel Compatibility Matrix
 
@@ -275,9 +302,9 @@ Enforced at startup; incompatible combos exit with an error:
 | Precision | GEMM | IntAlu | Mem* / Atomic |
 |---|---|---|---|
 | FP64 / FP32 / TF32 / FP16 / BF16 | ✅ | — | ✅ |
+| FP8 / FP4 / INT4 | ✅ (cublasLt only) | — | ❌ |
 | INT8 | ✅ (recommended) | ✅ (pure-ALU fallback) | ✅ |
 | INT16 / INT32 | ❌ ² | ✅ | ✅ |
-| FP8 | ❌ | — | — |
 
 > ² INT16/INT32 + `gemm` is caught by `kernel_precision_compatible` at startup; the tool exits immediately with "add `intalu` to --kernel-types".
 
@@ -378,17 +405,36 @@ precisions = ["fp32"]
 burst_iters = 64
 ```
 
+### cublasLt Lane & Kernel Selection
+
+The FP16/BF16/FP8/FP4/INT8/INT4 GEMM stress paths default to **cublasLt** (semantically aligned with the classic `cublasGemmEx`: FP16/BF16 use the same `CUBLAS_COMPUTE_32F` + f32 scale, so readings stay comparable). Each new (precision, size, transpose) combination prints the identity of the selected kernel on first encounter:
+
+```
+[GEMM-LT] FP16 4096x4096 ta=T tb=N | algo #0/8: id=8 tile=34 stages=2 splitk=1 red=0 swz=1 ws=4.0MiB
+```
+
+- cublasLt does not expose SASS kernel names through its API; the tile/stages/split-K/reduction/swizzle config attributes ARE the user-visible kernel identity (SASS symbols require NCU).
+- The bimodal FP16 end-to-end readings on unlocked cards (e.g. 49/63 TF on an unlocked RTX 4090) trace back to the library's static heuristics picking suboptimal kernels for the modified hardware (see [Harry-Chen/unlocked-ada-gemm](https://github.com/Harry-Chen/unlocked-ada-gemm) and the [original blog post](https://harrychen.xyz/2026/11/17/unlocked-rtx-4090-gemm-perf/)). `--gemm-algo-list` is the built-in "enumerate + time" probe and `--gemm-algo-index N` pins a candidate by hand; the report lines also land in the verdict JSON under `precisions[].gemm_algos`.
+
+| Flag | Effect |
+|---|---|
+| `--gemm-heuristics <N>` | Candidate count requested per shape [8] |
+| `--gemm-algo-index <N>` | Globally pin heuristic candidate #N (0 = library default; errors when a shape returns fewer candidates) |
+| `--gemm-algo-list` | Time every candidate at first encounter of each shape (TFLOPS table, lane 0, 3 iters each) |
+| `--gemm-legacy-cublas` | Route FP16/BF16/INT8 through the classic cublas path (baseline comparability) |
+| `--fp8-fast-accum` | FP8 uses `CUBLASLT_MATMUL_DESC_FAST_ACCUM` (faster but 10–15% relative error at large K; default is the precision-safe segmented accumulate) |
+
 ### Generation Compatibility Reference
 
 #### INTEGER Paths
 
 | Path | Mechanism | Min SM | Tensor Core | Notes |
 |---|---|---|---|---|
-| INT8 GEMM | cuBLAS `gemm_ex` `CUDA_R_8I`→`CUDA_R_32I`, `CUBLAS_COMPUTE_32I`, `DEFAULT_TENSOR_OP` | SM ≥ 5.0 (scalar); **SM ≥ 7.5 IMMA TC** | cuBLAS auto-dispatches: IMMA on Turing+/Ampere/Ada/Hopper/Blackwell; DP4A or scalar on older GPUs | Recommended INT8 path |
+| INT8 GEMM | cublasLt `CUDA_R_8I`→`CUDA_R_32I`, `CUBLAS_COMPUTE_32I` (TN forced, IMMA guaranteed); classic `gemm_ex`+`DEFAULT_TENSOR_OP` kept via `--gemm-legacy-cublas` | SM ≥ 5.0 (scalar); **SM ≥ 7.5 IMMA TC** | Lt's forced TN always hits IMMA; the classic lane's randomized transposes land only ~25% of ops on TN (rest fall to DP4A/scalar) | Recommended INT8 path |
 | INT8 DP4A `__dp4a` (IntAlu) | NVRTC intrinsic | SM ≥ 6.1 (Pascal GP100/GP10x) | INT8 dot-product ALU (not mma) | Guarded by `__CUDA_ARCH__>=610` |
 | INT16 ALU (IntAlu) | Scalar int16 MAD | All SM | None (no INT16 tensor core exists) | Universal; measured ~1.6 TIOPs on RTX 3060 |
 | INT32 ALU (IntAlu) | Scalar int32 MAD | All SM | None | Universal |
-| INT4 Tensor Core | PTX `mma.m16n8k64.s32.s4.s4.s32` | SM ≥ 8.0 | SM ≥ 8.0 **HW exists** but cuBLAS 12.9 does not expose it; inline PTX required | ⚠️ Not implemented |
+| INT4 GEMM | cublasLt `CUDA_R_4I`→`CUDA_R_32I` (TN, 2 nibbles/byte) | SM ≥ 7.5 (type table lists SM80+ IMMA) | SM ≥ 8.0 `mma.s4` HW; **candidate existence probed at runtime** (clean error when none) | Sampled check exact (products ≤ 64·K < 2²⁴) + periodic exact sidecar |
 
 > **Single-binary cross-generation coverage**: NVRTC `compile_ptx_with_opts(arch="compute_XX")` emits virtual-arch PTX; the driver JIT-compiles it to real SASS at module load time. The `compute_90` cap + `__CUDA_ARCH__` guards let a single binary cover Pascal → Blackwell.
 
@@ -398,16 +444,20 @@ burst_iters = 64
 |---|---|
 | FP64 / FP32 / FP16 GEMM | All SM |
 | TF32 / BF16 GEMM | SM ≥ 8.0 (Ampere / 30-series+); older GPUs auto-skip with a message |
-| FP8 GEMM | Not yet implemented |
+| FP8 GEMM | cublasLt E4M3FN, SM ≥ 8.9 (40-series+); FAST_ACCUM off by default |
+| FP4 GEMM | cublasLt E2M1 + block scales, SM 100/103/120 (50-series+); auto-SKIP row on 40-series |
 | Atomic kernel | SM ≥ 7.5 (Turing+); auto-disabled on older GPUs |
 | Mem* / Reduction | All SM |
 
 ### Notes
 
-- TF32 and BF16 both use cuBLAS math-mode switching. BF16 requires SM80+ (Ampere and later); older architectures skip it with a clear message. FP8 is not yet implemented.
-- **INT8 GEMM** uses cuBLAS `cublasGemmEx` + `CUDA_R_8I` → `CUBLAS_COMPUTE_32I`. cuBLAS auto-dispatches to IMMA tensor cores (Turing+/SM ≥ 7.5) or DP4A/scalar fallback. GPUs with SM < 7.5 receive a warning (the path still works, just at lower throughput). The INT8 tensor-op path requires matrix dimensions to be **multiples of 16**; the tool auto-aligns odd/unaligned sizes to `(size + 15) & !15`.
+- TF32 and BF16 both use cuBLAS math-mode switching. BF16 requires SM80+ (Ampere and later); older architectures skip it with a clear message. FP16/BF16/FP8/FP4/INT8/INT4 GEMM defaults to the cublasLt lane (see "cublasLt Lane & Kernel Selection" above); FP32/TF32/FP64 stay on classic cuBLAS (TF32 relies on `cublasSetMathMode`).
+- **INT8 GEMM** defaults to cublasLt TN (`CUDA_R_8I`→`CUDA_R_32I`, `CUBLAS_COMPUTE_32I`): the IMMA tensor-op path only supports the Aᵀ·B layout, and forcing TN on the Lt lane always hits it. On the classic `cublasGemmEx` lane, randomized transposes (`transpose_prob=0.5`) put only ~25% of ops on TN — the rest fall to DP4A/scalar paths. GPUs with SM < 7.5 receive a warning (the path still works, just at lower throughput). The INT8 tensor-op path requires matrix dimensions to be **multiples of 16**; the tool auto-aligns odd/unaligned sizes to `(size + 15) & !15`. INT8 has no ride-on-load sampled check (i32 dot products exceed 2²⁴ where the f32 compare is inexact); the periodic exact integer sidecar (`cpu_reference_int_tn`) covers it.
+- **FP8 GEMM** runs cublasLt E4M3FN + `COMPUTE_32F` with f16 output; the TN layout is a hard cublasLt requirement (`transpose_prob` does not apply — the report line shows ta=T tb=N); sizes auto-align to multiples of 16. `--fp8-fast-accum` enables the FAST_ACCUM path (~90% of peak but 10–15% relative error accumulating at large K); the default segmented-accumulate path is precision-safe. Operands are RN-even quantized from the f32 random matrices into E4M3FN (`fp8_e4m3_quantize`), and the sampled check recomputes exactly from the same A/B.
+- **FP4 GEMM** runs cublasLt E2M1 + block scales (NVFP4: 16-element blocks with E4M3 scales, preferred; MXFP4 fallback — 32-element blocks with power-of-two UE8M0 scales — when the driver has no NVFP4 candidates), TN layout, sizes aligned to multiples of 32; Blackwell-only (SM100/103/120) with a CUDA 12.8+ driver, otherwise a clear error.
+- **INT4 GEMM** runs cublasLt `CUDA_R_4I` (2 nibbles per byte, low nibble first), TN layout, sizes aligned to multiples of 32; guarded by the periodic exact sidecar (`cpu_reference_int4_tn`) plus an exact sampled check (products ≤ 64·K < 2²⁴, f32-exact, tolerance 0).
 - **INT16 / INT32** have no cuBLAS GEMM path (`CUDA_R_16I` / `CUDA_R_32I` are storage-only types). If these precisions are requested without `intalu` in `--kernel-types`, the tool **exits with an error** at startup (no silent spin / apparent hang).
-- The validation path uses CPU FP64 GEMM and compares values with element-wise tolerances. **INT precisions skip validation** (`IntAlu` is a non-referenceable hash chain; `INT8 GEMM` has no CPU reference yet); the log annotates this as "validation skipped for INT path".
+- The validation path uses CPU FP64 GEMM and compares values with element-wise tolerances. INT precisions skip the FP validation (`IntAlu` is a non-referenceable hash chain; INT8/INT4 GEMM are covered by the exact integer sidecar; FP8/FP4 by the ride-on-load sampled checks).
 - Compatibility summary (recorded on 2026-05-13):
   - CUDA 13 with `cuda13.dll` does not run on 10-series GPUs / Pascal, even if it builds successfully.
   - Older driver combinations may fail with `CUBLAS_STATUS_NOT_INITIALIZED` or `CUBLAS_STATUS_ARCH_MISMATCH`.

@@ -284,7 +284,7 @@ struct Args {
     #[arg(
         long,
         default_value = "fp16,bf16",
-        help = "Comma-separated precision list: fp64,fp32,tf32,fp16,bf16,fp8,int8,int16,int32 (aliases i8/i16/i32 accepted)"
+        help = "Comma-separated precision list: fp64,fp32,tf32,fp16,bf16,fp8,fp4,int8,int4,int16,int32 (aliases i8/i4/i16/i32 accepted)"
     )]
     precisions: String,
 
@@ -376,6 +376,38 @@ struct Args {
 
     #[arg(long)]
     disable_fp8: bool,
+
+    #[arg(
+        long,
+        default_value_t = 8,
+        help = "cublasLt heuristic candidate count requested per GEMM shape (algo report / --gemm-algo-list)"
+    )]
+    gemm_heuristics: usize,
+
+    #[arg(
+        long,
+        help = "Pin cublasLt GEMM execution to heuristic candidate #N (0 = library default); errors when a shape returns fewer candidates"
+    )]
+    gemm_algo_index: Option<usize>,
+
+    #[arg(
+        long,
+        help = "Time every cublasLt heuristic candidate at the first encounter of each GEMM shape and print a TFLOPS table (the unlocked-ada-gemm probe)"
+    )]
+    gemm_algo_list: bool,
+
+    #[arg(
+        long,
+        help = "Route FP16/BF16/INT8 GEMM stress through the classic cublas path instead of cublasLt (baseline comparability)"
+    )]
+    gemm_legacy_cublas: bool,
+
+    #[arg(
+        long,
+        help = "FP8 GEMM uses CUBLASLT_MATMUL_DESC_FAST_ACCUM (faster but loosely accumulating at large K; default is the segmented-accumulate path)"
+    )]
+    fp8_fast_accum: bool,
+
     /// Run Vulkan-only stress (skip CUDA workload)
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
@@ -1457,7 +1489,10 @@ fn render_grouped_help() -> String {
         &[
             ("--duration <S>", "stress wall time [90]"),
             ("--seed <N>", "base RNG seed for the whole run"),
-            ("--precisions <LIST>", "fp32/tf32/fp16/bf16/int8/16/32/fp64"),
+            (
+                "--precisions <LIST>",
+                "fp32/tf32/fp16/bf16/fp8/fp4/int8/int4/fp64",
+            ),
             ("--matrix-sizes <LIST>", "GEMM edge lengths to mix"),
             ("--fp64-matrix-sizes <L>", "FP64-only edge lengths"),
             ("--warmup-iters <N>", "untimed iterations per op"),
@@ -1469,6 +1504,23 @@ fn render_grouped_help() -> String {
             ("--minor-mixture-rate <P>", "small-size op probability"),
             ("--stream-mode <M>", "single/dual/triple CUDA streams"),
             ("--disable-fp8", "skip FP8 precision"),
+            (
+                "--gemm-heuristics <N>",
+                "cublasLt candidate count per shape [8]",
+            ),
+            (
+                "--gemm-algo-index <N>",
+                "pin cublasLt heuristic candidate #N",
+            ),
+            (
+                "--gemm-algo-list",
+                "time every cublasLt candidate (TFLOPS table)",
+            ),
+            (
+                "--gemm-legacy-cublas",
+                "classic cublas lane for FP16/BF16/INT8",
+            ),
+            ("--fp8-fast-accum", "FP8 CUBLASLT_MATMUL_DESC_FAST_ACCUM"),
             (
                 "--mem-mode <M>",
                 "verify set: auto/resident (L2) / stream (slab)",
@@ -1810,6 +1862,15 @@ pub fn run_from_args() {
                 std::process::exit(1);
             }
         };
+    // cublasLt GEMM lane behavior (algo report/pinning/listing + legacy
+    // escape hatch); pure-additive flags, safe for the worker protocol.
+    backend.configure_gemm_lt(
+        args.gemm_heuristics,
+        args.gemm_algo_index,
+        args.gemm_algo_list,
+        args.gemm_legacy_cublas,
+        args.fp8_fast_accum,
+    );
     if args.gpu_generate
         && let Err(err) = backend.enable_gpu_generate()
     {
@@ -2338,7 +2399,7 @@ pub fn run_from_args() {
         .as_ref()
         .map(|f| f as &dyn Fn(&cli_stressor_rs::SdcEvent));
 
-    let results = run_stress_mixed(
+    let mut results = run_stress_mixed(
         &mut backend,
         &filtered,
         StressRunConfig {
@@ -2362,6 +2423,17 @@ pub fn run_from_args() {
         vulkan_abort,
     );
     sdc_sampler_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // Attach the first-encounter cublasLt algo reports to their precision's
+    // verdict entry (line prefix = the PrecisionSpec name).
+    let algo_reports = backend.take_gemm_algo_reports();
+    for res in &mut results {
+        res.gemm_algos = algo_reports
+            .iter()
+            .filter(|line| line.starts_with(&format!("{} ", res.precision)))
+            .cloned()
+            .collect();
+    }
 
     for res in &results {
         if res.first_error.is_some() && res.supported {

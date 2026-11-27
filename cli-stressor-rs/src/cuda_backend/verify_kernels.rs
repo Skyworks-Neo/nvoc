@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use cudarc::driver::{
-    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, CudaView, CudaViewMut,
+    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, CudaView, CudaViewMut, DevicePtr,
     DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
 };
 use cudarc::nvrtc::{CompileOptions, compile_ptx_with_opts};
@@ -102,16 +102,71 @@ __device__ float v_h2f(unsigned short h) {
     }
     return __uint_as_float(bits);
 }
-// type_code: 0=f32, 1=f64, 2=f16, 3=bf16
+// type_code: 0=f32, 1=f64, 2=f16, 3=bf16, 8=i32 (INT4/INT8-Lt GEMM outputs)
 __device__ float v_load(const void* p, unsigned long long i, unsigned int tc) {
     if (tc == 1u) return (float)((const double*)p)[i];
     if (tc == 2u) return v_h2f(((const unsigned short*)p)[i]);
     if (tc == 3u) return __uint_as_float(((unsigned int)((const unsigned short*)p)[i]) << 16);
+    if (tc == 8u) return (float)((const int*)p)[i];
     return ((const float*)p)[i];
 }
 __device__ int v_isfinite(float v) {
     // NaN fails v==v; Inf exceeds the max finite magnitude.
     return (v == v) && (v <= 3.4028234663852886e38f) && (v >= -3.4028234663852886e38f);
+}
+
+// ---- cublasLt operand decodes (host mirrors in src/lib.rs; keep in lockstep) ----
+// E4M3FN (CUDA_R_8F_E4M3): bias 7, denorm man*2^-9, max ±448, NaN at 0x7F/0xFF.
+__device__ float v_fp8e4m3(unsigned char b) {
+    unsigned int sign = ((unsigned int)(b & 0x80u)) << 24;
+    unsigned int exp = (unsigned int)(b >> 3) & 0xFu;
+    unsigned int man = (unsigned int)b & 0x7u;
+    if (exp == 0u) {
+        if (man == 0u) return __uint_as_float(sign);
+        // denormal: man * 2^-9 (2^-9 = 0.001953125)
+        float v = (float)man * 0.001953125f;
+        return (b & 0x80u) ? -v : v;
+    }
+    if (exp == 15u && man == 7u) return __uint_as_float(0x7FC00000u); // NaN
+    // normal: (1 + man/8) * 2^(exp-7) -> mantissa man/8 = man*2^-3
+    unsigned int fbits = sign | ((exp - 7u + 127u) << 23) | (man << 20);
+    return __uint_as_float(fbits);
+}
+// E2M1 nibble (CUDA_R_4F_E2M1): ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}.
+__device__ float v_fp4e2m1(unsigned int nib) {
+    float mags[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+    float v = mags[nib & 0x7u];
+    return (nib & 0x8u) ? -v : v;
+}
+// A/B operand load for the cublasLt GEMM stress paths.
+//   0..3 = legacy float types (f32/f64/f16/bf16), 8 = (unused here) i32
+//   4    = FP8 E4M3FN byte
+//   5    = FP4 packed (low nibble first) + 16-element E4M3 block scales (NVFP4)
+//   6    = FP4 packed + 32-element UE8M0 block scales (MXFP4)
+//   7    = INT4 packed signed nibbles
+// `lin` is the element's linear index in the uploaded row-major buffer (byte
+// index = lin>>1 for packed types); `k`/`col` locate the block scale
+// (scales[k / block][col], row-major [kblocks][cols] — the layout the
+// quantizer in src/lib.rs writes; a mismatching layout fails the compare).
+__device__ float v_ab_load(const void* p, unsigned long long lin, unsigned int k,
+                           unsigned int col, unsigned int code,
+                           const void* scale, unsigned int scale_cols) {
+    if (code == 4u) return v_fp8e4m3(((const unsigned char*)p)[lin]);
+    if (code == 5u || code == 6u) {
+        unsigned char byte = ((const unsigned char*)p)[lin >> 1];
+        unsigned int nib = (lin & 1u) ? (byte >> 4u) : (byte & 0xFu);
+        unsigned int block = (code == 5u) ? 16u : 32u;
+        unsigned char s = ((const unsigned char*)scale)[(k / block) * scale_cols + col];
+        float sf = (code == 5u) ? v_fp8e4m3(s) : ldexpf(1.0f, (int)s - 127);
+        return v_fp4e2m1(nib) * sf;
+    }
+    if (code == 7u) {
+        unsigned char byte = ((const unsigned char*)p)[lin >> 1];
+        int nib = (lin & 1u) ? (int)(byte >> 4) : (int)(byte & 0xFu);
+        if (nib & 0x8) nib -= 16;
+        return (float)nib;
+    }
+    return v_load(p, lin, code);
 }
 
 extern "C" __global__ void verify_pattern_fill(
@@ -216,6 +271,8 @@ extern "C" __global__ void gemm_stats_reduce(
 extern "C" __global__ void gemm_sample_check(
     const void* a, const void* b, const void* c,
     unsigned int size, unsigned int ta, unsigned int tb, unsigned int tc,
+    unsigned int ab_code, const void* scale_a, const void* scale_b,
+    unsigned int scale_cols,
     const unsigned int* samples, unsigned int m,
     float atol, float rtol, SampleStats* out)
 {
@@ -239,7 +296,10 @@ extern "C" __global__ void gemm_sample_check(
             if (tc == 1u) {
                 dacc += ((const double*)a)[ai] * ((const double*)b)[bi];
             } else {
-                facc += v_load(a, ai, tc) * v_load(b, bi, tc);
+                // A's non-K coordinate is j, B's is i, in both transpose
+                // orientations (see the index identity above).
+                facc += v_ab_load(a, ai, kk, j, ab_code, scale_a, scale_cols)
+                      * v_ab_load(b, bi, kk, i, ab_code, scale_b, scale_cols);
             }
         }
         float cv = v_load(c, (unsigned long long)i * size + j, tc);
@@ -271,6 +331,8 @@ extern "C" __global__ void gemm_sample_check(
 extern "C" __global__ void gemm_full_check(
     const void* a, const void* b, const void* c,
     unsigned int size, unsigned int ta, unsigned int tb, unsigned int tc,
+    unsigned int ab_code, const void* scale_a, const void* scale_b,
+    unsigned int scale_cols,
     float atol, float rtol, SampleStats* out)
 {
     unsigned long gid = (unsigned long)blockIdx.x * blockDim.x + threadIdx.x;
@@ -289,7 +351,8 @@ extern "C" __global__ void gemm_full_check(
         if (tc == 1u) {
             dacc += ((const double*)a)[ai] * ((const double*)b)[bi];
         } else {
-            facc += v_load(a, ai, tc) * v_load(b, bi, tc);
+            facc += v_ab_load(a, ai, kk, j, ab_code, scale_a, scale_cols)
+                  * v_ab_load(b, bi, kk, i, ab_code, scale_b, scale_cols);
         }
     }
     float cv = v_load(c, gid, tc);
@@ -639,24 +702,47 @@ impl VerifyEngine {
 
     // ---- GEMM checks (stats scan + sampled dot-product cross-check) ----
 
-    /// Run both GEMM checks on one lane's buffers. `tc`: 0=f32, 1=f64, 2=f16,
-    /// 3=bf16. `samples_host` holds 2·m little-endian (i, j) index pairs.
-    #[allow(clippy::too_many_arguments)]
-    pub fn gemm_check<T: DeviceRepr + ValidAsZeroBits>(
+    /// Raw device pointers for the optional FP4 block-scale buffers (null
+    /// when unused), with the stream-ordering guards held for the call.
+    fn scale_pointers(
         &self,
         stream: &Arc<CudaStream>,
-        a: &CudaSlice<T>,
-        b: &CudaSlice<T>,
-        c: &CudaSlice<T>,
+        scale_a: Option<&CudaSlice<u8>>,
+        scale_b: Option<&CudaSlice<u8>>,
+    ) -> (u64, u64) {
+        let guard_a = scale_a.map(|s| s.device_ptr(stream));
+        let guard_b = scale_b.map(|s| s.device_ptr(stream));
+        let ptr_a = guard_a.as_ref().map_or(0u64, |(p, _)| *p);
+        let ptr_b = guard_b.as_ref().map_or(0u64, |(p, _)| *p);
+        (ptr_a, ptr_b)
+    }
+
+    /// Run both GEMM checks on one lane's buffers. `tc` (C output type):
+    /// 0=f32, 1=f64, 2=f16, 3=bf16, 8=i32. `ab_code` (A/B operand type): same
+    /// codes plus 4=fp8-e4m3, 5=fp4+VEC16_E4M3 scales (NVFP4), 6=fp4+VEC32_UE8M0
+    /// scales (MXFP4), 7=int4. `samples_host` holds 2·m little-endian (i, j)
+    /// index pairs. Scale pointers are None for the non-block-scaled types.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_check<AB: DeviceRepr + ValidAsZeroBits, CT: DeviceRepr + ValidAsZeroBits>(
+        &self,
+        stream: &Arc<CudaStream>,
+        a: &CudaSlice<AB>,
+        b: &CudaSlice<AB>,
+        c: &CudaSlice<CT>,
         size: usize,
         ta: bool,
         tb: bool,
         tc: u32,
+        ab_code: u32,
+        scale_a: Option<&CudaSlice<u8>>,
+        scale_b: Option<&CudaSlice<u8>>,
+        scale_cols: u32,
         samples_host: &[u32],
         atol: f32,
         rtol: f32,
     ) -> Result<(), BackendError> {
         let n = (size * size) as u64;
+        let (scale_a_ptr, scale_b_ptr) = self.scale_pointers(stream, scale_a, scale_b);
 
         // Stats pass (grid-stride, block-reduced).
         {
@@ -673,7 +759,7 @@ impl VerifyEngine {
             let mut stats = self.stats.borrow_mut();
             stream
                 .launch_builder(&self.stats_fn)
-                .arg(a)
+                .arg(c)
                 .arg(&n)
                 .arg(&tc)
                 .arg(&mut *stats)
@@ -736,6 +822,10 @@ impl VerifyEngine {
                 .arg(&ta_u)
                 .arg(&tb_u)
                 .arg(&tc)
+                .arg(&ab_code)
+                .arg(&scale_a_ptr)
+                .arg(&scale_b_ptr)
+                .arg(&scale_cols)
                 .arg(&samples_dev)
                 .arg(&m_u)
                 .arg(&atol)
@@ -787,22 +877,28 @@ impl VerifyEngine {
     /// kernel (same index identity as the gemm) and compare. 100% coverage of
     /// the checked output; costs ~one extra GEMM at naive-kernel efficiency,
     /// so restrict to small (L2-resident) sizes. Includes the non-finite scan
-    /// (the sampled path's stats pass is not needed here).
+    /// (the sampled path's stats pass is not needed here). Type codes as in
+    /// [`Self::gemm_check`].
     #[allow(clippy::too_many_arguments)]
-    pub fn gemm_full_check<T: DeviceRepr + ValidAsZeroBits>(
+    pub fn gemm_full_check<AB: DeviceRepr + ValidAsZeroBits, CT: DeviceRepr + ValidAsZeroBits>(
         &self,
         stream: &Arc<CudaStream>,
-        a: &CudaSlice<T>,
-        b: &CudaSlice<T>,
-        c: &CudaSlice<T>,
+        a: &CudaSlice<AB>,
+        b: &CudaSlice<AB>,
+        c: &CudaSlice<CT>,
         size: usize,
         ta: bool,
         tb: bool,
         tc: u32,
+        ab_code: u32,
+        scale_a: Option<&CudaSlice<u8>>,
+        scale_b: Option<&CudaSlice<u8>>,
+        scale_cols: u32,
         atol: f32,
         rtol: f32,
     ) -> Result<(), BackendError> {
         let n = (size * size) as u64;
+        let (scale_a_ptr, scale_b_ptr) = self.scale_pointers(stream, scale_a, scale_b);
         {
             let mut sample_stats = self.sample_stats.borrow_mut();
             stream
@@ -830,6 +926,10 @@ impl VerifyEngine {
                 .arg(&ta_u)
                 .arg(&tb_u)
                 .arg(&tc)
+                .arg(&ab_code)
+                .arg(&scale_a_ptr)
+                .arg(&scale_b_ptr)
+                .arg(&scale_cols)
                 .arg(&atol)
                 .arg(&rtol)
                 .arg(&mut *stats)
@@ -927,17 +1027,25 @@ impl VerifyEngine {
     }
 
     /// Diagnostics-only: run just the sampled cross-check and return stats.
+    /// Type codes as in [`Self::gemm_check`].
     #[allow(clippy::too_many_arguments)]
-    pub fn debug_sample_check<T: DeviceRepr + ValidAsZeroBits>(
+    pub fn debug_sample_check<
+        AB: DeviceRepr + ValidAsZeroBits,
+        CT: DeviceRepr + ValidAsZeroBits,
+    >(
         &self,
         stream: &Arc<CudaStream>,
-        a: &CudaSlice<T>,
-        b: &CudaSlice<T>,
-        c: &CudaSlice<T>,
+        a: &CudaSlice<AB>,
+        b: &CudaSlice<AB>,
+        c: &CudaSlice<CT>,
         size: usize,
         ta: bool,
         tb: bool,
         tc: u32,
+        ab_code: u32,
+        scale_a: Option<&CudaSlice<u8>>,
+        scale_b: Option<&CudaSlice<u8>>,
+        scale_cols: u32,
         samples_host: &[u32],
         atol: f32,
         rtol: f32,
@@ -946,6 +1054,7 @@ impl VerifyEngine {
         let samples_dev = stream
             .clone_htod(samples_host)
             .map_err(|err| BackendError::Other(err.to_string()))?;
+        let (scale_a_ptr, scale_b_ptr) = self.scale_pointers(stream, scale_a, scale_b);
         stream
             .memcpy_htod(&[SampleStats::init()], &mut *self.sample_stats.borrow_mut())
             .map_err(|err| BackendError::Other(err.to_string()))?;
@@ -962,6 +1071,10 @@ impl VerifyEngine {
                 .arg(&ta_u)
                 .arg(&tb_u)
                 .arg(&tc)
+                .arg(&ab_code)
+                .arg(&scale_a_ptr)
+                .arg(&scale_b_ptr)
+                .arg(&scale_cols)
                 .arg(&samples_dev)
                 .arg(&m_u)
                 .arg(&atol)
