@@ -1115,8 +1115,7 @@ fn normalize_status(target: &GpuTarget<'_>) -> PyResultValue {
     {
         if let Ok(nvml) = target.nvml() {
             if !map.contains_key("power_w")
-                && let Some(watts) =
-                    nvoc_core::nvml::query_nvml_power_draw_watts(nvml, target.id.0)
+                && let Some(watts) = nvoc_core::nvml::query_nvml_power_draw_watts(nvml, target.id.0)
             {
                 map.insert("power_w".into(), f64_value(f64::from(watts)));
             }
