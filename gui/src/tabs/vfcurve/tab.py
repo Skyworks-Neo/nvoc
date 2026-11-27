@@ -922,6 +922,17 @@ class VFCurveTab:
         except Exception:
             scale = self._get_screen_dpi_scale(self.app)
         fig_dpi = max(72, round(100 * scale))
+        # Matplotlib's Tk backend applies its own device-pixel-ratio on top
+        # of the figure dpi (fpixels/96; 2.0 on this 192-dpi Xft session).
+        # Pass the dpi already divided by that ratio so the effective dpi
+        # stays fig_dpi instead of being doubled. No-op where the backend
+        # does not scale (Windows keeps its established behavior).
+        fig_dpi_arg = fig_dpi
+        try:
+            ratio = max(1.0, float(self.app._matplotlib_dpi_ratio()))
+            fig_dpi_arg = max(48, round(fig_dpi / ratio))
+        except Exception:
+            pass
 
         # Size the figure to the frame's REAL allocated width from the
         # start. The old hardcoded 9-inch build rendered a 9in×dpi-wide
@@ -948,7 +959,7 @@ class VFCurveTab:
         # native high-DPI screens (the "too tall" 4K/2K regression).
         self.fig = Figure(
             figsize=(fig_w_in, self._chart_height_in(self._font_boost)),
-            dpi=fig_dpi,
+            dpi=fig_dpi_arg,
         )
         self.fig.patch.set_facecolor("#2b2b2b")
         self.ax = self.fig.add_subplot(111)

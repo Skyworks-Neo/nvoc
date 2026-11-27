@@ -343,7 +343,23 @@ class App(ctk.CTk):
         self._resize_targets = []  # type: List[Any]
 
         self.title("NVOC-GUI — NVIDIA GPU VF Curve Optimizer")
-        self.geometry("768x712")
+        # The 768x712 default is tuned for Windows; on HiDPI Linux the
+        # dashboard's own content (fan pane + quick actions) needs the
+        # layout size below, otherwise the bottom rows fall off the
+        # window. Bounded to 90% of the logical screen. Factor 1.0 Linux
+        # sessions keep the original size untouched.
+        try:
+            size_factor = self._os_dpi_factor()
+        except Exception:
+            size_factor = 1.0
+        if sys.platform.startswith("linux") and size_factor > 1.0:
+            logical_w = int(self.winfo_screenwidth() / size_factor * 0.9)
+            logical_h = int(self.winfo_screenheight() / size_factor * 0.9)
+            width = max(768, min(1200, logical_w))
+            height = max(712, min(1000, logical_h))
+            self.geometry(f"{width}x{height}")
+        else:
+            self.geometry("768x712")
         self.minsize(768, 360)
         self._single_instance_guard = single_instance_guard
 
@@ -1032,6 +1048,17 @@ class App(ctk.CTk):
         os_factor = self._os_dpi_factor()
         return os_factor * self._min_ui_scale_multiplier(os_factor)
 
+    # X11 sessions expose their HiDPI scale as the Xft.dpi X resource
+    # (96/120/144/168/192 for 100/125/150/175/200%). Tk still reports the
+    # X server's 96-dpi logical screen size, and CustomTkinter 6 hardcodes
+    # 1.0 for Linux ("DPI awareness on Linux not implemented"), so neither
+    # of those sources can be used. Clamp a nonsense resource to a sane
+    # desktop range instead of silently defaulting to 100%.
+    _MIN_UI_SCALE = 1.0
+    _MAX_UI_SCALE = 3.0
+    _x11_dpi_probed = False
+    _x11_dpi_factor_value: Optional[float] = None
+
     def _os_dpi_factor(self) -> float:
         """The window's real OS DPI factor (per-monitor, Win32 truth).
 
@@ -1042,6 +1069,7 @@ class App(ctk.CTk):
         correction lands, which is exactly the "first frame wrong, then it
         re-renders" effect). GetDpiForWindow answers truthfully the moment
         the window exists; the rest are fallbacks for exotic setups.
+        On Linux/X11 the equivalent truth is the Xft.dpi X resource.
         """
         try:
             if sys.platform == "win32":
@@ -1051,10 +1079,27 @@ class App(ctk.CTk):
                 if hwnd:
                     dpi = user32.GetDpiForWindow(hwnd)
                     if dpi:
-                        return dpi / 96.0
+                        return self._clamp_ui_scale(dpi / 96.0)
         except Exception:
             pass
-        return self._system_dpi_factor()
+        if sys.platform.startswith("linux"):
+            factor = self._x11_dpi_factor()
+            if factor is not None:
+                return self._clamp_ui_scale(factor)
+        factor = self._system_dpi_factor()
+        if sys.platform.startswith("linux"):
+            # No Xft.dpi: fall back to Tk's screen scaling (72 dpi per
+            # unit) relative to the 96-dpi baseline. On a plain Xorg
+            # server with real monitor millimetres this recovers the
+            # physical DPI; on the 96-dpi logical X server GNOME exposes
+            # it is 1.0, which is the safe no-op.
+            try:
+                scaling = float(self.tk.call("tk", "scaling"))
+                if scaling > 0:
+                    factor = max(factor, scaling * 72.0 / 96.0)
+            except Exception:
+                pass
+        return self._clamp_ui_scale(factor)
 
     @staticmethod
     def _system_dpi_factor() -> float:
@@ -1067,40 +1112,167 @@ class App(ctk.CTk):
             pass
         return 1.0
 
+    @classmethod
+    def _clamp_ui_scale(cls, factor: float) -> float:
+        if factor <= 0:
+            return 1.0
+        return round(min(cls._MAX_UI_SCALE, max(cls._MIN_UI_SCALE, factor)), 2)
+
+    @classmethod
+    def _x11_dpi_factor(cls) -> Optional[float]:
+        """DPI factor from the Xft.dpi X resource, None when unavailable.
+
+        Read through libX11 rather than spawning `xrdb`: the packaged
+        bundle already needs libX11 for _tkinter/Xft and must not depend
+        on a CLI tool being on PATH. Result cached — the resource is a
+        per-session constant, and this runs from resize callbacks.
+        """
+        if cls._x11_dpi_probed:
+            return cls._x11_dpi_factor_value
+        cls._x11_dpi_probed = True
+        try:
+            import ctypes.util
+
+            lib = None
+            for soname in (
+                ctypes.util.find_library("X11"),
+                "libX11.so.6",
+            ):
+                if not soname:
+                    continue
+                try:
+                    lib = ctypes.CDLL(soname)
+                    break
+                except OSError:
+                    continue
+            if lib is None:
+                return None
+            lib.XOpenDisplay.restype = ctypes.c_void_p
+            lib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+            lib.XGetDefault.restype = ctypes.c_char_p
+            lib.XGetDefault.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+            ]
+            lib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+            display = lib.XOpenDisplay(None)
+            if not display:
+                return None
+            try:
+                raw = lib.XGetDefault(display, b"Xft", b"dpi")
+                if raw:
+                    dpi = float(raw)
+                    if 48.0 <= dpi <= 480.0:
+                        cls._x11_dpi_factor_value = dpi / 96.0
+            finally:
+                lib.XCloseDisplay(display)
+        except Exception:
+            cls._x11_dpi_factor_value = None
+        return cls._x11_dpi_factor_value
+
+    def _matplotlib_dpi_ratio(self) -> float:
+        """Device pixel ratio matplotlib's Tk backend applies by itself.
+
+        Matplotlib's TkAgg multiplies the figure dpi by
+        ``winfo_fpixels('1i') / 96`` (Linux) or Tk's scaling on Windows.
+        On Linux the app now sets Tk scaling to the Xft factor, so the
+        backend would double the effective chart dpi unless callers pass
+        dpi / ratio. Windows keeps its existing (uncompensated) behavior.
+        """
+        if sys.platform.startswith("linux"):
+            try:
+                return max(1.0, float(self.winfo_fpixels("1i")) / 96.0)
+            except Exception:
+                pass
+        return 1.0
+
+    @classmethod
+    def _tk_scaling_for_os_factor(cls, os_factor: float) -> float:
+        """Tk pixels-per-point for an OS DPI factor (96 dpi baseline).
+
+        Tk uses `tk scaling` only to convert negative (pixel) font sizes
+        back to points; Xft then renders those points at its own DPI.
+        Leaving the two DPIs disagreeing makes CTk's pixel fonts render
+        at 2× their nominal size on a 192-dpi Xft session, which is the
+        "big chrome, clipped text" failure. Keep them equal.
+        """
+        return 96.0 * os_factor / 72.0
+
+    def _apply_linux_ui_scaling(self, os_factor: float) -> None:
+        """Make CTk geometry/font scaling and Tk font scaling agree (Linux).
+
+        CustomTkinter 6.0.0 returns 1.0 from its ScalingTracker on every
+        non-Windows platform, so CTk widgets and windows stay at 100%
+        while Tk/Xft point-sized text renders at Xft.dpi (200% here).
+        Mirror the Xft factor into CTk's global multipliers and into Tk's
+        point/pixel conversion factor; on Windows CTk already tracks the
+        real monitor DPI and this is intentionally a no-op.
+        Idempotent and cheap when the factor is unchanged.
+        """
+        if not sys.platform.startswith("linux"):
+            return
+        clamped = self._clamp_ui_scale(os_factor)
+        if clamped == getattr(self, "_linux_ui_scale_applied", None):
+            return
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            self.tk.call("tk", "scaling", self._tk_scaling_for_os_factor(clamped))
+            ctk.set_widget_scaling(clamped)
+            ctk.set_window_scaling(clamped)
+            self._linux_ui_scale_applied = clamped
+        except Exception:
+            pass
+
     def _apply_min_ui_scale(self) -> None:
         """Keep the CHART's effective scale at or above the floor.
 
         Records the sub-floor multiplier for the VF-curve chart package and
         logs the startup verdict to the support log ("1080p chart too small"
-        is only diagnosable if the log says whether the floor fired). Does
-        NOT touch CTk's global widget/window scaling any more — that half
-        of the floor inflated every CTk widget while the de-CTk'd panels'
-        point fonts stayed put. Idempotent and cheap when nothing changed
-        (the resize/move hook calls it to catch monitor switches — a window
-        dragged onto a 100% screen gets the chart floor, dragged back onto
-        150% the multiplier drops back to 1.0).
+        is only diagnosable if the log says whether the floor fired). The
+        floor itself still never inflates CTk's global widget/window
+        multipliers (that produced oversized chrome around the de-CTk'd
+        panels' unchanged point fonts). On Linux the REAL OS DPI factor is
+        separately mirrored into CTk and Tk scaling by
+        ``_apply_linux_ui_scaling`` — without it CTk stays at 1.0 while
+        Xft renders point fonts at Xft.dpi. Idempotent and cheap when
+        nothing changed (the resize/move hook calls it to catch monitor
+        switches).
         """
         if getattr(self, "_exiting", False):
             return
         os_factor = self._os_dpi_factor()
+        self._apply_linux_ui_scaling(os_factor)
         multiplier = self._min_ui_scale_multiplier(os_factor)
         changed = multiplier != getattr(self, "_ui_scale_multiplier_applied", object())
+        os_changed = os_factor != getattr(self, "_ui_scale_os_scale_applied", object())
         # The startup verdict lands in the support log on EVERY run — the
         # pre-_build_ui first call has no console yet; the flag makes the
         # next call with a console write it.
         needs_log = not getattr(self, "_ui_scale_logged", False)
-        if not changed and not needs_log:
+        if not changed and not os_changed and not needs_log:
             return
         self._ui_scale_multiplier_applied = multiplier
+        self._ui_scale_os_scale_applied = os_factor
         console = getattr(self, "console", None)
         if console is not None:
             # Only consume the startup-log flag once the line actually
             # landed — the pre-_build_ui first call has no console yet.
             self._ui_scale_logged = True
+            try:
+                tk_scaling = round(float(self.tk.call("tk", "scaling")), 3)
+            except Exception:
+                tk_scaling = 0
             console.mirror(
                 f"ui scale: os_factor={os_factor:g} multiplier={multiplier:g} "
                 f"effective={os_factor * multiplier:g} "
-                f"(chart floor {self._MIN_EFFECTIVE_UI_SCALE:g})"
+                f"(chart floor {self._MIN_EFFECTIVE_UI_SCALE:g}; "
+                f"ctk={getattr(self, '_linux_ui_scale_applied', 0):g} "
+                f"tk_scaling={tk_scaling:g})"
             )
 
     def _refresh_gpu_list(self):

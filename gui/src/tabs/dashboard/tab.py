@@ -9,6 +9,7 @@ import customtkinter as ctk
 from typing import TYPE_CHECKING, Optional, Dict, Tuple
 
 from src.parsing import as_float, parse_dashboard_status
+from src.ui_scale import ui_px_scale
 from src.widgets.lightweight_controls import LiteButton, LiteEntry, ct_button_font
 
 if TYPE_CHECKING:
@@ -87,6 +88,12 @@ class _MetricRow:
 
         row = ctk.CTkFrame(parent, fg_color=_BG_ROW, corner_radius=8)
         row.pack(fill="x", padx=16, pady=3)
+        # Raw-tk canvas geometry does not follow CTk scaling; derive it
+        # from the same factor that renders the point-size labels.
+        self._s = ui_px_scale(row)
+        self._bar_h = round(self._BAR_H * self._s)
+        self._seg_w = round(self._SEG_W * self._s)
+        self._gap_w = round(self._GAP_W * self._s)
 
         # col 0: label
         ctk.CTkLabel(
@@ -100,7 +107,7 @@ class _MetricRow:
 
         # col 1: canvas (bar) – expands
         self._canvas = tk.Canvas(
-            row, height=self._BAR_H, bg=_BG_BAR, highlightthickness=0
+            row, height=self._bar_h, bg=_BG_BAR, highlightthickness=0
         )
         self._canvas.grid(row=0, column=1, padx=4, pady=2, sticky="ew")
         row.columnconfigure(1, weight=1)
@@ -167,7 +174,7 @@ class _MetricRow:
         self._ratio = ratio
         c = self._canvas
         w = c.winfo_width()
-        h = self._BAR_H
+        h = self._bar_h
         if w < 2:
             return
         ratio_changed = (
@@ -184,7 +191,9 @@ class _MetricRow:
         self._last_draw_ratio = ratio
         c.delete("all")
         fill_w = max(0, min(w, int(w * ratio)))
-        sw, gw = self._SEG_W, self._GAP_W
+        sw, gw = self._seg_w, self._gap_w
+        inset = round(2 * self._s)
+        dim_inset = round(4 * self._s)
 
         # filled segments
         x = 0
@@ -192,7 +201,7 @@ class _MetricRow:
             x1 = min(x + sw, fill_w)
             mid = (x + x1) / 2 / w
             color = _gradient_color(self._stops, mid)
-            c.create_rectangle(x, 2, x1, h - 2, fill=color, outline="")
+            c.create_rectangle(x, inset, x1, h - inset, fill=color, outline="")
             x += sw + gw
 
         # dim unfilled segments
@@ -203,7 +212,9 @@ class _MetricRow:
             x_dim = fill_w
         while x_dim < w:
             x1 = min(x_dim + sw, w)
-            c.create_rectangle(x_dim, 4, x1, h - 4, fill="#243040", outline="")
+            c.create_rectangle(
+                x_dim, dim_inset, x1, h - dim_inset, fill="#243040", outline=""
+            )
             x_dim += sw + gw
 
     def update(self, value: float, locked: Optional[bool] = None):
