@@ -552,13 +552,15 @@ struct Args {
     )]
     video_preset: String,
 
-    /// CUDA GPU index in PCI-bus-sorted order (0-based)
+    /// CUDA GPU index in PCI-bus-sorted order (0-based); comma-separated for
+    /// multi-GPU fan-out
     #[arg(
         long,
         value_name = "INDEX",
-        help = "CUDA GPU index in PCI-bus-sorted order (0-based, default: 0)"
+        value_delimiter = ',',
+        help = "CUDA GPU index in PCI-bus-sorted order (0-based, default: 0); comma-separated list fans the stress out to one worker per card with [GPU<i>]-prefixed logs"
     )]
-    gpu_index: Option<u32>,
+    gpu_index: Option<Vec<u32>>,
 
     /// CUDA GPU PCI bus address (e.g., 0001:01:00.0)
     #[arg(
@@ -649,7 +651,7 @@ fn build_vulkan_device_selection(args: &Args) -> Result<VulkanDeviceSelection, S
     Ok(VulkanDeviceSelection {
         uuid,
         pci_bus,
-        index: args.gpu_index,
+        index: first_gpu_index(args),
     })
 }
 
@@ -1068,7 +1070,7 @@ fn apply_file_config_to_args(
         args.vulkan_only = v;
     }
     if let (true, Some(v)) = (!cli_set.contains("gpu_index"), parsed.gpu_index) {
-        args.gpu_index = Some(v);
+        args.gpu_index = Some(vec![v]);
     }
     if let (true, Some(v)) = (!cli_set.contains("pci_bus"), &parsed.pci_bus) {
         args.pci_bus = Some(v.clone());
@@ -1111,6 +1113,154 @@ fn emit_verdict(verdict: serde_json::Value, json_out: &Option<String>) {
     }
 }
 
+/// First selected `--gpu-index` value — the single-selection device hints
+/// (video-only / vulkan-only paths, the CUDA resolver) always use it.
+fn first_gpu_index(args: &Args) -> Option<u32> {
+    args.gpu_index.as_ref().and_then(|v| v.first().copied())
+}
+
+/// Strip the `--gpu-index` flag from an argv (both the `--gpu-index V` and
+/// `--gpu-index=V` spellings), keeping every other argument in order. Used by
+/// the multi-GPU fan-out to rebuild each card's child argv (the child gets
+/// one `--gpu-index <i>` appended at the end).
+fn strip_gpu_index_args(argv: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut skip_next = false;
+    for arg in argv {
+        let text = arg.to_string_lossy();
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if text == "--gpu-index" {
+            skip_next = true;
+            continue;
+        }
+        if text.starts_with("--gpu-index=") {
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out
+}
+
+/// Multi-GPU fan-out (`--gpu-index a,b,c`): spawn one child process per card
+/// with the same arguments (each receiving a single `--gpu-index`), forward
+/// every child stdout/stderr line prefixed with `[GPU<i>]`, and return the
+/// worst child exit code. Process isolation matches the per-GPU worker
+/// pattern the auto-optimizer already uses: one card's driver fault does not
+/// kill the other cards' stress, and each card runs with its own CUDA
+/// context.
+fn run_multi_gpu_fanout(indices: &[u32]) -> i32 {
+    use std::io::{BufRead, IsTerminal};
+    use std::process::{Command, Stdio};
+
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!(
+                "{}",
+                stylize(
+                    &format!("multi-GPU fan-out: cannot resolve current executable: {err}"),
+                    true
+                )
+            );
+            std::process::exit(2);
+        }
+    };
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let base_args = strip_gpu_index_args(&argv);
+    println!(
+        "{}",
+        stylize(
+            &format!(
+                "[GPU] multi-GPU fan-out: launching the same stress on {} card(s) {indices:?}",
+                indices.len()
+            ),
+            false
+        )
+    );
+    // Children write into pipes, which anstream treats as a color-less sink;
+    // restore colors only when the parent's own stdout is a terminal.
+    let force_color = std::io::stdout().is_terminal();
+
+    let mut children: Vec<(u32, Option<std::process::Child>)> = Vec::with_capacity(indices.len());
+    for &index in indices {
+        let mut cmd = Command::new(&exe);
+        cmd.args(&base_args)
+            .arg("--gpu-index")
+            .arg(index.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if force_color {
+            cmd.env("CLICOLOR_FORCE", "1");
+        }
+        match cmd.spawn() {
+            Ok(child) => children.push((index, Some(child))),
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("[GPU{index}] spawn failed: {err}"), true)
+                );
+                children.push((index, None));
+            }
+        }
+    }
+
+    // One thread per card: drain stdout/stderr with the [GPU<i>] prefix,
+    // then collect the child exit code (drain-before-wait avoids the
+    // pipe-buffer deadlock).
+    let mut handles = Vec::with_capacity(children.len());
+    for (index, child) in children {
+        handles.push(std::thread::spawn(move || -> (u32, i32) {
+            let Some(mut child) = child else {
+                return (index, 1);
+            };
+            let stdout = child.stdout.take().expect("piped stdout");
+            let stderr = child.stderr.take().expect("piped stderr");
+            let out_thread = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    println!("[GPU{index}] {line}");
+                }
+            });
+            let err_thread = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stderr)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    eprintln!("[GPU{index}] {line}");
+                }
+            });
+            let _ = out_thread.join();
+            let _ = err_thread.join();
+            let code = child
+                .wait()
+                .ok()
+                .and_then(|status| status.code())
+                .unwrap_or(1);
+            (index, code)
+        }));
+    }
+
+    let mut worst = 0i32;
+    for handle in handles {
+        if let Ok((index, code)) = handle.join() {
+            println!(
+                "{}",
+                stylize(
+                    &format!("[GPU{index}] worker finished (exit {code})"),
+                    code != 0
+                )
+            );
+            worst = worst.max(code);
+        }
+    }
+    worst
+}
+
 #[cfg(feature = "cuda")]
 fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
     // Count how many selection methods are provided
@@ -1129,7 +1279,7 @@ fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
         );
     }
 
-    if let Some(index) = args.gpu_index {
+    if let Some(index) = first_gpu_index(args) {
         // gpu-index is interpreted as index in PCI-bus-sorted CUDA device list.
         println!(
             "{}",
@@ -1785,7 +1935,8 @@ pub fn run_from_args() {
     if args.video_only {
         #[cfg(feature = "video")]
         {
-            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+            let config = match build_video_config(&args, first_gpu_index(&args).unwrap_or(0), true)
+            {
                 Ok(config) => config,
                 Err(err) => {
                     eprintln!(
@@ -1835,6 +1986,16 @@ pub fn run_from_args() {
             std::process::exit(2);
         }
     };
+
+    // Multi-GPU fan-out (--gpu-index a,b,c): one worker per card with the
+    // remaining arguments forwarded verbatim, every output line prefixed
+    // [GPU<i>]. Reached only after the vulkan-only / video-only early exits,
+    // so those single-device paths keep using the first index unchanged.
+    if args.gpu_index.as_ref().is_some_and(|v| v.len() > 1) {
+        let indices = args.gpu_index.clone().expect("checked above");
+        let code = run_multi_gpu_fanout(&indices);
+        std::process::exit(code);
+    }
 
     let gpu_device_index = match resolve_gpu_device_index(&args) {
         Ok(idx) => idx,
@@ -2618,7 +2779,8 @@ pub fn run_from_args() {
     if args.video_only {
         #[cfg(feature = "video")]
         {
-            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+            let config = match build_video_config(&args, first_gpu_index(&args).unwrap_or(0), true)
+            {
                 Ok(config) => config,
                 Err(err) => {
                     eprintln!(
@@ -2693,7 +2855,8 @@ pub fn run_from_args() {
     if args.video_only {
         #[cfg(feature = "video")]
         {
-            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+            let config = match build_video_config(&args, first_gpu_index(&args).unwrap_or(0), true)
+            {
                 Ok(config) => config,
                 Err(err) => {
                     eprintln!(
@@ -2733,4 +2896,37 @@ pub fn run_from_args() {
 #[allow(dead_code)]
 fn main() {
     run_from_args();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_gpu_index_args;
+    use std::ffi::OsString;
+
+    fn argv(items: &[&str]) -> Vec<OsString> {
+        items.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn strip_gpu_index_removes_both_spellings() {
+        // `--gpu-index V` spelling: flag and its value both drop.
+        let stripped = strip_gpu_index_args(&argv(&[
+            "--duration",
+            "30",
+            "--gpu-index",
+            "0,1",
+            "--precisions",
+            "fp16",
+        ]));
+        assert_eq!(
+            stripped,
+            argv(&["--duration", "30", "--precisions", "fp16"])
+        );
+        // `--gpu-index=V` spelling drops as one token.
+        let stripped = strip_gpu_index_args(&argv(&["--gpu-index=2", "--duration", "10"]));
+        assert_eq!(stripped, argv(&["--duration", "10"]));
+        // No flag: argv passes through untouched.
+        let untouched = argv(&["--duration", "5"]);
+        assert_eq!(strip_gpu_index_args(&untouched), untouched);
+    }
 }
