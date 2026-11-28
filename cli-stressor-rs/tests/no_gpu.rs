@@ -459,8 +459,8 @@ fn fp4_int4_device_gates() {
         compute_capability: Some(sm),
         l2_cache_bytes: None,
     };
-    // FP8 E5M2: same SM89+ hardware gate as E4M3 (the Ada kernel gap is
-    // arbitrated at runtime by the heuristic, not by a static gate).
+    // FP8 E5M2: same SM89+ hardware gate as E4M3 (the E5M2xE5M2 kernel gap is
+    // arbitrated at runtime: probe pure, fall back to mixed E5M2xE4M3).
     let mut e5m2 = parse_precision_list("fp8e5m2").unwrap();
     let e5m2 = e5m2.remove(0);
     assert!(info((8, 9)).supports_precision(&e5m2).is_ok());

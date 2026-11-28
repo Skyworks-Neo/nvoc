@@ -42,7 +42,18 @@ pub(super) enum LtDtype {
     /// the plan key. TN-only (cublasLt FP8 requirement).
     Fp8E4m3,
     /// E5M2 (`CUDA_R_8F_E5M2`), same compute/scale/TN constraints as E4M3.
+    /// The pure E5M2×E5M2 layout: the SM89+ MMA instruction takes any FP8×FP8
+    /// pair, but cublasLt ships no E5M2×E5M2 matmul kernels on any build — the
+    /// FP8 layout table lists only E4M3×E4M3 / E4M3×E5M2 / E5M2×E4M3 (XLA:
+    /// "cuBLASLt FP8 GEMM kernels require one of the two operands to be in
+    /// F8E4M3FN format"). The stress path probes it first (a Blackwell-class
+    /// kernel inventory may expose it) and falls back to [`LtDtype::Fp8E5m2Mixed`]
+    /// on zero candidates.
     Fp8E5m2,
+    /// Mixed E5M2(A) × E4M3(B) fallback for the E5M2 stress lane — same FP8
+    /// tensor-core path with one E4M3 operand, which satisfies the cublasLt
+    /// FP8 layout requirement (see [`LtDtype::Fp8E5m2`]).
+    Fp8E5m2Mixed,
     /// E2M1 with 16-element E4M3 block scales (NVFP4,
     /// `MATRIX_SCALE_VEC16_UE4M3`). TN-only.
     Fp4Nvfp4,
@@ -103,14 +114,16 @@ impl LtDtype {
             // surfaces; the cuda11 (R470-era) build excludes those arms, and
             // the hardware gate lives in `DeviceInfo::supports_precision`.
             #[cfg(not(feature = "cuda11"))]
-            LtDtype::Fp8E4m3 | LtDtype::Fp8E5m2 => (
-                // E4M3 → CUDA_R_8F_E4M3, E5M2 → CUDA_R_8F_E5M2; the enum
-                // discriminants are adjacent in the CUDA header and both
-                // share C = f16 / COMPUTE_32F / f32 scale.
-                if LtDtype::Fp8E5m2 == self {
-                    dt::CUDA_R_8F_E5M2
-                } else {
+            LtDtype::Fp8E4m3 | LtDtype::Fp8E5m2 | LtDtype::Fp8E5m2Mixed => (
+                // E4M3 → CUDA_R_8F_E4M3, E5M2 (pure or the mixed fallback's
+                // A operand) → CUDA_R_8F_E5M2; the enum discriminants are
+                // adjacent in the CUDA header and all share C = f16 /
+                // COMPUTE_32F / f32 scale. The mixed fallback's B-operand
+                // override lives in `b_type`.
+                if LtDtype::Fp8E4m3 == self {
                     dt::CUDA_R_8F_E4M3
+                } else {
+                    dt::CUDA_R_8F_E5M2
                 },
                 dt::CUDA_R_16F,
                 dt::CUDA_R_32F,
@@ -124,7 +137,11 @@ impl LtDtype {
                 ct::CUBLAS_COMPUTE_32F,
             ),
             #[cfg(feature = "cuda11")]
-            LtDtype::Fp8E4m3 | LtDtype::Fp8E5m2 | LtDtype::Fp4Nvfp4 | LtDtype::Fp4Mxfp4 => {
+            LtDtype::Fp8E4m3
+            | LtDtype::Fp8E5m2
+            | LtDtype::Fp8E5m2Mixed
+            | LtDtype::Fp4Nvfp4
+            | LtDtype::Fp4Mxfp4 => {
                 unreachable!("FP8/FP4 are cfg-excluded from the cuda11 build")
             }
             LtDtype::Int8 => (
@@ -142,6 +159,16 @@ impl LtDtype {
         }
     }
 
+    /// B operand data type: the shared `types().0` for every layout except
+    /// the mixed FP8 fallback, which swaps B to E4M3 while A stays E5M2.
+    #[cfg(not(feature = "cuda11"))]
+    fn b_type(self) -> lt_sys::cudaDataType_t {
+        match self {
+            LtDtype::Fp8E5m2Mixed => lt_sys::cudaDataType_t::CUDA_R_8F_E4M3,
+            _ => self.types().0,
+        }
+    }
+
     pub(super) fn name(self) -> &'static str {
         match self {
             LtDtype::F32 => "FP32",
@@ -151,6 +178,7 @@ impl LtDtype {
             LtDtype::Bf16 => "BF16",
             LtDtype::Fp8E4m3 => "FP8 E4M3FN",
             LtDtype::Fp8E5m2 => "FP8 E5M2",
+            LtDtype::Fp8E5m2Mixed => "FP8 E5M2xE4M3",
             LtDtype::Fp4Nvfp4 | LtDtype::Fp4Mxfp4 => "FP4 E2M1",
             LtDtype::Int8 => "INT8",
             LtDtype::Int4 => "INT4",
@@ -310,7 +338,13 @@ impl LtLane {
             let ld = key.size as i64;
             let a_layout = lt_res::create_matrix_layout(ab_type, rows, rows, ld)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
-            let b_layout = lt_res::create_matrix_layout(ab_type, rows, rows, ld)
+            // FP8 mixed fallback swaps the B operand dtype (A keeps types().0);
+            // every other layout shares the A/B type.
+            #[cfg(not(feature = "cuda11"))]
+            let b_type = key.dtype.b_type();
+            #[cfg(feature = "cuda11")]
+            let b_type = key.dtype.types().0;
+            let b_layout = lt_res::create_matrix_layout(b_type, rows, rows, ld)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
             let c_layout = lt_res::create_matrix_layout(c_type, rows, rows, ld)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
@@ -389,7 +423,7 @@ impl LtLane {
             let hint = match key.dtype {
                 LtDtype::Fp4Nvfp4 | LtDtype::Fp4Mxfp4 => " (FP4 needs CUDA 12.8+/R570+)",
                 LtDtype::Fp8E5m2 => {
-                    " (this cublasLt build ships no E5M2 GEMM kernels for this arch; E4M3 is Ada's native FP8 format)"
+                    " (no E5M2xE5M2 kernels: cublasLt FP8 layouts require at least one E4M3 operand)"
                 }
                 LtDtype::Int4 => {
                     " (this driver's cublasLt exposes no CUDA_R_4I/COMPUTE_32I candidate)"

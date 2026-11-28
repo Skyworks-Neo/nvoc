@@ -292,7 +292,7 @@ extern "C" __global__ void gemm_stats_reduce(
 extern "C" __global__ void gemm_sample_check(
     const void* a, const void* b, const void* c,
     unsigned int size, unsigned int ta, unsigned int tb, unsigned int tc,
-    unsigned int ab_code, const void* scale_a, const void* scale_b,
+    unsigned int a_code, unsigned int b_code, const void* scale_a, const void* scale_b,
     unsigned int scale_cols,
     const unsigned int* samples, unsigned int m,
     float atol, float rtol, SampleStats* out)
@@ -318,9 +318,11 @@ extern "C" __global__ void gemm_sample_check(
                 dacc += ((const double*)a)[ai] * ((const double*)b)[bi];
             } else {
                 // A's non-K coordinate is j, B's is i, in both transpose
-                // orientations (see the index identity above).
-                facc += v_ab_load(a, ai, kk, j, ab_code, scale_a, scale_cols)
-                      * v_ab_load(b, bi, kk, i, ab_code, scale_b, scale_cols);
+                // orientations (see the index identity above). A and B carry
+                // separate type codes: the mixed FP8 fallback stress layout
+                // (E5M2 x E4M3) needs per-operand decoding.
+                facc += v_ab_load(a, ai, kk, j, a_code, scale_a, scale_cols)
+                      * v_ab_load(b, bi, kk, i, b_code, scale_b, scale_cols);
             }
         }
         float cv = v_load(c, (unsigned long long)i * size + j, tc);
@@ -352,7 +354,7 @@ extern "C" __global__ void gemm_sample_check(
 extern "C" __global__ void gemm_full_check(
     const void* a, const void* b, const void* c,
     unsigned int size, unsigned int ta, unsigned int tb, unsigned int tc,
-    unsigned int ab_code, const void* scale_a, const void* scale_b,
+    unsigned int a_code, unsigned int b_code, const void* scale_a, const void* scale_b,
     unsigned int scale_cols,
     float atol, float rtol, SampleStats* out)
 {
@@ -372,8 +374,8 @@ extern "C" __global__ void gemm_full_check(
         if (tc == 1u) {
             dacc += ((const double*)a)[ai] * ((const double*)b)[bi];
         } else {
-            facc += v_ab_load(a, ai, kk, j, ab_code, scale_a, scale_cols)
-                  * v_ab_load(b, bi, kk, i, ab_code, scale_b, scale_cols);
+            facc += v_ab_load(a, ai, kk, j, a_code, scale_a, scale_cols)
+                  * v_ab_load(b, bi, kk, i, b_code, scale_b, scale_cols);
         }
     }
     float cv = v_load(c, gid, tc);
@@ -739,10 +741,12 @@ impl VerifyEngine {
     }
 
     /// Run both GEMM checks on one lane's buffers. `tc` (C output type):
-    /// 0=f32, 1=f64, 2=f16, 3=bf16, 8=i32. `ab_code` (A/B operand type): same
-    /// codes plus 4=fp8-e4m3, 5=fp4+VEC16_E4M3 scales (NVFP4), 6=fp4+VEC32_UE8M0
-    /// scales (MXFP4), 7=int4. `samples_host` holds 2·m little-endian (i, j)
-    /// index pairs. Scale pointers are None for the non-block-scaled types.
+    /// 0=f32, 1=f64, 2=f16, 3=bf16, 8=i32. `a_code`/`b_code` (operand types):
+    /// the same codes plus 4=fp8-e4m3, 5=fp4+VEC16_E4M3 scales (NVFP4),
+    /// 6=fp4+VEC32_UE8M0 scales (MXFP4), 7=int4, 9=fp8-e5m2 — per operand,
+    /// for the mixed FP8 layout (E5M2 x E4M3). `samples_host` holds 2·m
+    /// little-endian (i, j) index pairs. Scale pointers are None for the
+    /// non-block-scaled types.
     #[allow(clippy::too_many_arguments)]
     pub fn gemm_check<AB: DeviceRepr + ValidAsZeroBits, CT: DeviceRepr + ValidAsZeroBits>(
         &self,
@@ -754,7 +758,8 @@ impl VerifyEngine {
         ta: bool,
         tb: bool,
         tc: u32,
-        ab_code: u32,
+        a_code: u32,
+        b_code: u32,
         scale_a: Option<&CudaSlice<u8>>,
         scale_b: Option<&CudaSlice<u8>>,
         scale_cols: u32,
@@ -843,7 +848,8 @@ impl VerifyEngine {
                 .arg(&ta_u)
                 .arg(&tb_u)
                 .arg(&tc)
-                .arg(&ab_code)
+                .arg(&a_code)
+                .arg(&b_code)
                 .arg(&scale_a_ptr)
                 .arg(&scale_b_ptr)
                 .arg(&scale_cols)
@@ -911,7 +917,8 @@ impl VerifyEngine {
         ta: bool,
         tb: bool,
         tc: u32,
-        ab_code: u32,
+        a_code: u32,
+        b_code: u32,
         scale_a: Option<&CudaSlice<u8>>,
         scale_b: Option<&CudaSlice<u8>>,
         scale_cols: u32,
@@ -947,7 +954,8 @@ impl VerifyEngine {
                 .arg(&ta_u)
                 .arg(&tb_u)
                 .arg(&tc)
-                .arg(&ab_code)
+                .arg(&a_code)
+                .arg(&b_code)
                 .arg(&scale_a_ptr)
                 .arg(&scale_b_ptr)
                 .arg(&scale_cols)
@@ -1063,7 +1071,8 @@ impl VerifyEngine {
         ta: bool,
         tb: bool,
         tc: u32,
-        ab_code: u32,
+        a_code: u32,
+        b_code: u32,
         scale_a: Option<&CudaSlice<u8>>,
         scale_b: Option<&CudaSlice<u8>>,
         scale_cols: u32,
@@ -1092,7 +1101,8 @@ impl VerifyEngine {
                 .arg(&ta_u)
                 .arg(&tb_u)
                 .arg(&tc)
-                .arg(&ab_code)
+                .arg(&a_code)
+                .arg(&b_code)
                 .arg(&scale_a_ptr)
                 .arg(&scale_b_ptr)
                 .arg(&scale_cols)

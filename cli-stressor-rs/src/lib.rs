@@ -96,6 +96,10 @@ pub enum PrecisionKind {
     /// 4-bit float (E2M1) with block scaling, cublasLt-only (Blackwell).
     FP4E2M1,
     /// E5M2 (CUDA_R_8F_E5M2), cublasLt-only, same SM89+ gate as E4M3FN.
+    /// cublasLt ships no E5M2xE5M2 matmul kernels on any build (the FP8
+    /// layout table requires >=1 E4M3 operand); the stress path probes pure
+    /// E5M2xE5M2 first and falls back to mixed E5M2(A)xE4M3(B) on zero
+    /// candidates, so the precision stays runnable on Ada and newer.
     FP8E5M2,
     INT8,
     /// 4-bit signed integer (CUDA_R_4I), cublasLt-only, IMMA on SM75+.
@@ -336,11 +340,13 @@ impl DeviceInfo {
                 }
             }
             // E5M2: same SM89+ hardware gate as E4M3 (the sm_89 PTX supports
-            // E5M2 mma), but the cuBLASLt kernel inventory for Ada varies by
-            // build — some return zero E5M2 candidates (observed on RTX 4060;
-            // E4M3 is Ada's inference-native format). Runtime arbitration
-            // decides: zero candidates downgrade the precision to SKIP with
-            // the [CUDA] versions line as the correlating record.
+            // E5M2 mma). The cublasLt kernel inventory is deterministic, not
+            // build-dependent: no cublasLt ever ships E5M2xE5M2 matmul kernels
+            // (the FP8 layout table requires >=1 E4M3 operand — confirmed by
+            // zero candidates on RTX 4060 across 12.0.2/12.8.4/12.9.2.10/13.4.1,
+            // matching the XLA gemm_rewriter gate). The stress path arbitrates
+            // at runtime: probe pure E5M2xE5M2, fall back to mixed
+            // E5M2(A)xE4M3(B), SKIP only when neither probes.
             PrecisionKind::FP8E5M2 => {
                 let sm = self.compute_capability.unwrap_or((0, 0));
                 if sm.0 >= 8 && (sm.0 > 8 || sm.1 >= 9) {

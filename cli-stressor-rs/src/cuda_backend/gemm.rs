@@ -17,6 +17,10 @@ use rayon::prelude::*;
 // bindings and those stress arms are cfg-excluded).
 #[cfg(not(feature = "cuda11"))]
 use cli_stressor_rs::{Fp4ScaleMode, fp4_quantize_matrix, fp8_e4m3_quantize, fp8_e5m2_quantize};
+
+/// Host-side FP8 quantizer function pointer (the E4M3/E5M2 codecs share this
+/// signature; the mixed E5M2 layout quantizes A and B with different ones).
+type Fp8QuantFn = fn(f32) -> u8;
 use cudarc::driver::{LaunchConfig, PushKernelArg, ValidAsZeroBits};
 
 use super::backend::CudaBackend;
@@ -90,7 +94,8 @@ impl CudaBackend {
         ta: bool,
         tb: bool,
         tc: u32,
-        ab_code: u32,
+        a_code: u32,
+        b_code: u32,
         scale_a: Option<&[cudarc::driver::CudaSlice<u8>]>,
         scale_b: Option<&[cudarc::driver::CudaSlice<u8>]>,
         seed: u64,
@@ -119,7 +124,8 @@ impl CudaBackend {
                     ta,
                     tb,
                     tc,
-                    ab_code,
+                    a_code,
+                    b_code,
                     scale_a.map(|s| &s[lane]),
                     scale_b.map(|s| &s[lane]),
                     scale_cols,
@@ -147,7 +153,8 @@ impl CudaBackend {
                 ta,
                 tb,
                 tc,
-                ab_code,
+                a_code,
+                b_code,
                 scale_a.map(|s| &s[lane]),
                 scale_b.map(|s| &s[lane]),
                 scale_cols,
@@ -164,8 +171,9 @@ impl CudaBackend {
     /// Shared cublasLt GEMM stress runner: per-lane buffer prep via the
     /// dtype-specific `prep` closure, plan build with the first-encounter
     /// `[GEMM-LT]` algo report (candidate timing under `--gemm-algo-list`),
-    /// warmup/burst loops, and the ride-on-load verify. `tc_code`/`ab_code`
-    /// are the verify kernels' C/operand type codes.
+    /// warmup/burst loops, and the ride-on-load verify. `tc_code` is the
+    /// verify kernels' C type code; `a_code`/`b_code` are the per-operand
+    /// type codes (identical except for the mixed FP8 layout).
     #[allow(clippy::too_many_arguments)]
     fn run_gemm_path_lt<AB, CT, Prep>(
         &mut self,
@@ -183,7 +191,8 @@ impl CudaBackend {
         verify: VerifyConfig,
         verify_operands: bool,
         tc_code: u32,
-        ab_code: u32,
+        a_code: u32,
+        b_code: u32,
         device_gen: Option<&LtDeviceGen<'_, AB>>,
         mut prep: Prep,
     ) -> Result<f64, BackendError>
@@ -384,7 +393,8 @@ impl CudaBackend {
                 ta,
                 tb,
                 tc_code,
-                ab_code,
+                a_code,
+                b_code,
                 scale_a_devs.as_deref(),
                 scale_b_devs.as_deref(),
                 seed,
@@ -627,6 +637,7 @@ impl CudaBackend {
                     transpose_b,
                     3,
                     3,
+                    3,
                     None,
                     None,
                     seed,
@@ -649,6 +660,7 @@ impl CudaBackend {
                     &mut rng,
                     verify,
                     true,
+                    3,
                     3,
                     3,
                     None,
@@ -746,6 +758,7 @@ impl CudaBackend {
                     transpose_b,
                     2,
                     2,
+                    2,
                     None,
                     None,
                     seed,
@@ -770,6 +783,7 @@ impl CudaBackend {
                     &mut rng,
                     verify,
                     true,
+                    2,
                     2,
                     2,
                     None,
@@ -865,6 +879,7 @@ impl CudaBackend {
                     transpose_b,
                     0,
                     0,
+                    0,
                     None,
                     None,
                     seed,
@@ -893,6 +908,7 @@ impl CudaBackend {
                     &mut rng,
                     verify,
                     true,
+                    0,
                     0,
                     0,
                     None,
@@ -990,6 +1006,7 @@ impl CudaBackend {
                     transpose_b,
                     1,
                     1,
+                    1,
                     None,
                     None,
                     seed,
@@ -1012,6 +1029,7 @@ impl CudaBackend {
                     &mut rng,
                     verify,
                     true,
+                    1,
                     1,
                     1,
                     None,
@@ -1181,7 +1199,8 @@ impl CudaBackend {
                            // exceed 2^24 and the f32 compare would be
                            // inexact; the periodic exact sidecar covers INT8.
                     8,     // C output: i32 (stats scan only, unused here)
-                    0,     // A/B operand code unused (no verify)
+                    0,
+                    0,     // A/B operand codes unused (no verify)
                     None,
                     |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
@@ -1210,16 +1229,91 @@ impl CudaBackend {
             // default segmented-accumulation path is precision-safe at any K
             // (unlocked-ada-gemm measured 10-15% relative error at large K on
             // the fast path), which matters for the ride-on-load compare.
+            //
+            // E5M2 runs a two-step probe: pure E5M2xE5M2 first (the SM89+ MMA
+            // instruction accepts any FP8xFP8 pair, and a Blackwell-class
+            // kernel inventory may expose it), then the mixed E5M2(A)xE4M3(B)
+            // fallback — cublasLt ships no E5M2xE5M2 matmul kernels on any
+            // build (the FP8 layout table requires >=1 E4M3 operand; zero
+            // candidates observed on Ada with 12.0.2/12.8.4/12.9.2.10/13.4.1).
+            // Neither probing → Unsupported, which the mixed-loop machinery
+            // reports as a one-time SKIP.
             #[cfg(not(feature = "cuda11"))]
             PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 => {
                 let size = (size + 15) & !15;
                 let e5m2 = spec.kind == PrecisionKind::FP8E5M2;
+                let fa = self.fp8_fast_accum;
 
-                let (dtype, ab_code) = if e5m2 {
-                    (LtDtype::Fp8E5m2, 9u32)
-                } else {
-                    (LtDtype::Fp8E4m3, 4u32)
+                let shape_key = |dt: LtDtype| LtShapeKey {
+                    dtype: dt,
+                    size: size as u32,
+                    ta: true,
+                    tb: false,
+                    fast_accum: fa,
                 };
+                // Pure E4M3 needs no probe (it is the layout cublasLt was
+                // built around); E5M2 probes pure → mixed per the FP8 layout
+                // table (>=1 E4M3 operand required).
+                let pure_count = if e5m2 {
+                    self.lt_for_lane_mut(0)
+                        .heuristic_count(shape_key(LtDtype::Fp8E5m2))?
+                } else {
+                    1
+                };
+                let (dtype, a_code, b_code, quant_a, quant_b): (
+                    LtDtype,
+                    u32,
+                    u32,
+                    Fp8QuantFn,
+                    Fp8QuantFn,
+                ) = if !e5m2 {
+                    (
+                        LtDtype::Fp8E4m3,
+                        4,
+                        4,
+                        fp8_e4m3_quantize,
+                        fp8_e4m3_quantize,
+                    )
+                } else if pure_count > 0 {
+                    (
+                        LtDtype::Fp8E5m2,
+                        9,
+                        9,
+                        fp8_e5m2_quantize,
+                        fp8_e5m2_quantize,
+                    )
+                } else {
+                    let mixed_count = self
+                        .lt_for_lane_mut(0)
+                        .heuristic_count(shape_key(LtDtype::Fp8E5m2Mixed))?;
+                    if mixed_count == 0 {
+                        return Err(BackendError::Unsupported(format!(
+                            "cublasLt has neither E5M2xE5M2 nor mixed E5M2xE4M3 candidates \
+                             for size {} (FP8 layouts require >=1 E4M3 operand)",
+                            size
+                        )));
+                    }
+                    if !self
+                        .lt_reported
+                        .contains(&shape_key(LtDtype::Fp8E5m2Mixed))
+                    {
+                        println!(
+                            "[GEMM-LT] FP8 E5M2xE5M2: no candidates from cublasLt (FP8 layouts \
+                             require >=1 E4M3 operand); falling back to mixed E5M2(A)xE4M3(B)"
+                        );
+                    }
+                    (
+                        LtDtype::Fp8E5m2Mixed,
+                        9,
+                        4,
+                        fp8_e5m2_quantize,
+                        fp8_e4m3_quantize,
+                    )
+                };
+                // A is E5M2 in both E5M2 modes; B stays E5M2 only on the pure
+                // path (the mixed fallback swaps B to E4M3).
+                let a_e5 = u32::from(e5m2);
+                let b_e5 = u32::from(dtype == LtDtype::Fp8E5m2);
                 let lt_fill = |kernels: &super::gpu_fill::GpuFillKernels,
                                stream: &std::sync::Arc<cudarc::driver::CudaStream>,
                                fill_seed: u64,
@@ -1232,9 +1326,11 @@ impl CudaBackend {
                         let b = stream
                             .alloc_zeros::<u8>(n)
                             .map_err(|err| BackendError::Other(err.to_string()))?;
-                        let e5 = u32::from(e5m2);
                         let cfg = LaunchConfig::for_num_elems(n.min(u32::MAX as usize) as u32);
-                        for (buf, fill) in [(&a, fill_seed), (&b, fill_seed ^ 0xA5A5_5A5A_5A5A_5A5A)] {
+                        for (buf, e5, fill) in [
+                            (&a, a_e5, fill_seed),
+                            (&b, b_e5, fill_seed ^ 0xA5A5_5A5A_5A5A_5A5A),
+                        ] {
                             unsafe {
                                 stream
                                     .launch_builder(&kernels.fp8_fn)
@@ -1260,11 +1356,6 @@ impl CudaBackend {
                 } else {
                     None
                 };
-                let quant: fn(f32) -> u8 = if e5m2 {
-                    fp8_e5m2_quantize
-                } else {
-                    fp8_e4m3_quantize
-                };
                 self.run_gemm_path_lt::<u8, f16, _>(
                     dtype,
                     spec,
@@ -1280,7 +1371,8 @@ impl CudaBackend {
                     verify,
                     true,
                     2, // C output: f16
-                    ab_code,
+                    a_code,
+                    b_code,
                     device_gen,
                     |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
@@ -1291,12 +1383,12 @@ impl CudaBackend {
                             a: a_host
                                 .data
                                 .par_iter()
-                                .map(|v| quant(*v))
+                                .map(|v| quant_a(*v))
                                 .collect(),
                             b: b_host
                                 .data
                                 .par_iter()
-                                .map(|v| quant(*v))
+                                .map(|v| quant_b(*v))
                                 .collect(),
                             scale_a: Vec::new(),
                             scale_b: Vec::new(),
@@ -1409,6 +1501,7 @@ impl CudaBackend {
                     true,
                     2, // C output: f16
                     ab_code,
+                    ab_code,
                     device_gen,
                     move |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
@@ -1452,7 +1545,8 @@ impl CudaBackend {
                     verify,
                     true,
                     8, // C output: i32
-                    7, // A/B operand: packed signed nibbles
+                    7, // A/B operand codes: packed signed nibbles
+                    7,
                     None,
                     |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
