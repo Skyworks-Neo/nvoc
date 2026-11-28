@@ -30,11 +30,19 @@ use super::backend::CudaBackend;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[allow(dead_code)] // FP8/FP4 variants are constructed only on the cuda12 build
 pub(super) enum LtDtype {
+    F32,
+    /// TF32 via the desc-level `CUBLAS_COMPUTE_32F_FAST_TF32` compute type —
+    /// the Lt equivalent of the classic `CUBLAS_TF32_TENSOR_OP_MATH` math
+    /// mode (the desc carries the compute type, so no math-mode dependency).
+    Tf32,
+    F64,
     F16,
     Bf16,
     /// E4M3FN (`CUDA_R_8F_E4M3`), `CUBLAS_COMPUTE_32F`; FAST_ACCUM is part of
     /// the plan key. TN-only (cublasLt FP8 requirement).
     Fp8E4m3,
+    /// E5M2 (`CUDA_R_8F_E5M2`), same compute/scale/TN constraints as E4M3.
+    Fp8E5m2,
     /// E2M1 with 16-element E4M3 block scales (NVFP4,
     /// `MATRIX_SCALE_VEC16_UE4M3`). TN-only.
     Fp4Nvfp4,
@@ -61,6 +69,24 @@ impl LtDtype {
         use lt_sys::cublasComputeType_t as ct;
         use lt_sys::cudaDataType_t as dt;
         match self {
+            LtDtype::F32 => (
+                dt::CUDA_R_32F,
+                dt::CUDA_R_32F,
+                dt::CUDA_R_32F,
+                ct::CUBLAS_COMPUTE_32F,
+            ),
+            LtDtype::Tf32 => (
+                dt::CUDA_R_32F,
+                dt::CUDA_R_32F,
+                dt::CUDA_R_32F,
+                ct::CUBLAS_COMPUTE_32F_FAST_TF32,
+            ),
+            LtDtype::F64 => (
+                dt::CUDA_R_64F,
+                dt::CUDA_R_64F,
+                dt::CUDA_R_64F,
+                ct::CUBLAS_COMPUTE_64F,
+            ),
             LtDtype::F16 => (
                 dt::CUDA_R_16F,
                 dt::CUDA_R_16F,
@@ -77,8 +103,15 @@ impl LtDtype {
             // surfaces; the cuda11 (R470-era) build excludes those arms, and
             // the hardware gate lives in `DeviceInfo::supports_precision`.
             #[cfg(not(feature = "cuda11"))]
-            LtDtype::Fp8E4m3 => (
-                dt::CUDA_R_8F_E4M3,
+            LtDtype::Fp8E4m3 | LtDtype::Fp8E5m2 => (
+                // E4M3 → CUDA_R_8F_E4M3, E5M2 → CUDA_R_8F_E5M2; the enum
+                // discriminants are adjacent in the CUDA header and both
+                // share C = f16 / COMPUTE_32F / f32 scale.
+                if LtDtype::Fp8E5m2 == self {
+                    dt::CUDA_R_8F_E5M2
+                } else {
+                    dt::CUDA_R_8F_E4M3
+                },
                 dt::CUDA_R_16F,
                 dt::CUDA_R_32F,
                 ct::CUBLAS_COMPUTE_32F,
@@ -91,7 +124,7 @@ impl LtDtype {
                 ct::CUBLAS_COMPUTE_32F,
             ),
             #[cfg(feature = "cuda11")]
-            LtDtype::Fp8E4m3 | LtDtype::Fp4Nvfp4 | LtDtype::Fp4Mxfp4 => {
+            LtDtype::Fp8E4m3 | LtDtype::Fp8E5m2 | LtDtype::Fp4Nvfp4 | LtDtype::Fp4Mxfp4 => {
                 unreachable!("FP8/FP4 are cfg-excluded from the cuda11 build")
             }
             LtDtype::Int8 => (
@@ -111,9 +144,13 @@ impl LtDtype {
 
     pub(super) fn name(self) -> &'static str {
         match self {
+            LtDtype::F32 => "FP32",
+            LtDtype::Tf32 => "TF32",
+            LtDtype::F64 => "FP64",
             LtDtype::F16 => "FP16",
             LtDtype::Bf16 => "BF16",
             LtDtype::Fp8E4m3 => "FP8 E4M3FN",
+            LtDtype::Fp8E5m2 => "FP8 E5M2",
             LtDtype::Fp4Nvfp4 | LtDtype::Fp4Mxfp4 => "FP4 E2M1",
             LtDtype::Int8 => "INT8",
             LtDtype::Int4 => "INT4",

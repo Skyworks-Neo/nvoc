@@ -438,7 +438,7 @@ impl Backend for CudaBackend {
                     size: host.size,
                 })
             }
-            PrecisionKind::FP8E4M3FN => Err(BackendError::Other(
+            PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 => Err(BackendError::Other(
                 "precision not supported in CUDA backend".to_string(),
             )),
             // FP4/INT4 are cublasLt GEMM-only modes with packed half-byte

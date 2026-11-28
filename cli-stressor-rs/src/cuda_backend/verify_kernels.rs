@@ -132,6 +132,25 @@ __device__ float v_fp8e4m3(unsigned char b) {
     unsigned int fbits = sign | ((exp - 7u + 127u) << 23) | (man << 20);
     return __uint_as_float(fbits);
 }
+// E5M2 (CUDA_R_8F_E5M2): bias 15, denorm man*2^-16, max ±57344. Unlike E4M3,
+// exp field 15 is an ordinary exponent — Inf/NaN live in field 31 (0x7C..).
+__device__ float v_fp8e5m2(unsigned char b) {
+    unsigned int sign = ((unsigned int)(b & 0x80u)) << 24;
+    unsigned int exp = (unsigned int)(b >> 2) & 0x1Fu;
+    unsigned int man = (unsigned int)b & 0x3u;
+    if (exp == 0u) {
+        if (man == 0u) return __uint_as_float(sign);
+        float v = (float)man * 1.52587890625e-5f; // man * 2^-16
+        return (b & 0x80u) ? -v : v;
+    }
+    if (exp == 31u) {
+        if (man == 0u) return __uint_as_float(sign | 0x7F800000u); // Inf
+        return __uint_as_float(0x7FC00000u); // NaN
+    }
+    // normal: (1 + man/4) * 2^(exp-15) -> mantissa man/4 = man*2^-2
+    unsigned int fbits = sign | ((exp - 15u + 127u) << 23) | (man << 21);
+    return __uint_as_float(fbits);
+}
 // E2M1 nibble (CUDA_R_4F_E2M1): ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}.
 __device__ float v_fp4e2m1(unsigned int nib) {
     float mags[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
@@ -141,6 +160,7 @@ __device__ float v_fp4e2m1(unsigned int nib) {
 // A/B operand load for the cublasLt GEMM stress paths.
 //   0..3 = legacy float types (f32/f64/f16/bf16), 8 = (unused here) i32
 //   4    = FP8 E4M3FN byte
+//   9    = FP8 E5M2 byte
 //   5    = FP4 packed (low nibble first) + 16-element E4M3 block scales (NVFP4)
 //   6    = FP4 packed + 32-element UE8M0 block scales (MXFP4)
 //   7    = INT4 packed signed nibbles
@@ -152,6 +172,7 @@ __device__ float v_ab_load(const void* p, unsigned long long lin, unsigned int k
                            unsigned int col, unsigned int code,
                            const void* scale, unsigned int scale_cols) {
     if (code == 4u) return v_fp8e4m3(((const unsigned char*)p)[lin]);
+    if (code == 9u) return v_fp8e5m2(((const unsigned char*)p)[lin]);
     if (code == 5u || code == 6u) {
         unsigned char byte = ((const unsigned char*)p)[lin >> 1];
         unsigned int nib = (lin & 1u) ? (byte >> 4u) : (byte & 0xFu);

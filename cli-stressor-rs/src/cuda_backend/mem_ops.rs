@@ -40,6 +40,8 @@ impl CudaBackend {
             // soft-skips them for mem_ops); the 1-byte spelling is only for
             // match exhaustiveness.
             PrecisionKind::FP4E2M1 | PrecisionKind::INT4 => 1usize,
+            // FP8E5M2 rides the mem paths by byte size like E4M3FN.
+            PrecisionKind::FP8E5M2 => 1usize,
             PrecisionKind::INT8 => 1usize,
             PrecisionKind::INT16 => 2usize,
             PrecisionKind::INT32 => 4usize,
@@ -198,6 +200,8 @@ impl CudaBackend {
             // soft-skips them for mem_ops); the 1-byte spelling is only for
             // match exhaustiveness.
             PrecisionKind::FP4E2M1 | PrecisionKind::INT4 => 1usize,
+            // FP8E5M2 rides the mem paths by byte size like E4M3FN.
+            PrecisionKind::FP8E5M2 => 1usize,
             PrecisionKind::INT8 => 1usize,
             PrecisionKind::INT16 => 2usize,
             PrecisionKind::INT32 => 4usize,

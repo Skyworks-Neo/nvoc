@@ -365,3 +365,16 @@ fn sampled_check_random_full_gemmc_check() {
         sample.max_abs_diff()
     );
 }
+
+#[test]
+#[ignore = "requires a CUDA device"]
+fn gpu_fill_fp8_fp4_kernels_smoke() {
+    // Exercises the FP8/FP4 device fill kernels (any SM) and validates the
+    // operands through the host codecs: finite, in-band [-2, 2] for FP8 and
+    // inside ±6·scale for FP4. This is what lets the device quantizer be
+    // bit-aligned against the host one on hardware without FP8/FP4 tensor
+    // cores.
+    let mut backend = cuda_backend::CudaBackend::new_with_device(0).unwrap();
+    let report = backend.gpu_fill_fp8_fp4_smoke_test().unwrap();
+    println!("gpu fill smoke: {report}");
+}

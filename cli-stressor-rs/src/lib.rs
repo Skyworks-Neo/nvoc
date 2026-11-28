@@ -50,11 +50,10 @@ pub mod vulkan_gfx_stressor;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_render;
 
-// CUDA backend lives in the lib so integration tests (and the bundled
-// optimizer worker) can drive it directly.
-#[cfg(feature = "cuda")]
-pub mod cuda_backend;
-
+// Styled crate-wide println: every log line goes through `stylize`. Declared
+// BEFORE the cuda_backend module so the backend's ([GEMM-LT] / [VERIFY] / …)
+// lines get the same coloring as the run-loop lines; the video backend below
+// relies on this textual order too.
 macro_rules! println {
     () => { std::println!() };
     ($($arg:tt)*) => {{
@@ -62,6 +61,11 @@ macro_rules! println {
         std::println!("{}", nvoc_cli_common::color::stylize(&msg, false));
     }};
 }
+
+// CUDA backend lives in the lib so integration tests (and the bundled
+// optimizer worker) can drive it directly.
+#[cfg(feature = "cuda")]
+pub mod cuda_backend;
 
 // NVENC→NVDEC video-engine stress backend: runtime-loads the driver-shipped
 // video libraries (no ffmpeg); compiled only under --features video.
@@ -81,6 +85,8 @@ pub enum PrecisionKind {
     FP8E4M3FN,
     /// 4-bit float (E2M1) with block scaling, cublasLt-only (Blackwell).
     FP4E2M1,
+    /// E5M2 (CUDA_R_8F_E5M2), cublasLt-only, same SM89+ gate as E4M3FN.
+    FP8E5M2,
     INT8,
     /// 4-bit signed integer (CUDA_R_4I), cublasLt-only, IMMA on SM75+.
     INT4,
@@ -308,7 +314,7 @@ impl DeviceInfo {
                     ))
                 }
             }
-            PrecisionKind::FP8E4M3FN => {
+            PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 => {
                 let sm = self.compute_capability.unwrap_or((0, 0));
                 if sm.0 >= 8 && (sm.0 > 8 || sm.1 >= 9) {
                     Ok(())
@@ -489,7 +495,11 @@ fn is_int_precision(kind: PrecisionKind) -> bool {
 /// buffers — and the INT precisions run through the dedicated gemm (INT8/INT4
 /// exact sidecars) and intalu (INT16/32) paths instead.
 fn has_fp_upload_path(kind: PrecisionKind) -> bool {
-    !is_int_precision(kind) && !matches!(kind, PrecisionKind::FP8E4M3FN | PrecisionKind::FP4E2M1)
+    !is_int_precision(kind)
+        && !matches!(
+            kind,
+            PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 | PrecisionKind::FP4E2M1
+        )
 }
 
 /// Whether a (kernel, precision) pair is a meaningful stress combination.
@@ -615,6 +625,30 @@ pub fn parse_precision_list(raw: &str) -> Result<Vec<PrecisionSpec>, String> {
             PrecisionSpec {
                 name: "FP8 E4M3FN",
                 kind: PrecisionKind::FP8E4M3FN,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "fp8e4m3",
+            PrecisionSpec {
+                name: "FP8 E4M3FN",
+                kind: PrecisionKind::FP8E4M3FN,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "fp8e5m2",
+            PrecisionSpec {
+                name: "FP8 E5M2",
+                kind: PrecisionKind::FP8E5M2,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "e5m2",
+            PrecisionSpec {
+                name: "FP8 E5M2",
+                kind: PrecisionKind::FP8E5M2,
                 tf32_enabled: None,
             },
         ),
@@ -929,6 +963,10 @@ pub fn choose_tolerance(precision_name: &str) -> (f32, f32) {
         "FP16" => (2e-1, 2e-1),
         "BF16" => (5e-1, 5e-1),
         "FP8 E4M3FN" => (1.5, 1.5),
+        // Both FP8 variants decode exactly on both sides of the compare; the
+        // band absorbs the f16 C-output rounding (quantization error itself
+        // cancels — both sides read the same quantized operands).
+        "FP8 E5M2" => (1.5, 1.5),
         // FP4: both operands and block scales decode exactly on both sides of
         // the compare; the band absorbs the f16 C-output rounding.
         "FP4 E2M1" => (2.0, 2.0),
@@ -1315,43 +1353,119 @@ pub fn fp8_e4m3_decode_table() -> [f32; 256] {
 
 /// Quantize f32 → E4M3FN with round-to-nearest-even (values beyond ±448
 /// saturate to ±448; NaN/Inf map to the 0x7F NaN pattern).
+///
+/// O(1) bit math rather than a decode-table search: the stress path
+/// quantizes ~10⁸ elements per burst op, and the original search put a
+/// multi-second host gap between bursts (observed as a ~15 s idle "lead-in"
+/// with the GPU downclocked on 8192² operands).
 pub fn fp8_e4m3_quantize(x: f32) -> u8 {
-    if !x.is_finite() {
-        return 0x7F;
+    let bits = x.to_bits();
+    let sign = ((bits >> 24) as u8) & 0x80;
+    let ax = bits & 0x7FFF_FFFF;
+    if ax >= 0x7F80_0000 {
+        return 0x7F; // NaN/Inf → the NaN pattern (no Inf exists in E4M3FN)
     }
-    let sign = if x.is_sign_negative() { 0x80u8 } else { 0 };
-    let ax = x.abs();
-    if ax >= 448.0 {
+    if ax > 448f32.to_bits() {
         // 448 is the max finite; anything above saturates (RN would need a
         // 512 step that does not exist in the E4M3FN range).
         return sign | 0x7E;
     }
-    if ax < 2f32.powi(-10) {
-        // Below the round-to-nearest midpoint between 0 and the min denormal.
-        return sign;
-    }
-    // Binary search for the bracket [lo, hi] with decode(lo) ≤ ax ≤ decode(hi)
-    // over the monotonic finite pattern range 0x00..=0x7E (0x7F is NaN).
-    let (mut lo, mut hi) = (0u8, 0x7Eu8);
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        if fp8_e4m3_decode(mid) <= ax {
-            lo = mid;
+    if ax < 2f32.powi(-6).to_bits() {
+        // Denormal band: value = m·2⁻⁹ with 3-bit m; RN-even on m = ax·2⁹
+        // (exact — power-of-two scaling). m == 8 rounds up into the min
+        // normal (2⁻⁶, pattern 0x08).
+        let scaled = f32::from_bits(ax) * 512.0;
+        let t = scaled.trunc();
+        let frac = scaled - t;
+        let m = if frac > 0.5 {
+            t + 1.0
+        } else if frac < 0.5 || (t as i32) & 1 == 0 {
+            t
         } else {
-            hi = mid;
-        }
+            t + 1.0
+        };
+        return sign | (m as u8);
     }
-    let dl = ax - fp8_e4m3_decode(lo);
-    let du = fp8_e4m3_decode(hi) - ax;
-    let pick = if dl < du {
-        lo
-    } else if du < dl {
-        hi
-    } else {
-        // Exact tie → round to the even mantissa (bit 0 clear).
-        if lo & 1 == 0 { lo } else { hi }
-    };
-    sign | pick
+    // Normal band: RN-even the 23-bit f32 mantissa down to 3 bits. Within
+    // the saturated range the exponent bump cannot spill past exp field 15:
+    // values ≤ 448 carry mantissa ≤ 6/8 there, so keep+round ≤ 6.
+    let exp8 = (((ax >> 23) as i32) - 127 + 7) as u32;
+    let man = ax & 0x7F_FFFF;
+    let keep = man >> 20;
+    let rest = man & 0xF_FFFF;
+    let round = (rest >> 19) & 1;
+    let sticky = rest & 0x7_FFFF;
+    let mut m3 = keep;
+    if round == 1 && (sticky != 0 || (keep & 1) == 1) {
+        m3 += 1;
+    }
+    let (exp8, m3) = if m3 >= 8 { (exp8 + 1, 0) } else { (exp8, m3) };
+    sign | ((exp8 << 3) as u8) | (m3 as u8)
+}
+
+/// Decode one E5M2 byte (CUDA_R_8F_E5M2: bias 15, denorm man·2⁻¹⁶, max
+/// finite ±57344, Inf/NaN in the top exp field 31 — unlike E4M3, exp field
+/// 15 is an ordinary exponent).
+pub fn fp8_e5m2_decode(bits: u8) -> f32 {
+    let sign = if bits & 0x80 != 0 { -1.0f32 } else { 1.0 };
+    let exp = (bits >> 2) & 0x1F;
+    let man = (bits & 0x3) as f32;
+    match exp {
+        0 if man == 0.0 => sign * 0.0,
+        0 => sign * man * 2f32.powi(-16),
+        31 if man == 0.0 => sign * f32::INFINITY,
+        31 => f32::NAN,
+        e => sign * (1.0 + man / 4.0) * 2f32.powi(e as i32 - 15),
+    }
+}
+
+/// Quantize f32 → E5M2 with round-to-nearest-even, saturating semantics
+/// (matches the hardware `cvt.rn.satfinite.e5m2` conversion: finite overflow
+/// clamps to ±57344 instead of producing Inf operands that would poison the
+/// GEMM output; NaN maps to the 0x7F NaN pattern).
+pub fn fp8_e5m2_quantize(x: f32) -> u8 {
+    let bits = x.to_bits();
+    let sign = ((bits >> 24) as u8) & 0x80;
+    let ax = bits & 0x7FFF_FFFF;
+    if ax == 0x7F80_0000 {
+        return sign | 0x7C; // Inf → Inf (IEEE-faithful)
+    }
+    if ax > 0x7F80_0000 {
+        return 0x7F; // NaN → the canonical NaN pattern
+    }
+    if ax > 57344f32.to_bits() {
+        return sign | 0x7B; // saturate above the max finite
+    }
+    if ax < 2f32.powi(-14).to_bits() {
+        // Denormal band: value = m·2⁻¹⁶ with 2-bit m; RN-even on m = ax·2¹⁶.
+        // m == 4 rounds up into the min normal (2⁻¹⁴, pattern 0x04).
+        let scaled = f32::from_bits(ax) * 65536.0;
+        let t = scaled.trunc();
+        let frac = scaled - t;
+        let m = if frac > 0.5 {
+            t + 1.0
+        } else if frac < 0.5 || (t as i32) & 1 == 0 {
+            t
+        } else {
+            t + 1.0
+        };
+        return sign | (m as u8);
+    }
+    // Normal band: RN-even the 23-bit f32 mantissa down to 2 bits. The bump
+    // cannot reach the reserved exp field 31: values ≤ 57344 carry mantissa
+    // ≤ 3/4 at exp field 30, so keep+round ≤ 3 there.
+    let exp8 = (((ax >> 23) as i32) - 127 + 15) as u32;
+    let man = ax & 0x7F_FFFF;
+    let keep = man >> 21;
+    let rest = man & 0x1F_FFFF;
+    let round = (rest >> 20) & 1;
+    let sticky = rest & 0xF_FFFF;
+    let mut m2 = keep;
+    if round == 1 && (sticky != 0 || (keep & 1) == 1) {
+        m2 += 1;
+    }
+    let (exp8, m2) = if m2 >= 4 { (exp8 + 1, 0) } else { (exp8, m2) };
+    sign | ((exp8 << 2) as u8) | (m2 as u8)
 }
 
 /// Decode one packed FP4 nibble (low 4 bits; sign bit + 3 magnitude bits).
@@ -1495,20 +1609,48 @@ pub fn fp4_quantize_block(values: &[f32], mode: Fp4ScaleMode) -> (Vec<u8>, u8) {
 /// Returns `(packed_bytes, scales)` with scales laid out `[kblocks][cols]`
 /// row-major (scale block index = k / block_len, column = the operand's
 /// non-K coordinate).
+///
+/// Rayon-parallel over columns with a scratch buffer per column: the earlier
+/// per-block `Vec` allocations put ~8M allocator calls on the 8192² burst
+/// path (same host-gap failure mode as the FP8 quantizer search).
 pub fn fp4_quantize_matrix(values: &[f32], size: usize, mode: Fp4ScaleMode) -> (Vec<u8>, Vec<u8>) {
     let block = mode.block_len();
     let kblocks = size.div_ceil(block);
-    let mut packed = Vec::with_capacity(size * size / 2);
+    let cols: Vec<(Vec<u8>, Vec<u8>)> = (0..size)
+        .into_par_iter()
+        .map(|col| {
+            let mut bytes = vec![0u8; size.div_ceil(2)];
+            let mut col_scales = vec![0u8; kblocks];
+            let mut block_vals = vec![0f32; block];
+            for kb in 0..kblocks {
+                let start = kb * block;
+                let end = (start + block).min(size);
+                for (slot, k) in block_vals.iter_mut().zip(start..end) {
+                    *slot = values[col * size + k];
+                }
+                // Zero-pad the tail (K is a block-length multiple at the call
+                // site; the pad keeps the packing math total for odd sizes).
+                for slot in block_vals[end - start..block].iter_mut() {
+                    *slot = 0.0;
+                }
+                let (block_packed, scale) = fp4_quantize_block(&block_vals, mode);
+                // Clamp the copy to the column's byte slot: when size < block
+                // (unit-test shapes) only the first `size` nibbles are real,
+                // and pack4's zero padding beyond them is dropped.
+                let slot = bytes.len() - kb * block / 2;
+                let byte_len = block_packed.len().min(slot);
+                bytes[kb * block / 2..kb * block / 2 + byte_len]
+                    .copy_from_slice(&block_packed[..byte_len]);
+                col_scales[kb] = scale;
+            }
+            (bytes, col_scales)
+        })
+        .collect();
+    let mut packed = Vec::with_capacity(size * size.div_ceil(2));
     let mut scales = vec![0u8; kblocks * size];
-    for col in 0..size {
-        for kb in 0..kblocks {
-            let start = kb * block;
-            let end = (start + block).min(size);
-            let block_vals: Vec<f32> = (start..end).map(|k| values[col * size + k]).collect();
-            let (block_packed, scale) = fp4_quantize_block(&block_vals, mode);
-            // pack4 pads odd tails to full byte pairs; K is a block-length
-            // multiple at the call site (size rounding), so tails are rare.
-            packed.extend_from_slice(&block_packed);
+    for (col, (bytes, col_scales)) in cols.into_iter().enumerate() {
+        packed.extend_from_slice(&bytes);
+        for (kb, scale) in col_scales.into_iter().enumerate() {
             scales[kb * size + col] = scale;
         }
     }

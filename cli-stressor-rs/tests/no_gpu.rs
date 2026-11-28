@@ -2,10 +2,11 @@ use cli_stressor_rs::{
     DetectorStats, DeviceInfo, Fp4ScaleMode, KernelType, PrecisionKind, StressResult, VerifyConfig,
     VerifyReport, choose_tolerance, classify, cpu_reference_int_tn, cpu_reference_int4_tn,
     dp4a_ref, fp4_e2m1_decode, fp4_e2m1_quantize, fp4_quantize_block, fp4_quantize_matrix,
-    fp8_e4m3_decode, fp8_e4m3_quantize, int4_pack, int4_unpack_nib, intalu_ref_element,
-    kernel_precision_compatible, pack4, parse_int_list, parse_kernel_mixture,
-    parse_kernel_param_overrides, parse_kernel_type_list, parse_precision_list,
-    parse_precision_mixture, parse_stream_mode, per_element_allclose, unpack4, vexpected_host,
+    fp8_e4m3_decode, fp8_e4m3_quantize, fp8_e5m2_decode, fp8_e5m2_quantize, int4_pack,
+    int4_unpack_nib, intalu_ref_element, kernel_precision_compatible, pack4, parse_int_list,
+    parse_kernel_mixture, parse_kernel_param_overrides, parse_kernel_type_list,
+    parse_precision_list, parse_precision_mixture, parse_stream_mode, per_element_allclose,
+    unpack4, vexpected_host,
 };
 
 #[test]
@@ -468,4 +469,77 @@ fn fp4_int4_device_gates() {
     // INT4: Turing (SM75)+.
     assert!(info((7, 5)).supports_precision(&int4).is_ok());
     assert!(info((7, 0)).supports_precision(&int4).is_err());
+}
+
+// ---- E5M2 codec ----
+
+#[test]
+fn fp8_e5m2_decode_known_values() {
+    assert_eq!(fp8_e5m2_decode(0x00), 0.0);
+    assert_eq!(fp8_e5m2_decode(0x80), 0.0); // -0.0
+    assert_eq!(fp8_e5m2_decode(0x3C), 1.0); // exp field 15 (2^0)
+    assert_eq!(fp8_e5m2_decode(0xBC), -1.0);
+    assert_eq!(fp8_e5m2_decode(0x01), 2f32.powi(-16)); // min denormal
+    assert_eq!(fp8_e5m2_decode(0x03), 3.0 * 2f32.powi(-16)); // max denormal
+    assert_eq!(fp8_e5m2_decode(0x04), 2f32.powi(-14)); // min normal
+    assert_eq!(fp8_e5m2_decode(0x7B), 57344.0); // max finite
+    assert_eq!(fp8_e5m2_decode(0xFB), -57344.0);
+    assert_eq!(fp8_e5m2_decode(0x7C), f32::INFINITY);
+    assert_eq!(fp8_e5m2_decode(0xFC), f32::NEG_INFINITY);
+    assert!(fp8_e5m2_decode(0x7F).is_nan());
+    assert!(fp8_e5m2_decode(0xFF).is_nan());
+}
+
+#[test]
+fn fp8_e5m2_quantize_round_trip_and_saturate() {
+    // Exact values round-trip bit-for-bit (finite + Inf patterns).
+    for bits in [
+        0x00u8, 0x01, 0x03, 0x04, 0x3C, 0x7B, 0x7C, 0x80, 0xBC, 0xFB, 0xFC,
+    ] {
+        let v = fp8_e5m2_decode(bits);
+        assert_eq!(fp8_e5m2_quantize(v), bits, "round trip for {bits:#04x}");
+    }
+    // Saturating semantics (hardware cvt.rn.satfinite parity): finite overflow
+    // clamps instead of producing Inf operands.
+    assert_eq!(fp8_e5m2_quantize(57345.0), 0x7B);
+    assert_eq!(fp8_e5m2_quantize(1e9), 0x7B);
+    assert_eq!(fp8_e5m2_quantize(-1e9), 0xFB);
+    // NaN maps to the canonical NaN pattern; Inf stays Inf.
+    assert_eq!(fp8_e5m2_quantize(f32::NAN), 0x7F);
+    assert_eq!(fp8_e5m2_quantize(f32::INFINITY), 0x7C);
+    assert_eq!(fp8_e5m2_quantize(f32::NEG_INFINITY), 0xFC);
+    // E5M2 has a 2-bit mantissa: 1.25 is exactly representable (0x3D), and
+    // 1.375 is the exact tie between 1.25/1.5 -> RN-even picks 1.5.
+    assert_eq!(fp8_e5m2_quantize(1.25), 0x3D);
+    assert_eq!(fp8_e5m2_quantize(1.375), 0x3E); // = 1.5
+    // Below the 0/min-denormal RN midpoint (2^-17) rounds to zero; the
+    // midpoint itself ties to even (0); the min denormal is exact.
+    assert_eq!(fp8_e5m2_quantize(2f32.powi(-18)), 0x00);
+    assert_eq!(fp8_e5m2_quantize(2f32.powi(-17)), 0x00);
+    assert_eq!(fp8_e5m2_quantize(2f32.powi(-16)), 0x01);
+}
+
+// ---- exhaustive quantizer idempotence ----
+
+#[test]
+fn fp8_quantize_is_idempotent_on_representable_values() {
+    // For every non-NaN bit pattern, quantizing its decoded value must return
+    // the pattern itself — the strongest single invariant tying the O(1) bit
+    // -math quantizer to the decoder.
+    for bits in 0u32..256 {
+        let pattern = bits as u8;
+        let v = fp8_e4m3_decode(pattern);
+        if v.is_nan() {
+            continue;
+        }
+        assert_eq!(fp8_e4m3_quantize(v), pattern, "e4m3 {pattern:#04x}");
+    }
+    for bits in 0u32..256 {
+        let pattern = bits as u8;
+        let v = fp8_e5m2_decode(pattern);
+        if v.is_nan() {
+            continue;
+        }
+        assert_eq!(fp8_e5m2_quantize(v), pattern, "e5m2 {pattern:#04x}");
+    }
 }

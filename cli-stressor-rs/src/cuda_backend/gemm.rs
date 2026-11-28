@@ -12,14 +12,16 @@ use cli_stressor_rs::{
     BackendError, PrecisionKind, PrecisionSpec, StreamMode, VerifyConfig, choose_tolerance,
     cpu_reference_int_tn, cpu_reference_int4_tn, int4_pack, make_random_host_matrix,
 };
+use rayon::prelude::*;
 // FP8/FP4 operand codecs are cuda12-only (cuda-11040 has no FP8/FP4 datatype
 // bindings and those stress arms are cfg-excluded).
 #[cfg(not(feature = "cuda11"))]
-use cli_stressor_rs::{Fp4ScaleMode, fp4_quantize_matrix, fp8_e4m3_quantize};
-use cudarc::driver::ValidAsZeroBits;
+use cli_stressor_rs::{Fp4ScaleMode, fp4_quantize_matrix, fp8_e4m3_quantize, fp8_e5m2_quantize};
+use cudarc::driver::{LaunchConfig, PushKernelArg, ValidAsZeroBits};
 
 use super::backend::CudaBackend;
 use super::gemm_lt::{LtDtype, LtShapeKey};
+use super::verify_kernels::lane_seed;
 
 pub(super) struct GemmPathConfig<'a> {
     pub spec: &'a PrecisionSpec,
@@ -39,6 +41,28 @@ struct LtOpData<AB> {
     scale_a: Vec<u8>,
     scale_b: Vec<u8>,
 }
+
+/// Device-side operand generation (`--gpu-generate`): the NVRTC fill kernels
+/// quantize uniform [-2, 2] values directly into VRAM, removing the host RNG,
+/// the quantize pass, and the H2D copy from the burst pipeline entirely. The
+/// per-arm generation closure launches the dtype's fill kernels; the runner
+/// stays generic over the operand element type.
+struct LtDeviceOps<AB> {
+    a: cudarc::driver::CudaSlice<AB>,
+    b: cudarc::driver::CudaSlice<AB>,
+    scale_a: Option<cudarc::driver::CudaSlice<u8>>,
+    scale_b: Option<cudarc::driver::CudaSlice<u8>>,
+}
+
+/// Fill-kernel launch signature shared by the FP8/FP4 arms (kernels + stream
+/// are handed over by the runner to avoid re-borrowing the backend).
+type LtDeviceGen<'a, AB> = dyn Fn(
+        &super::gpu_fill::GpuFillKernels,
+        &std::sync::Arc<cudarc::driver::CudaStream>,
+        u64,
+        usize,
+    ) -> Result<LtDeviceOps<AB>, BackendError>
+    + 'a;
 
 /// Tolerance for the sampled cross-check, scaled for the accumulation length:
 /// rounding error of a K-term dot product grows ~√K relative to the 1024-wide
@@ -160,6 +184,7 @@ impl CudaBackend {
         verify_operands: bool,
         tc_code: u32,
         ab_code: u32,
+        device_gen: Option<&LtDeviceGen<'_, AB>>,
         mut prep: Prep,
     ) -> Result<f64, BackendError>
     where
@@ -177,44 +202,61 @@ impl CudaBackend {
         };
 
         // Per-lane operand buffers (FP4 also carries one scale byte per
-        // 16/32-element block).
+        // 16/32-element block). With `--gpu-generate` the quantized operands
+        // come straight from the device fill kernels; otherwise the host
+        // prep closure generates + quantizes + uploads.
         let mut a_devs = Vec::with_capacity(lane_count);
         let mut b_devs = Vec::with_capacity(lane_count);
         let mut c_devs = Vec::with_capacity(lane_count);
         let mut scale_a_devs: Option<Vec<cudarc::driver::CudaSlice<u8>>> = None;
         let mut scale_b_devs: Option<Vec<cudarc::driver::CudaSlice<u8>>> = None;
         for lane in 0..lane_count {
-            let op = prep(rng, size);
             let stream = self.stream_for_lane(lane);
-            a_devs.push(
-                stream
-                    .clone_htod(&op.a)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
-            b_devs.push(
-                stream
-                    .clone_htod(&op.b)
-                    .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
+            if let Some(fill) = device_gen {
+                let kernels = self.gpu_fill.as_ref().ok_or_else(|| {
+                    BackendError::Other("gpu fill kernels unavailable".to_string())
+                })?;
+                let ops = fill(kernels, stream, lane_seed(seed, lane), size)?;
+                a_devs.push(ops.a);
+                b_devs.push(ops.b);
+                if let Some(sa) = ops.scale_a {
+                    scale_a_devs.get_or_insert_with(Vec::new).push(sa);
+                }
+                if let Some(sb) = ops.scale_b {
+                    scale_b_devs.get_or_insert_with(Vec::new).push(sb);
+                }
+            } else {
+                let op = prep(rng, size);
+                a_devs.push(
+                    stream
+                        .clone_htod(&op.a)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+                b_devs.push(
+                    stream
+                        .clone_htod(&op.b)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                );
+                if !op.scale_a.is_empty() {
+                    scale_a_devs.get_or_insert_with(Vec::new).push(
+                        stream
+                            .clone_htod(&op.scale_a)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
+                if !op.scale_b.is_empty() {
+                    scale_b_devs.get_or_insert_with(Vec::new).push(
+                        stream
+                            .clone_htod(&op.scale_b)
+                            .map_err(|err| BackendError::Other(err.to_string()))?,
+                    );
+                }
+            }
             c_devs.push(
                 stream
                     .alloc_zeros::<CT>(size * size)
                     .map_err(|err| BackendError::Other(err.to_string()))?,
             );
-            if !op.scale_a.is_empty() {
-                scale_a_devs.get_or_insert_with(Vec::new).push(
-                    stream
-                        .clone_htod(&op.scale_a)
-                        .map_err(|err| BackendError::Other(err.to_string()))?,
-                );
-            }
-            if !op.scale_b.is_empty() {
-                scale_b_devs.get_or_insert_with(Vec::new).push(
-                    stream
-                        .clone_htod(&op.scale_b)
-                        .map_err(|err| BackendError::Other(err.to_string()))?,
-                );
-            }
         }
 
         // First-encounter plan build + algo report. The heuristic query runs
@@ -261,9 +303,12 @@ impl CudaBackend {
             }
         }
 
-        // alpha/beta: f32 for the float compute types, i32 for COMPUTE_32I.
+        // alpha/beta: f32 for the float compute types, f64 for COMPUTE_64F
+        // (its scale type is CUDA_R_64F), i32 for COMPUTE_32I.
         let alpha_f: f32 = 1.0;
         let beta_f: f32 = 0.0;
+        let alpha_d: f64 = 1.0;
+        let beta_d: f64 = 0.0;
         let alpha_i: i32 = 1;
         let beta_i: i32 = 0;
         let (alpha_ptr, beta_ptr): (*const std::ffi::c_void, *const std::ffi::c_void) = match dtype
@@ -271,6 +316,10 @@ impl CudaBackend {
             LtDtype::Int8 | LtDtype::Int4 => (
                 (&alpha_i as *const i32) as *const _,
                 (&beta_i as *const i32) as *const _,
+            ),
+            LtDtype::F64 => (
+                (&alpha_d as *const f64) as *const _,
+                (&beta_d as *const f64) as *const _,
             ),
             _ => (
                 (&alpha_f as *const f32) as *const _,
@@ -371,6 +420,8 @@ impl CudaBackend {
         let stream = self.stream_for_lane(0).clone();
         let alpha_f: f32 = 1.0;
         let beta_f: f32 = 0.0;
+        let alpha_d: f64 = 1.0;
+        let beta_d: f64 = 0.0;
         let alpha_i: i32 = 1;
         let beta_i: i32 = 0;
         let (alpha_ptr, beta_ptr): (*const std::ffi::c_void, *const std::ffi::c_void) = match dtype
@@ -378,6 +429,10 @@ impl CudaBackend {
             LtDtype::Int8 | LtDtype::Int4 => (
                 (&alpha_i as *const i32) as *const _,
                 (&beta_i as *const i32) as *const _,
+            ),
+            LtDtype::F64 => (
+                (&alpha_d as *const f64) as *const _,
+                (&beta_d as *const f64) as *const _,
             ),
             _ => (
                 (&alpha_f as *const f32) as *const _,
@@ -596,6 +651,7 @@ impl CudaBackend {
                     true,
                     3,
                     3,
+                    None,
                     |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
                         let b_host = make_random_host_matrix(sz, rng.random::<u64>());
@@ -716,6 +772,7 @@ impl CudaBackend {
                     true,
                     2,
                     2,
+                    None,
                     |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
                         let b_host = make_random_host_matrix(sz, rng.random::<u64>());
@@ -730,6 +787,7 @@ impl CudaBackend {
                 }
             }
             PrecisionKind::FP32 | PrecisionKind::TF32 => {
+                if self.gemm_legacy_cublas {
                 let cfg = GemmConfig {
                     transa: op_a,
                     transb: op_b,
@@ -813,8 +871,46 @@ impl CudaBackend {
                     verify,
                 )?;
                 Ok(op_start.elapsed().as_secs_f64())
+                } else {
+                // Default cublasLt lane (see the FP16 arm). TF32 rides the
+                // desc-level FAST_TF32 compute type; FP32 uses plain 32F.
+                let dtype = if spec.kind == PrecisionKind::TF32 {
+                    LtDtype::Tf32
+                } else {
+                    LtDtype::F32
+                };
+                self.run_gemm_path_lt::<f32, f32, _>(
+                    dtype,
+                    spec,
+                    size,
+                    transpose_a,
+                    transpose_b,
+                    false,
+                    warmup_iters,
+                    burst_iters,
+                    stream_mode,
+                    seed,
+                    &mut rng,
+                    verify,
+                    true,
+                    0,
+                    0,
+                    None,
+                    |rng, sz| {
+                        let a_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        LtOpData {
+                            a: a_host.data,
+                            b: b_host.data,
+                            scale_a: Vec::new(),
+                            scale_b: Vec::new(),
+                        }
+                    },
+                )
+                }
             }
             PrecisionKind::FP64 => {
+                if self.gemm_legacy_cublas {
                 let cfg = GemmConfig {
                     transa: op_a,
                     transb: op_b,
@@ -900,6 +996,37 @@ impl CudaBackend {
                     verify,
                 )?;
                 Ok(op_start.elapsed().as_secs_f64())
+                } else {
+                // Default cublasLt lane (see the FP16 arm).
+                self.run_gemm_path_lt::<f64, f64, _>(
+                    LtDtype::F64,
+                    spec,
+                    size,
+                    transpose_a,
+                    transpose_b,
+                    false,
+                    warmup_iters,
+                    burst_iters,
+                    stream_mode,
+                    seed,
+                    &mut rng,
+                    verify,
+                    true,
+                    1,
+                    1,
+                    None,
+                    |rng, sz| {
+                        let a_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        LtOpData {
+                            a: a_host.data.iter().map(|v| *v as f64).collect(),
+                            b: b_host.data.iter().map(|v| *v as f64).collect(),
+                            scale_a: Vec::new(),
+                            scale_b: Vec::new(),
+                        }
+                    },
+                )
+                }
             }
             PrecisionKind::INT8 => {
                 if self.gemm_legacy_cublas {
@@ -1055,6 +1182,7 @@ impl CudaBackend {
                            // inexact; the periodic exact sidecar covers INT8.
                     8,     // C output: i32 (stats scan only, unused here)
                     0,     // A/B operand code unused (no verify)
+                    None,
                     |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
                         let b_host = make_random_host_matrix(sz, rng.random::<u64>());
@@ -1076,17 +1204,68 @@ impl CudaBackend {
                 )
                 }
             }
-            // cublasLt FP8 (E4M3FN): TN layout is mandatory and the leading
-            // dimensions must be 16-byte multiples (mirrors the INT8 size
-            // rounding). FAST_ACCUM is opt-in (--fp8-fast-accum): the default
-            // segmented-accumulation path is precision-safe at any K
+            // cublasLt FP8 (E4M3FN / E5M2): TN layout is mandatory and the
+            // leading dimensions must be 16-byte multiples (mirrors the INT8
+            // size rounding). FAST_ACCUM is opt-in (--fp8-fast-accum): the
+            // default segmented-accumulation path is precision-safe at any K
             // (unlocked-ada-gemm measured 10-15% relative error at large K on
             // the fast path), which matters for the ride-on-load compare.
             #[cfg(not(feature = "cuda11"))]
-            PrecisionKind::FP8E4M3FN => {
+            PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 => {
                 let size = (size + 15) & !15;
+                let e5m2 = spec.kind == PrecisionKind::FP8E5M2;
+                let (dtype, ab_code) = if e5m2 {
+                    (LtDtype::Fp8E5m2, 9u32)
+                } else {
+                    (LtDtype::Fp8E4m3, 4u32)
+                };
+                let lt_fill = |kernels: &super::gpu_fill::GpuFillKernels,
+                               stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+                               fill_seed: u64,
+                               sz: usize|
+                 -> Result<LtDeviceOps<u8>, BackendError> {
+                    let n = sz * sz;
+                        let a = stream
+                            .alloc_zeros::<u8>(n)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        let b = stream
+                            .alloc_zeros::<u8>(n)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        let e5 = u32::from(e5m2);
+                        let cfg = LaunchConfig::for_num_elems(n.min(u32::MAX as usize) as u32);
+                        for (buf, fill) in [(&a, fill_seed), (&b, fill_seed ^ 0xA5A5_5A5A_5A5A_5A5A)] {
+                            unsafe {
+                                stream
+                                    .launch_builder(&kernels.fp8_fn)
+                                    .arg(buf)
+                                    .arg(&(n as u64))
+                                    .arg(&fill)
+                                    .arg(&e5)
+                                    .launch(cfg)
+                                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                            }
+                        }
+                    Ok(LtDeviceOps {
+                        a,
+                        b,
+                        scale_a: None,
+                        scale_b: None,
+                    })
+                };
+                let device_gen: Option<&LtDeviceGen<'_, u8>> =
+                    if self.gpu_generate_enabled()
+                {
+                    Some(&lt_fill)
+                } else {
+                    None
+                };
+                let quant: fn(f32) -> u8 = if e5m2 {
+                    fp8_e5m2_quantize
+                } else {
+                    fp8_e4m3_quantize
+                };
                 self.run_gemm_path_lt::<u8, f16, _>(
-                    LtDtype::Fp8E4m3,
+                    dtype,
                     spec,
                     size,
                     true,
@@ -1100,13 +1279,24 @@ impl CudaBackend {
                     verify,
                     true,
                     2, // C output: f16
-                    4, // A/B operand: fp8-e4m3 bytes
+                    ab_code,
+                    device_gen,
                     |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
                         let b_host = make_random_host_matrix(sz, rng.random::<u64>());
+                        // Parallel quantize: 8192² × 2 = 134M elements would
+                        // otherwise stall the burst pipeline between ops.
                         LtOpData {
-                            a: a_host.data.iter().map(|v| fp8_e4m3_quantize(*v)).collect(),
-                            b: b_host.data.iter().map(|v| fp8_e4m3_quantize(*v)).collect(),
+                            a: a_host
+                                .data
+                                .par_iter()
+                                .map(|v| quant(*v))
+                                .collect(),
+                            b: b_host
+                                .data
+                                .par_iter()
+                                .map(|v| quant(*v))
+                                .collect(),
                             scale_a: Vec::new(),
                             scale_b: Vec::new(),
                         }
@@ -1114,7 +1304,7 @@ impl CudaBackend {
                 )
             }
             #[cfg(feature = "cuda11")]
-            PrecisionKind::FP8E4M3FN => Err(BackendError::Other(
+            PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 => Err(BackendError::Other(
                 "FP8 GEMM requires the cuda12 build (CUDA 11.8+ header surface); rebuild without --features cuda11"
                     .to_string(),
             )),
@@ -1143,6 +1333,65 @@ impl CudaBackend {
                     );
                     (LtDtype::Fp4Mxfp4, Fp4ScaleMode::Mxfp4, 6u32)
                 };
+                let lt_fill = |kernels: &super::gpu_fill::GpuFillKernels,
+                               stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+                               fill_seed: u64,
+                               sz: usize|
+                 -> Result<LtDeviceOps<u8>, BackendError> {
+                    let block_len = match mode {
+                            Fp4ScaleMode::Mxfp4 => 32usize,
+                            Fp4ScaleMode::Nvfp4 => 16usize,
+                        };
+                        let kblocks = sz / block_len;
+                        let a = stream
+                            .alloc_zeros::<u8>(sz * sz / 2)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        let b = stream
+                            .alloc_zeros::<u8>(sz * sz / 2)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        let sa = stream
+                            .alloc_zeros::<u8>(kblocks * sz)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        let sb = stream
+                            .alloc_zeros::<u8>(kblocks * sz)
+                            .map_err(|err| BackendError::Other(err.to_string()))?;
+                        let mxfp4 = u32::from(mode == Fp4ScaleMode::Mxfp4);
+                        let cfg = LaunchConfig::for_num_elems(
+                            (sz * kblocks).min(u32::MAX as usize) as u32,
+                        );
+                        for (buf, scales, fill) in [
+                            (&a, &sa, fill_seed),
+                            (&b, &sb, fill_seed ^ 0xA5A5_5A5A_5A5A_5A5A),
+                        ] {
+                            unsafe {
+                                stream
+                                    .launch_builder(&kernels.fp4_fn)
+                                    .arg(buf)
+                                    .arg(scales)
+                                    .arg(&(sz as u64))
+                                    .arg(&(sz as u64))
+                                    .arg(&(kblocks as u64))
+                                    .arg(&(block_len as u32))
+                                    .arg(&mxfp4)
+                                    .arg(&fill)
+                                    .launch(cfg)
+                                    .map_err(|err| BackendError::Other(err.to_string()))?;
+                            }
+                        }
+                    Ok(LtDeviceOps {
+                        a,
+                        b,
+                        scale_a: Some(sa),
+                        scale_b: Some(sb),
+                    })
+                };
+                let device_gen: Option<&LtDeviceGen<'_, u8>> =
+                    if self.gpu_generate_enabled()
+                {
+                    Some(&lt_fill)
+                } else {
+                    None
+                };
                 self.run_gemm_path_lt::<u8, f16, _>(
                     dtype,
                     spec,
@@ -1159,6 +1408,7 @@ impl CudaBackend {
                     true,
                     2, // C output: f16
                     ab_code,
+                    device_gen,
                     move |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
                         let b_host = make_random_host_matrix(sz, rng.random::<u64>());
@@ -1202,6 +1452,7 @@ impl CudaBackend {
                     true,
                     8, // C output: i32
                     7, // A/B operand: packed signed nibbles
+                    None,
                     |rng, sz| {
                         let a_host = make_random_host_matrix(sz, rng.random::<u64>());
                         let b_host = make_random_host_matrix(sz, rng.random::<u64>());
