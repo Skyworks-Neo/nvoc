@@ -10,13 +10,19 @@
 //! selection + preloading by full path makes the library choice
 //! deterministic and matrix-recordable.
 //!
-//! Channel: NVIDIA's official PyPI wheels (`nvidia-cublas-cu12/13`,
-//! `nvidia-cuda-nvrtc-cu12/13`, `nvidia-cuda-runtime-cu12/13`) resolved via
-//! the PEP 503 simple index (mirror-aware), sha256-verified against the
-//! index fragments, extracted to a per-version cache (only the binaries the
-//! stressor needs), and preloaded with `LoadLibraryExW(LOAD_WITH_ALTERED_
-//! SEARCH_PATH)` before cudarc's dynamic loads — the preloaded module wins
-//! cudarc's name-based lookup regardless of the system search order.
+//! Channel: NVIDIA's official PyPI wheels resolved via the PEP 503 simple
+//! index (mirror-aware), sha256-verified against the index fragments,
+//! extracted to a per-version cache (only the binaries the stressor needs),
+//! and preloaded with `LoadLibraryExW(LOAD_WITH_ALTERED_SEARCH_PATH)` before
+//! cudarc's dynamic loads — the preloaded module wins cudarc's name-based
+//! lookup regardless of the system search order.
+//!
+//! Minimal set (PE import audit, verified by load test): cublas64 +
+//! cublasLt64 (+ nvrtc64 + nvrtc-builtins, which cublasLt64 itself imports
+//! for its JIT paths). The cudart runtime wheel is dead weight — nothing in
+//! the audited binaries imports cudart64 (Windows; the Linux .so set keeps
+//! the tiny runtime wheel since its ELF imports were not audited) — and the
+//! nvrtc ".alt" variant is unused when the primary nvrtc loads.
 
 use std::path::{Path, PathBuf};
 
@@ -47,13 +53,24 @@ const PYPI_INDEX: &str = "https://pypi.org/simple";
 const PYPI_FILES: &str = "https://files.pythonhosted.org/packages";
 
 /// Packages the stressor needs, per CUDA major (PyPI project names carry the
-/// major suffix).
-fn packages_for_major(major: u32) -> [String; 3] {
-    [
-        format!("nvidia-cublas-cu{major}"),
-        format!("nvidia-cuda-nvrtc-cu{major}"),
-        format!("nvidia-cuda-runtime-cu{major}"),
-    ]
+/// `-cu{major}` suffix through CUDA 12; CUDA 13 dropped it — the `-cu13`
+/// names are empty placeholders, the real wheels are `nvidia-cublas` etc.).
+/// The runtime (cudart) wheel is Windows-dropped after the import audit;
+/// Linux keeps it (tiny) since its ELF imports were not audited.
+fn packages_for_major(major: u32, windows: bool) -> Vec<String> {
+    let suffix = if major >= 13 {
+        String::new()
+    } else {
+        format!("-cu{major}")
+    };
+    let mut pkgs = vec![
+        format!("nvidia-cublas{suffix}"),
+        format!("nvidia-cuda-nvrtc{suffix}"),
+    ];
+    if !windows {
+        pkgs.push(format!("nvidia-cuda-runtime{suffix}"));
+    }
+    pkgs
 }
 
 /// Parse a version string into numeric segments ("12.8.4.1" → [12, 8, 4, 1]);
@@ -312,11 +329,16 @@ fn collect_binaries(root: &Path, windows: bool, out_dir: &Path) -> Result<usize,
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             let name_lower = name.to_ascii_lowercase();
-            let is_wanted = if windows {
-                name_lower.ends_with(".dll") && wanted.iter().any(|p| name_lower.starts_with(p))
-            } else {
-                name_lower.contains(".so") && wanted.iter().any(|p| name_lower.starts_with(p))
-            };
+            // The nvrtc ".alt" alternate build is dead weight when the
+            // primary nvrtc loads (verified by NVRTC compile + stress on the
+            // minimal set) — 82 MB of cache per version for nothing.
+            let is_alt = name_lower.contains(".alt.");
+            let is_wanted = !is_alt
+                && if windows {
+                    name_lower.ends_with(".dll") && wanted.iter().any(|p| name_lower.starts_with(p))
+                } else {
+                    name_lower.contains(".so") && wanted.iter().any(|p| name_lower.starts_with(p))
+                };
             if !is_wanted {
                 continue;
             }
@@ -436,7 +458,7 @@ fn ensure_downloaded(requested: &str, mirror: Option<&str>) -> Result<PathBuf, B
     let tmp = dir.join("tmp");
     std::fs::create_dir_all(&tmp).map_err(|err| BackendError::Other(format!("tmp dir: {err}")))?;
     let mut resolved: Vec<String> = Vec::new();
-    for pkg in packages_for_major(major) {
+    for pkg in packages_for_major(major, windows) {
         let index_url = format!("{index_base}/{pkg}/");
         println!("[CUDA] dll provision: resolving {pkg} from {index_url}");
         let index_html = curl_to_string(&index_url)?;
@@ -510,6 +532,20 @@ pub fn prepare(provision: &CudaDllProvision) -> Result<Option<PathBuf>, BackendE
 #[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packages_use_the_right_naming_per_generation() {
+        // CUDA <= 12: -cu{major} suffix. CUDA >= 13: bare names (the -cu13
+        // PyPI packages are empty placeholders).
+        let win12 = packages_for_major(12, true);
+        assert_eq!(win12, vec!["nvidia-cublas-cu12", "nvidia-cuda-nvrtc-cu12"]);
+        let win13 = packages_for_major(13, true);
+        assert_eq!(win13, vec!["nvidia-cublas", "nvidia-cuda-nvrtc"]);
+        // Linux keeps the (unaudited) runtime wheel.
+        let linux12 = packages_for_major(12, false);
+        assert_eq!(linux12.len(), 3);
+        assert!(linux12[2].contains("runtime"));
+    }
 
     #[test]
     fn parse_version_segments_orders_correctly() {
