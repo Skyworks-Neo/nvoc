@@ -18,6 +18,7 @@
 mod atomic;
 mod backend;
 mod device;
+pub mod dll_provision;
 mod gemm;
 mod gemm_lt;
 mod gpu_fill;

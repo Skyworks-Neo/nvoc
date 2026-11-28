@@ -10,14 +10,16 @@ description = "GPU stressor (CUDA + Vulkan + video engines) with validation side
 [features]
 # CUDA driver-generation selector. cuda11 targets R470-era drivers (CUDA
 # 11.4 API surface: no cuDeviceGetUuid_v2, NVRTC capped at sm_86); cuda12 is
-# the default modern build. The two are mutually exclusive — enforced in
-# src/lib.rs — because cudarc resolves its bindings and NVRTC library name
-# from exactly one cuda-XXXXXX feature.
+# the default modern build; cuda13 targets CUDA 13.x headers (cudarc caps at
+# 13.4) for matrix work on current driver stacks. The three are mutually
+# exclusive — enforced in src/lib.rs — because cudarc resolves its bindings
+# and NVRTC library name from exactly one cuda-XXXXXX feature.
 default = ["cuda12", "video"]
 # windows-sys (shared with vulkan) serves the CUDA-DLL path report.
 cuda = ["dep:cudarc", "dep:half", "dep:windows-sys"]
 cuda11 = ["cuda", "cudarc/cuda-11040", "video"]
 cuda12 = ["cuda", "cudarc/cuda-12090", "video"]
+cuda13 = ["cuda", "cudarc/cuda-13040", "video"]
 vulkan = ["ash", "dep:naga", "dep:windows-sys"]
 # NVENC→NVDEC video-engine sidecar: runtime-loads the driver-shipped video
 # libraries (nvEncodeAPI64/nvcuvid/nvcuda) — no build-time CUDA SDK linkage.
@@ -33,6 +35,7 @@ rand_distr = "0.6"
 matrixmultiply = "0.3.10"
 rayon = "1.10"
 thiserror = "2.0.18"
+sha2 = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"

@@ -109,7 +109,7 @@ impl CudaBackend {
     }
 
     pub fn new_with_device(gpu_index: u32) -> Result<Self, BackendError> {
-        Self::new_with_device_and_mem_mode(gpu_index, MemMode::default())
+        Self::new_with_device_and_mem_mode(gpu_index, MemMode::default(), &Default::default())
     }
 
     /// Like [`Self::new_with_device`], but sizes the ride-on-load verify
@@ -119,7 +119,14 @@ impl CudaBackend {
     pub fn new_with_device_and_mem_mode(
         gpu_index: u32,
         mem_mode: MemMode,
+        dll: &super::dll_provision::CudaDllProvision,
     ) -> Result<Self, BackendError> {
+        // Provision + preload the requested CUDA libraries BEFORE any CUDA
+        // API use: the versions/dlls lines below then report exactly the
+        // preloaded files, and cudarc's name-based lookups hit them.
+        if let Some(dir) = super::dll_provision::prepare(dll)? {
+            println!("[CUDA] dll provision: preloaded from {}", dir.display());
+        }
         unsafe {
             let res = cuda_sys::cuInit(0);
             if res as u32 != 0 {

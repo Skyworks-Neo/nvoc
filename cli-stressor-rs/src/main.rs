@@ -408,6 +408,27 @@ struct Args {
     )]
     fp8_fast_accum: bool,
 
+    #[arg(
+        long,
+        value_name = "VER",
+        help = "Download + preload NVIDIA's official cublas/nvrtc/cudart binaries for this version (e.g. 12.8, 13.4) from PyPI into a per-version cache; major must match the build's CUDA feature"
+    )]
+    cuda_dll_version: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "MIRROR",
+        help = "PyPI simple-index mirror for --cuda-dll-version: tuna | aliyun | an index base URL (default pypi.org with automatic TUNA/Aliyun file fallback)"
+    )]
+    cuda_dll_mirror: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "Preload CUDA DLLs/SOs from this directory instead of downloading (pairs with the [CUDA] dlls report)"
+    )]
+    cuda_dll_dir: Option<String>,
+
     /// Run Vulkan-only stress (skip CUDA workload)
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
@@ -1675,6 +1696,12 @@ fn render_grouped_help() -> String {
             ),
             ("--fp8-fast-accum", "FP8 CUBLASLT_MATMUL_DESC_FAST_ACCUM"),
             (
+                "--cuda-dll-version <VER>",
+                "download+preload NVIDIA cublas/nvrtc/cudart wheels",
+            ),
+            ("--cuda-dll-mirror <M>", "PyPI mirror: tuna/aliyun/URL"),
+            ("--cuda-dll-dir <DIR>", "preload CUDA DLLs from a directory"),
+            (
                 "--mem-mode <M>",
                 "verify set: auto/resident (L2) / stream (slab)",
             ),
@@ -2012,20 +2039,28 @@ pub fn run_from_args() {
     };
 
     let mem_mode: cli_stressor_rs::MemMode = args.mem_mode.into();
-    let mut backend =
-        match cuda_backend::CudaBackend::new_with_device_and_mem_mode(gpu_device_index, mem_mode) {
-            Ok(backend) => backend,
-            Err(err) => {
-                eprintln!(
-                    "{}",
-                    stylize(
-                        &format!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err),
-                        true
-                    )
-                );
-                std::process::exit(1);
-            }
-        };
+    let dll_provision = cuda_backend::dll_provision::CudaDllProvision {
+        version: args.cuda_dll_version.clone(),
+        mirror: args.cuda_dll_mirror.clone(),
+        dir: args.cuda_dll_dir.as_deref().map(std::path::PathBuf::from),
+    };
+    let mut backend = match cuda_backend::CudaBackend::new_with_device_and_mem_mode(
+        gpu_device_index,
+        mem_mode,
+        &dll_provision,
+    ) {
+        Ok(backend) => backend,
+        Err(err) => {
+            eprintln!(
+                "{}",
+                stylize(
+                    &format!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err),
+                    true
+                )
+            );
+            std::process::exit(1);
+        }
+    };
     // cublasLt GEMM lane behavior (algo report/pinning/listing + legacy
     // escape hatch); pure-additive flags, safe for the worker protocol.
     backend.configure_gemm_lt(
