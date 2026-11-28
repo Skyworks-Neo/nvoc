@@ -1,6 +1,7 @@
 //! [`CudaBackend`] definition, constructor, and the [`Backend`] trait impl that
 //! dispatches to the per-workload submodules (`gemm`, `mem_ops`, `atomic`, …).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys as cublas_sys};
@@ -16,6 +17,7 @@ use cli_stressor_rs::{
 use super::atomic::build_atomic_kernel;
 use super::device::query_device_info_for_index;
 use super::gemm::GemmPathConfig;
+use super::gemm_lt::{LtLane, LtOptions, LtShapeKey};
 use super::verify_kernels::VerifyEngine;
 
 #[cfg(feature = "vulkan")]
@@ -36,6 +38,19 @@ pub struct CudaBackend {
     pub(super) aux_streams: Vec<Arc<CudaStream>>,
     pub(super) blas: CudaBlas,
     pub(super) aux_blas: Vec<CudaBlas>,
+    /// cublasLt lanes (one per stream): descriptor cache + heuristic lists
+    /// for the FP16/BF16/FP8/FP4/INT8/INT4 GEMM stress paths.
+    pub(super) lt: LtLane,
+    pub(super) aux_lt: Vec<LtLane>,
+    /// Shapes already covered by a first-encounter `[GEMM-LT]` algo report.
+    pub(super) lt_reported: HashSet<LtShapeKey>,
+    /// First-encounter algo report lines (consumed by the verdict JSON).
+    pub(super) gemm_algo_reports: Vec<String>,
+    /// `--gemm-legacy-cublas`: route FP16/BF16/INT8 GEMM stress through the
+    /// classic cublas path instead of cublasLt (A/B comparability).
+    pub(super) gemm_legacy_cublas: bool,
+    /// `--fp8-fast-accum`: FP8 GEMM uses CUBLASLT_MATMUL_DESC_FAST_ACCUM.
+    pub(super) fp8_fast_accum: bool,
     pub(super) _atomic_module: Option<Arc<CudaModule>>,
     pub(super) atomic_fn: Option<CudaFunction>,
     pub(super) _intalu_module: Option<Arc<CudaModule>>,
@@ -94,7 +109,7 @@ impl CudaBackend {
     }
 
     pub fn new_with_device(gpu_index: u32) -> Result<Self, BackendError> {
-        Self::new_with_device_and_mem_mode(gpu_index, MemMode::default())
+        Self::new_with_device_and_mem_mode(gpu_index, MemMode::default(), &Default::default())
     }
 
     /// Like [`Self::new_with_device`], but sizes the ride-on-load verify
@@ -104,7 +119,14 @@ impl CudaBackend {
     pub fn new_with_device_and_mem_mode(
         gpu_index: u32,
         mem_mode: MemMode,
+        dll: &super::dll_provision::CudaDllProvision,
     ) -> Result<Self, BackendError> {
+        // Provision + preload the requested CUDA libraries BEFORE any CUDA
+        // API use: the versions/dlls lines below then report exactly the
+        // preloaded files, and cudarc's name-based lookups hit them.
+        if let Some(dir) = super::dll_provision::prepare(dll)? {
+            println!("[CUDA] dll provision: preloaded from {}", dir.display());
+        }
         unsafe {
             let res = cuda_sys::cuInit(0);
             if res as u32 != 0 {
@@ -114,6 +136,26 @@ impl CudaBackend {
                 )));
             }
         }
+        // Record the loaded CUDA library versions up front: FP8/FP4 kernel
+        // availability varies by cublasLt build (e.g. zero E5M2 candidates on
+        // Ada in some builds), so the matrix-collection record needs the exact
+        // driver/cublasLt/nvrtc versions alongside every reading.
+        let mut driver_api_ver: i32 = 0;
+        let (lt_ver, cudart_ver) = unsafe {
+            cuda_sys::cuDriverGetVersion(&mut driver_api_ver);
+            (
+                cudarc::cublaslt::sys::cublasLtGetVersion(),
+                cudarc::cublas::sys::cublasGetCudartVersion(),
+            )
+        };
+        let (nvrtc_major, nvrtc_minor) = unsafe {
+            let (mut mj, mut mn): (i32, i32) = (0, 0);
+            cudarc::nvrtc::sys::nvrtcVersion(&mut mj, &mut mn);
+            (mj, mn)
+        };
+        println!(
+            "[CUDA] versions: driver-api={driver_api_ver} cublasLt={lt_ver} cublas-cudart={cudart_ver} nvrtc={nvrtc_major}.{nvrtc_minor}"
+        );
         let ctx = CudaContext::new(gpu_index as usize)
             .map_err(|err| BackendError::Other(err.to_string()))?;
         let stream = ctx.default_stream();
@@ -156,6 +198,11 @@ impl CudaBackend {
             CudaBlas::new(stream2.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
         let blas3 =
             CudaBlas::new(stream3.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
+        // Which cublasLt64.dll (etc.) actually won the DLL search order is a
+        // matrix-collection record: FP8/FP4 kernel availability is a property
+        // of that file, not of the installed driver.
+        let dll_paths = loaded_cuda_dll_paths();
+        println!("[CUDA] dlls: {dll_paths}");
         let (atomic_module, atomic_fn) = match build_atomic_kernel(&ctx) {
             Ok((module, func)) => (Some(module), Some(func)),
             Err(err) => {
@@ -168,6 +215,15 @@ impl CudaBackend {
         };
         // INT ALU kernel is arch-targeted (needs DeviceInfo), so query SM first.
         let info = query_device_info_for_index(gpu_index)?;
+        // cublasLt lanes (one per stream) for the FP16/BF16/FP8/FP4/INT8/INT4
+        // GEMM stress paths; options arrive post-construction via
+        // [`Self::configure_gemm_lt`].
+        let lt_sm_major = info.compute_capability.map_or(0, |(major, _)| major);
+        let lt = LtLane::new(&stream, lt_sm_major, LtOptions::default())?;
+        let aux_lt = vec![
+            LtLane::new(&stream2, lt_sm_major, LtOptions::default())?,
+            LtLane::new(&stream3, lt_sm_major, LtOptions::default())?,
+        ];
         let (intalu_module, intalu_fn) = match super::int_alu::build_intalu_kernel(&ctx, &info) {
             Ok((module, func)) => (Some(module), Some(func)),
             Err(err) => {
@@ -222,6 +278,12 @@ impl CudaBackend {
             aux_streams: vec![stream2, stream3],
             blas,
             aux_blas: vec![blas2, blas3],
+            lt,
+            aux_lt,
+            lt_reported: HashSet::new(),
+            gemm_algo_reports: Vec::new(),
+            gemm_legacy_cublas: false,
+            fp8_fast_accum: false,
             _atomic_module: atomic_module,
             atomic_fn,
             _intalu_module: intalu_module,
@@ -233,6 +295,33 @@ impl CudaBackend {
             gpu_fill: None,
             info,
         })
+    }
+
+    /// Configure the cublasLt GEMM lane behavior (CLI wiring; defaults keep
+    /// every path on the Lt lane with the library's top heuristic pick).
+    pub fn configure_gemm_lt(
+        &mut self,
+        heuristic_count: usize,
+        algo_index: Option<usize>,
+        listing: bool,
+        legacy_cublas: bool,
+        fp8_fast_accum: bool,
+    ) {
+        for lane in std::iter::once(&mut self.lt).chain(self.aux_lt.iter_mut()) {
+            lane.set_options(LtOptions {
+                heuristic_count,
+                algo_index,
+                listing,
+            });
+        }
+        self.gemm_legacy_cublas = legacy_cublas;
+        self.fp8_fast_accum = fp8_fast_accum;
+    }
+
+    /// Consume the accumulated `[GEMM-LT]` first-encounter algo report lines
+    /// (verdict JSON side channel; also printed live as they happen).
+    pub fn take_gemm_algo_reports(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.gemm_algo_reports)
     }
 
     /// Opt-in the address-walk slab (lazy allocation; --verify-slab). The
@@ -381,7 +470,12 @@ impl Backend for CudaBackend {
                     size: host.size,
                 })
             }
-            PrecisionKind::FP8E4M3FN => Err(BackendError::Other(
+            PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 => Err(BackendError::Other(
+                "precision not supported in CUDA backend".to_string(),
+            )),
+            // FP4/INT4 are cublasLt GEMM-only modes with packed half-byte
+            // operands — no FP upload path (has_fp_upload_path excludes them).
+            PrecisionKind::FP4E2M1 | PrecisionKind::INT4 => Err(BackendError::Other(
                 "precision not supported in CUDA backend".to_string(),
             )),
             // INT precisions are exercised through the dedicated `gemm` (INT8)
@@ -678,12 +772,13 @@ impl Backend for CudaBackend {
             .unwrap_or((0, 0))
     }
 
-    fn validate_int8_exact(
+    fn validate_int_exact(
         &mut self,
+        kind: PrecisionKind,
         size: usize,
         seed: u64,
     ) -> Result<(bool, Option<String>), BackendError> {
-        self.validate_int8_exact_impl(size, seed)
+        self.validate_int_exact_impl(kind, size, seed)
     }
 }
 
@@ -691,3 +786,68 @@ impl Backend for CudaBackend {
 // `lane_count` methods are defined in the sibling submodules (`gemm`,
 // `mem_ops`, `atomic`, `lanes`) as additional `impl CudaBackend` blocks. They
 // share the struct via the `pub(super)` fields/helpers above.
+
+/// Paths of the loaded CUDA stack DLLs (driver / cublasLt / cublas / nvrtc —
+/// any version suffix cudarc's candidate list happened to match). The DLL
+/// search order decides which toolkit's files win over the driver-shipped
+/// ones, and FP8/FP4 kernel availability is a property of those files.
+#[cfg(windows)]
+fn loaded_cuda_dll_paths() -> String {
+    use std::collections::BTreeMap;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW, TH32CS_SNAPMODULE,
+    };
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+        if snapshot.is_null() || snapshot == usize::MAX as *mut core::ffi::c_void {
+            return "(module snapshot failed)".to_string();
+        }
+        let mut entry: MODULEENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<MODULEENTRY32W>() as u32;
+        if Module32FirstW(snapshot, &mut entry) == 0 {
+            CloseHandle(snapshot);
+            return "(module walk failed)".to_string();
+        }
+        let mut found: BTreeMap<&str, String> = BTreeMap::new();
+        loop {
+            let module = String::from_utf16_lossy(
+                &entry.szModule[0..entry.szModule.iter().position(|c| *c == 0).unwrap_or(256)],
+            )
+            .to_ascii_lowercase();
+            let key = if module.starts_with("nvcuda") {
+                Some("driver")
+            } else if module.starts_with("cublaslt") {
+                Some("cublasLt")
+            } else if module.starts_with("cublas") {
+                Some("cublas")
+            } else if module.starts_with("nvrtc") {
+                Some("nvrtc")
+            } else {
+                None
+            };
+            if let Some(key) = key {
+                let path = String::from_utf16_lossy(
+                    &entry.szExePath
+                        [0..entry.szExePath.iter().position(|c| *c == 0).unwrap_or(256)],
+                );
+                found.entry(key).or_insert(path);
+            }
+            if Module32NextW(snapshot, &mut entry) == 0 {
+                break;
+            }
+        }
+        CloseHandle(snapshot);
+        ["driver", "cublasLt", "cublas", "nvrtc"]
+            .iter()
+            .filter_map(|k| found.get(*k).map(|p| format!("{k}={p}")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+#[cfg(not(windows))]
+fn loaded_cuda_dll_paths() -> String {
+    "(module path enumeration is windows-only)".to_string()
+}

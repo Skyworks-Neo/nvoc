@@ -1,13 +1,23 @@
 extern crate self as cli_stressor_rs;
 
-// See the [features] table in Cargo.toml for the cuda11/cuda12 split.
-#[cfg(all(feature = "cuda11", feature = "cuda12"))]
+// See the [features] table in Cargo.toml for the cuda11/cuda12/cuda13 split.
+// Enabling two at once makes cudarc compile both header generations (each
+// cfg band re-declares the same types), flooding the build with duplicate
+// definitions before this error is even reached — the selector flags are
+// simply not combinable.
+#[cfg(any(
+    all(feature = "cuda11", feature = "cuda12"),
+    all(feature = "cuda11", feature = "cuda13"),
+    all(feature = "cuda12", feature = "cuda13"),
+))]
+compile_error!("features `cuda11`/`cuda12`/`cuda13` are mutually exclusive — pass exactly one");
+#[cfg(all(
+    feature = "cuda",
+    not(any(feature = "cuda11", feature = "cuda12", feature = "cuda13"))
+))]
 compile_error!(
-    "features `cuda11` and `cuda12` are mutually exclusive; \
-     build the legacy variant with `cargo build --no-default-features --features cuda11`"
+    "feature `cuda` requires a CUDA generation selector: enable `cuda11`, `cuda12`, or `cuda13`"
 );
-#[cfg(all(feature = "cuda", not(any(feature = "cuda11", feature = "cuda12"))))]
-compile_error!("feature `cuda` requires a CUDA generation selector: enable `cuda11` or `cuda12`");
 
 // Reuse the CLI implementation as the bundled optimizer worker. The optimizer
 // calls runner::run_from_args only inside its isolated child process.
@@ -50,11 +60,10 @@ pub mod vulkan_gfx_stressor;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_render;
 
-// CUDA backend lives in the lib so integration tests (and the bundled
-// optimizer worker) can drive it directly.
-#[cfg(feature = "cuda")]
-pub mod cuda_backend;
-
+// Styled crate-wide println: every log line goes through `stylize`. Declared
+// BEFORE the cuda_backend module so the backend's ([GEMM-LT] / [VERIFY] / …)
+// lines get the same coloring as the run-loop lines; the video backend below
+// relies on this textual order too.
 macro_rules! println {
     () => { std::println!() };
     ($($arg:tt)*) => {{
@@ -62,6 +71,11 @@ macro_rules! println {
         std::println!("{}", nvoc_cli_common::color::stylize(&msg, false));
     }};
 }
+
+// CUDA backend lives in the lib so integration tests (and the bundled
+// optimizer worker) can drive it directly.
+#[cfg(feature = "cuda")]
+pub mod cuda_backend;
 
 // NVENC→NVDEC video-engine stress backend: runtime-loads the driver-shipped
 // video libraries (no ffmpeg); compiled only under --features video.
@@ -79,7 +93,17 @@ pub enum PrecisionKind {
     FP16,
     BF16,
     FP8E4M3FN,
+    /// 4-bit float (E2M1) with block scaling, cublasLt-only (Blackwell).
+    FP4E2M1,
+    /// E5M2 (CUDA_R_8F_E5M2), cublasLt-only, same SM89+ gate as E4M3FN.
+    /// cublasLt ships no E5M2xE5M2 matmul kernels on any build (the FP8
+    /// layout table requires >=1 E4M3 operand); the stress path probes pure
+    /// E5M2xE5M2 first and falls back to mixed E5M2(A)xE4M3(B) on zero
+    /// candidates, so the precision stays runnable on Ada and newer.
+    FP8E5M2,
     INT8,
+    /// 4-bit signed integer (CUDA_R_4I), cublasLt-only, IMMA on SM75+.
+    INT4,
     INT16,
     INT32,
 }
@@ -198,6 +222,10 @@ pub struct StressResult {
     /// denominator for the verdict.
     #[serde(default)]
     pub elements_produced: u64,
+    /// First-encounter cublasLt algo report lines for this precision
+    /// (shape + selected algo config; empty on the legacy cublas path).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gemm_algos: Vec<String>,
 }
 
 // Manual Debug: the SDC sink/telemetry fields are not Debug.
@@ -311,6 +339,53 @@ impl DeviceInfo {
                     ))
                 }
             }
+            // E5M2: same SM89+ hardware gate as E4M3 (the sm_89 PTX supports
+            // E5M2 mma). The cublasLt kernel inventory is deterministic, not
+            // build-dependent: no cublasLt ever ships E5M2xE5M2 matmul kernels
+            // (the FP8 layout table requires >=1 E4M3 operand — confirmed by
+            // zero candidates on RTX 4060 across 12.0.2/12.8.4/12.9.2.10/13.4.1,
+            // matching the XLA gemm_rewriter gate). The stress path arbitrates
+            // at runtime: probe pure E5M2xE5M2, fall back to mixed
+            // E5M2(A)xE4M3(B), SKIP only when neither probes.
+            PrecisionKind::FP8E5M2 => {
+                let sm = self.compute_capability.unwrap_or((0, 0));
+                if sm.0 >= 8 && (sm.0 > 8 || sm.1 >= 9) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "FP8 requires SM89 or higher (current: SM{}.{})",
+                        sm.0, sm.1
+                    ))
+                }
+            }
+            // FP4 (E2M1 with block scaling) rides the Blackwell FP4 tensor
+            // cores via cublasLt; the runtime driver also needs a CUDA 12.8+
+            // (R570+) cublasLt, which surfaces as a clear heuristic error.
+            PrecisionKind::FP4E2M1 => {
+                let sm = self.compute_capability.unwrap_or((0, 0));
+                let fp4 = (sm.0 == 10 && (sm.1 == 0 || sm.1 == 3)) || sm.0 == 12;
+                if fp4 {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "FP4 requires SM100/SM103/SM120 (current: SM{}.{})",
+                        sm.0, sm.1
+                    ))
+                }
+            }
+            // INT4 GEMM is the IMMA 4-bit integer tensor-op path (CUDA_R_4I,
+            // COMPUTE_32I) — Turing introduced INT4 IMMA at SM75.
+            PrecisionKind::INT4 => {
+                let sm = self.compute_capability.unwrap_or((0, 0));
+                if sm.0 > 7 || (sm.0 == 7 && sm.1 >= 5) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "INT4 GEMM requires SM75 or higher (current: SM{}.{})",
+                        sm.0, sm.1
+                    ))
+                }
+            }
         }
     }
 }
@@ -346,6 +421,11 @@ pub enum BackendError {
     Disabled,
     #[error("backend error: {0}")]
     Other(String),
+    /// A dtype/kernel capability gap on this driver/device (e.g. cublasLt has
+    /// no CUDA_R_4I candidate). The dispatch loops soft-skip it per precision
+    /// instead of aborting the whole run.
+    #[error("backend unsupported: {0}")]
+    Unsupported(String),
 }
 
 pub trait Backend {
@@ -396,15 +476,17 @@ pub trait Backend {
     fn verify_tick_stats(&self) -> (u64, u64) {
         (0, 0)
     }
-    /// Exact INT8 GEMM validation: seeded host reference vs device result.
-    /// Returns `(passed, failure_reason)`; Err only for infrastructure errors.
-    fn validate_int8_exact(
+    /// Exact INT GEMM validation (INT8/INT4): seeded host reference vs device
+    /// result with strict integer equality. Returns `(passed, failure_reason)`;
+    /// Err only for infrastructure errors.
+    fn validate_int_exact(
         &mut self,
+        _kind: PrecisionKind,
         _size: usize,
         _seed: u64,
     ) -> Result<(bool, Option<String>), BackendError> {
         Err(BackendError::Other(
-            "INT8 exact validation unsupported on this backend".to_string(),
+            "INT exact validation unsupported on this backend".to_string(),
         ))
     }
 }
@@ -435,8 +517,22 @@ fn validation_enabled(validate_interval_s: f64) -> bool {
 fn is_int_precision(kind: PrecisionKind) -> bool {
     matches!(
         kind,
-        PrecisionKind::INT8 | PrecisionKind::INT16 | PrecisionKind::INT32
+        PrecisionKind::INT8 | PrecisionKind::INT4 | PrecisionKind::INT16 | PrecisionKind::INT32
     )
+}
+
+/// Whether the dtype has a `Backend::upload_matrix`/`gemm` FP validation path
+/// (gates the dtype probe and the periodic host-reference validation). FP8/FP4
+/// have no such path — they are cublasLt stress modes whose correctness is
+/// covered by the ride-on-load sampled cross-checks on the actual stress
+/// buffers — and the INT precisions run through the dedicated gemm (INT8/INT4
+/// exact sidecars) and intalu (INT16/32) paths instead.
+fn has_fp_upload_path(kind: PrecisionKind) -> bool {
+    !is_int_precision(kind)
+        && !matches!(
+            kind,
+            PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 | PrecisionKind::FP4E2M1
+        )
 }
 
 /// Whether a (kernel, precision) pair is a meaningful stress combination.
@@ -447,15 +543,17 @@ fn is_int_precision(kind: PrecisionKind) -> bool {
 /// to specific kernels:
 ///
 /// - INT8 → `Gemm` (cuBLAS INT8 GEMM, IMMA tensor cores) **or** `IntAlu`.
+/// - INT4 → `Gemm` only (cublasLt CUDA_R_4I; the element-sized memcpy/memset
+///   kernel paths have no half-byte element notion).
 /// - INT16/INT32 → `IntAlu` only.
-///
-/// Returning false lets the dispatch loop soft-skip the combo (and keep
-/// producing load on the compatible ones) instead of hard-failing.
 pub fn kernel_precision_compatible(kind: KernelType, precision: PrecisionKind) -> bool {
     match (kind, precision) {
         // IntAlu is meaningful only for the dedicated integer precisions.
         (KernelType::IntAlu, precision) => is_int_precision(precision),
         (_, PrecisionKind::INT16) | (_, PrecisionKind::INT32) => false,
+        // FP4/INT4 are cublasLt GEMM-only modes (half-byte packed operands).
+        (KernelType::Gemm, PrecisionKind::FP4E2M1 | PrecisionKind::INT4) => true,
+        (_, PrecisionKind::FP4E2M1 | PrecisionKind::INT4) => false,
         // INT8 GEMM is supported via cuBLAS; other kernels (memcpy/memset/…)
         // also accept an INT8 precision by element size, so allow them.
         _ => true,
@@ -564,6 +662,38 @@ pub fn parse_precision_list(raw: &str) -> Result<Vec<PrecisionSpec>, String> {
             },
         ),
         (
+            "fp8e4m3",
+            PrecisionSpec {
+                name: "FP8 E4M3FN",
+                kind: PrecisionKind::FP8E4M3FN,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "fp8e5m2",
+            PrecisionSpec {
+                name: "FP8 E5M2",
+                kind: PrecisionKind::FP8E5M2,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "e5m2",
+            PrecisionSpec {
+                name: "FP8 E5M2",
+                kind: PrecisionKind::FP8E5M2,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "fp4",
+            PrecisionSpec {
+                name: "FP4 E2M1",
+                kind: PrecisionKind::FP4E2M1,
+                tf32_enabled: None,
+            },
+        ),
+        (
             "int8",
             PrecisionSpec {
                 name: "INT8",
@@ -576,6 +706,22 @@ pub fn parse_precision_list(raw: &str) -> Result<Vec<PrecisionSpec>, String> {
             PrecisionSpec {
                 name: "INT8",
                 kind: PrecisionKind::INT8,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "int4",
+            PrecisionSpec {
+                name: "INT4",
+                kind: PrecisionKind::INT4,
+                tf32_enabled: None,
+            },
+        ),
+        (
+            "i4",
+            PrecisionSpec {
+                name: "INT4",
+                kind: PrecisionKind::INT4,
                 tf32_enabled: None,
             },
         ),
@@ -850,6 +996,16 @@ pub fn choose_tolerance(precision_name: &str) -> (f32, f32) {
         "FP16" => (2e-1, 2e-1),
         "BF16" => (5e-1, 5e-1),
         "FP8 E4M3FN" => (1.5, 1.5),
+        // Both FP8 variants decode exactly on both sides of the compare; the
+        // band absorbs the f16 C-output rounding (quantization error itself
+        // cancels — both sides read the same quantized operands).
+        "FP8 E5M2" => (1.5, 1.5),
+        // FP4: both operands and block scales decode exactly on both sides of
+        // the compare; the band absorbs the f16 C-output rounding.
+        "FP4 E2M1" => (2.0, 2.0),
+        // INT4 sampled cross-checks recompute the exact i32 dot product (the
+        // f32 accumulator is exact up to 2^24, far above 49·K).
+        "INT4" => (0.0, 0.0),
         _ => (1e-2, 1e-2),
     }
 }
@@ -1150,6 +1306,390 @@ pub fn cpu_reference_int8(a: &[i8], b: &[i8], size: usize) -> Vec<i32> {
         .collect()
 }
 
+/// Exact integer GEMM reference for the cublasLt TN layout (TRANSA=T,
+/// TRANSB=N over row-major uploaded operands): `C[i][j] = Σ_k A[j][k]·B[i][k]`.
+/// This is the identity the INT8/INT4 exact sidecars validate against (see
+/// the `gemm_sample_check` comment for the row-major/col-major derivation).
+pub fn cpu_reference_int_tn(a: &[i8], b: &[i8], size: usize) -> Vec<i32> {
+    (0..size)
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            (0..size).map(move |j| {
+                let mut acc = 0i32;
+                for k in 0..size {
+                    acc += a[j * size + k] as i32 * b[i * size + k] as i32;
+                }
+                acc
+            })
+        })
+        .collect()
+}
+
+/// Exact INT4 GEMM reference over packed 4-bit operands (two signed nibbles
+/// per byte, low nibble first — same packing as `int4_pack`).
+pub fn cpu_reference_int4_tn(a_packed: &[u8], b_packed: &[u8], size: usize) -> Vec<i32> {
+    (0..size)
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            (0..size).map(move |j| {
+                let mut acc = 0i32;
+                for k in 0..size {
+                    acc += int4_unpack_nib(a_packed, j * size + k) as i32
+                        * int4_unpack_nib(b_packed, i * size + k) as i32;
+                }
+                acc
+            })
+        })
+        .collect()
+}
+
+// ---- FP8 (E4M3FN) / FP4 (E2M1) / INT4 codec ---------------------------------
+//
+// cublasLt stress operands that have no native Rust type. The encodings here
+// are mirrored bit-for-bit by the NVRTC verify kernels in
+// `verify_kernels.rs` (`v_ab_load` type codes) — keep the two in lockstep.
+//
+// E4M3FN (CUDA_R_8F_E4M3): bias 7, denormals man·2⁻⁹, max ±448, NaN only at
+// 0x7F/0xFF, no Inf. E2M1 (CUDA_R_4F_E2M1): bias 1, ±{0, .5, 1, 1.5, 2, 3, 4,
+// 6}, no NaN/Inf. Both are monotonic over their finite bit patterns, which the
+// quantizers exploit with a decode-table lookup + nearest-round (ties to even
+// low-bit pattern).
+
+/// Decode one E4M3FN byte to f32 (exact).
+pub fn fp8_e4m3_decode(bits: u8) -> f32 {
+    let sign = if bits & 0x80 != 0 { -1.0f32 } else { 1.0 };
+    let exp = (bits >> 3) & 0xF;
+    let man = (bits & 0x7) as f32;
+    match exp {
+        0 => {
+            if man == 0.0 {
+                f32::from_bits((bits as u32 & 0x80) << 24) // ±0
+            } else {
+                sign * man * 2f32.powi(-9)
+            }
+        }
+        15 if (bits & 0x7F) == 0x7F => f32::NAN,
+        15 => sign * (1.0 + man / 8.0) * 2f32.powi(8),
+        e => sign * (1.0 + man / 8.0) * 2f32.powi(e as i32 - 7),
+    }
+}
+
+/// The full 256-entry E4M3FN decode table (decode is self-inverse-checked in
+/// tests; the quantizer searches it for the nearest representable value).
+pub fn fp8_e4m3_decode_table() -> [f32; 256] {
+    let mut table = [0.0f32; 256];
+    for (bits, slot) in table.iter_mut().enumerate() {
+        *slot = fp8_e4m3_decode(bits as u8);
+    }
+    table
+}
+
+/// Quantize f32 → E4M3FN with round-to-nearest-even (values beyond ±448
+/// saturate to ±448; NaN/Inf map to the 0x7F NaN pattern).
+///
+/// O(1) bit math rather than a decode-table search: the stress path
+/// quantizes ~10⁸ elements per burst op, and the original search put a
+/// multi-second host gap between bursts (observed as a ~15 s idle "lead-in"
+/// with the GPU downclocked on 8192² operands).
+pub fn fp8_e4m3_quantize(x: f32) -> u8 {
+    let bits = x.to_bits();
+    let sign = ((bits >> 24) as u8) & 0x80;
+    let ax = bits & 0x7FFF_FFFF;
+    if ax >= 0x7F80_0000 {
+        return 0x7F; // NaN/Inf → the NaN pattern (no Inf exists in E4M3FN)
+    }
+    if ax > 448f32.to_bits() {
+        // 448 is the max finite; anything above saturates (RN would need a
+        // 512 step that does not exist in the E4M3FN range).
+        return sign | 0x7E;
+    }
+    if ax < 2f32.powi(-6).to_bits() {
+        // Denormal band: value = m·2⁻⁹ with 3-bit m; RN-even on m = ax·2⁹
+        // (exact — power-of-two scaling). m == 8 rounds up into the min
+        // normal (2⁻⁶, pattern 0x08).
+        let scaled = f32::from_bits(ax) * 512.0;
+        let t = scaled.trunc();
+        let frac = scaled - t;
+        let m = if frac > 0.5 {
+            t + 1.0
+        } else if frac < 0.5 || (t as i32) & 1 == 0 {
+            t
+        } else {
+            t + 1.0
+        };
+        return sign | (m as u8);
+    }
+    // Normal band: RN-even the 23-bit f32 mantissa down to 3 bits. Within
+    // the saturated range the exponent bump cannot spill past exp field 15:
+    // values ≤ 448 carry mantissa ≤ 6/8 there, so keep+round ≤ 6.
+    let exp8 = (((ax >> 23) as i32) - 127 + 7) as u32;
+    let man = ax & 0x7F_FFFF;
+    let keep = man >> 20;
+    let rest = man & 0xF_FFFF;
+    let round = (rest >> 19) & 1;
+    let sticky = rest & 0x7_FFFF;
+    let mut m3 = keep;
+    if round == 1 && (sticky != 0 || (keep & 1) == 1) {
+        m3 += 1;
+    }
+    let (exp8, m3) = if m3 >= 8 { (exp8 + 1, 0) } else { (exp8, m3) };
+    sign | ((exp8 << 3) as u8) | (m3 as u8)
+}
+
+/// Decode one E5M2 byte (CUDA_R_8F_E5M2: bias 15, denorm man·2⁻¹⁶, max
+/// finite ±57344, Inf/NaN in the top exp field 31 — unlike E4M3, exp field
+/// 15 is an ordinary exponent).
+pub fn fp8_e5m2_decode(bits: u8) -> f32 {
+    let sign = if bits & 0x80 != 0 { -1.0f32 } else { 1.0 };
+    let exp = (bits >> 2) & 0x1F;
+    let man = (bits & 0x3) as f32;
+    match exp {
+        0 if man == 0.0 => sign * 0.0,
+        0 => sign * man * 2f32.powi(-16),
+        31 if man == 0.0 => sign * f32::INFINITY,
+        31 => f32::NAN,
+        e => sign * (1.0 + man / 4.0) * 2f32.powi(e as i32 - 15),
+    }
+}
+
+/// Quantize f32 → E5M2 with round-to-nearest-even, saturating semantics
+/// (matches the hardware `cvt.rn.satfinite.e5m2` conversion: finite overflow
+/// clamps to ±57344 instead of producing Inf operands that would poison the
+/// GEMM output; NaN maps to the 0x7F NaN pattern).
+pub fn fp8_e5m2_quantize(x: f32) -> u8 {
+    let bits = x.to_bits();
+    let sign = ((bits >> 24) as u8) & 0x80;
+    let ax = bits & 0x7FFF_FFFF;
+    if ax == 0x7F80_0000 {
+        return sign | 0x7C; // Inf → Inf (IEEE-faithful)
+    }
+    if ax > 0x7F80_0000 {
+        return 0x7F; // NaN → the canonical NaN pattern
+    }
+    if ax > 57344f32.to_bits() {
+        return sign | 0x7B; // saturate above the max finite
+    }
+    if ax < 2f32.powi(-14).to_bits() {
+        // Denormal band: value = m·2⁻¹⁶ with 2-bit m; RN-even on m = ax·2¹⁶.
+        // m == 4 rounds up into the min normal (2⁻¹⁴, pattern 0x04).
+        let scaled = f32::from_bits(ax) * 65536.0;
+        let t = scaled.trunc();
+        let frac = scaled - t;
+        let m = if frac > 0.5 {
+            t + 1.0
+        } else if frac < 0.5 || (t as i32) & 1 == 0 {
+            t
+        } else {
+            t + 1.0
+        };
+        return sign | (m as u8);
+    }
+    // Normal band: RN-even the 23-bit f32 mantissa down to 2 bits. The bump
+    // cannot reach the reserved exp field 31: values ≤ 57344 carry mantissa
+    // ≤ 3/4 at exp field 30, so keep+round ≤ 3 there.
+    let exp8 = (((ax >> 23) as i32) - 127 + 15) as u32;
+    let man = ax & 0x7F_FFFF;
+    let keep = man >> 21;
+    let rest = man & 0x1F_FFFF;
+    let round = (rest >> 20) & 1;
+    let sticky = rest & 0xF_FFFF;
+    let mut m2 = keep;
+    if round == 1 && (sticky != 0 || (keep & 1) == 1) {
+        m2 += 1;
+    }
+    let (exp8, m2) = if m2 >= 4 { (exp8 + 1, 0) } else { (exp8, m2) };
+    sign | ((exp8 << 2) as u8) | (m2 as u8)
+}
+
+/// Decode one packed FP4 nibble (low 4 bits; sign bit + 3 magnitude bits).
+pub fn fp4_e2m1_decode(nib: u8) -> f32 {
+    const TABLE: [f32; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+    let sign = if nib & 0x8 != 0 { -1.0f32 } else { 1.0 };
+    sign * TABLE[(nib & 0x7) as usize]
+}
+
+/// Quantize f32 → E2M1 with round-to-nearest-even (ties to even nibble).
+/// Values beyond ±6 saturate to ±6.
+pub fn fp4_e2m1_quantize(x: f32) -> u8 {
+    let sign = if x.is_sign_negative() { 0x8u8 } else { 0 };
+    let ax = x.abs();
+    if ax >= 6.0 {
+        return sign | 0x7;
+    }
+    if ax < 0.25 {
+        // Below the RN midpoint between 0 and 0.5.
+        return sign;
+    }
+    // Magnitude patterns 0..=7 are monotonic; 7 == 6.0 (the max).
+    let (mut lo, mut hi) = (0u8, 7u8);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if fp4_e2m1_decode(mid) <= ax {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let dl = ax - fp4_e2m1_decode(lo);
+    let du = fp4_e2m1_decode(hi) - ax;
+    let mag = if dl < du {
+        lo
+    } else if du < dl {
+        hi
+    } else if lo & 1 == 0 {
+        lo
+    } else {
+        hi
+    };
+    sign | mag
+}
+
+/// Pack 4-bit values (FP4 nibbles or INT4) two-per-byte, low nibble first.
+/// This matches the cublasLt packing convention for CUDA_R_4F_E2M1 /
+/// CUDA_R_4I (element 2i in the low nibble, 2i+1 in the high nibble).
+pub fn pack4(values: &[u8]) -> Vec<u8> {
+    values
+        .chunks(2)
+        .map(|pair| (pair[0] & 0xF) | ((pair.get(1).map_or(0, |v| *v & 0xF)) << 4))
+        .collect()
+}
+
+/// Unpack one 4-bit value by element index (low nibble first).
+pub fn unpack4(packed: &[u8], idx: usize) -> u8 {
+    let byte = packed[idx >> 1];
+    if idx & 1 == 0 { byte & 0xF } else { byte >> 4 }
+}
+
+/// Unpack one signed INT4 value by element index.
+pub fn int4_unpack_nib(packed: &[u8], idx: usize) -> i8 {
+    let nib = unpack4(packed, idx) as i8;
+    if nib & 0x8 != 0 { nib - 16 } else { nib }
+}
+
+/// Pack signed INT4 values two-per-byte (low nibble first).
+pub fn int4_pack(values: &[i8]) -> Vec<u8> {
+    let nibs: Vec<u8> = values.iter().map(|v| *v as u8).collect();
+    pack4(&nibs)
+}
+
+/// FP4 block-scale format. NVFP4 = 16-element blocks with E4M3 scales
+/// (`CUBLASLT_MATMUL_MATRIX_SCALE_VEC16_UE4M3`); MXFP4 = 32-element blocks
+/// with power-of-two UE8M0 scales (`..._VEC32_UE8M0`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fp4ScaleMode {
+    Nvfp4,
+    Mxfp4,
+}
+
+impl Fp4ScaleMode {
+    pub fn block_len(self) -> usize {
+        match self {
+            Fp4ScaleMode::Nvfp4 => 16,
+            Fp4ScaleMode::Mxfp4 => 32,
+        }
+    }
+}
+
+/// Quantize one block of K-major values into packed E2M1 nibbles plus one
+/// scale byte. NVFP4 scale = E4M3(max|v|/6); MXFP4 scale = 2^⌈log2(max|v|/6)⌉.
+/// Decoded value = `fp4_e2m1_decode(nib) × scale`.
+pub fn fp4_quantize_block(values: &[f32], mode: Fp4ScaleMode) -> (Vec<u8>, u8) {
+    let max_abs = values.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    match mode {
+        Fp4ScaleMode::Nvfp4 => {
+            // scale = RN_e4m3(max/6); a zero (or sub-min-denormal/6) max
+            // quantizes the whole block to zero with scale 0.
+            let scale = if max_abs > 0.0 {
+                fp8_e4m3_quantize(max_abs / 6.0)
+            } else {
+                0
+            };
+            let scale_f = fp8_e4m3_decode(scale);
+            let nibs: Vec<u8> = if scale_f > 0.0 {
+                values
+                    .iter()
+                    .map(|v| fp4_e2m1_quantize(v / scale_f))
+                    .collect()
+            } else {
+                vec![0; values.len()]
+            };
+            (pack4(&nibs), scale)
+        }
+        Fp4ScaleMode::Mxfp4 => {
+            // scale = 2^⌈log2(max/6)⌉ as UE8M0 (biased-127 exponent byte).
+            let scale = if max_abs > 0.0 {
+                let ratio = max_abs / 6.0;
+                let e = ratio.log2().ceil() as i32;
+                (e + 127).clamp(0, 254) as u8
+            } else {
+                0
+            };
+            let scale_f = 2f32.powi(scale as i32 - 127);
+            let nibs: Vec<u8> = if scale_f > 0.0 {
+                values
+                    .iter()
+                    .map(|v| fp4_e2m1_quantize(v / scale_f))
+                    .collect()
+            } else {
+                vec![0; values.len()]
+            };
+            (pack4(&nibs), scale)
+        }
+    }
+}
+
+/// Quantize a K-major operand into packed nibbles + one scale byte per block.
+/// Returns `(packed_bytes, scales)` with scales laid out `[kblocks][cols]`
+/// row-major (scale block index = k / block_len, column = the operand's
+/// non-K coordinate).
+///
+/// Rayon-parallel over columns with a scratch buffer per column: the earlier
+/// per-block `Vec` allocations put ~8M allocator calls on the 8192² burst
+/// path (same host-gap failure mode as the FP8 quantizer search).
+pub fn fp4_quantize_matrix(values: &[f32], size: usize, mode: Fp4ScaleMode) -> (Vec<u8>, Vec<u8>) {
+    let block = mode.block_len();
+    let kblocks = size.div_ceil(block);
+    let cols: Vec<(Vec<u8>, Vec<u8>)> = (0..size)
+        .into_par_iter()
+        .map(|col| {
+            let mut bytes = vec![0u8; size.div_ceil(2)];
+            let mut col_scales = vec![0u8; kblocks];
+            let mut block_vals = vec![0f32; block];
+            for kb in 0..kblocks {
+                let start = kb * block;
+                let end = (start + block).min(size);
+                for (slot, k) in block_vals.iter_mut().zip(start..end) {
+                    *slot = values[col * size + k];
+                }
+                // Zero-pad the tail (K is a block-length multiple at the call
+                // site; the pad keeps the packing math total for odd sizes).
+                for slot in block_vals[end - start..block].iter_mut() {
+                    *slot = 0.0;
+                }
+                let (block_packed, scale) = fp4_quantize_block(&block_vals, mode);
+                // Clamp the copy to the column's byte slot: when size < block
+                // (unit-test shapes) only the first `size` nibbles are real,
+                // and pack4's zero padding beyond them is dropped.
+                let slot = bytes.len() - kb * block / 2;
+                let byte_len = block_packed.len().min(slot);
+                bytes[kb * block / 2..kb * block / 2 + byte_len]
+                    .copy_from_slice(&block_packed[..byte_len]);
+                col_scales[kb] = scale;
+            }
+            (bytes, col_scales)
+        })
+        .collect();
+    let mut packed = Vec::with_capacity(size * size.div_ceil(2));
+    let mut scales = vec![0u8; kblocks * size];
+    for (col, (bytes, col_scales)) in cols.into_iter().enumerate() {
+        packed.extend_from_slice(&bytes);
+        for (kb, scale) in col_scales.into_iter().enumerate() {
+            scales[kb * size + col] = scale;
+        }
+    }
+    (packed, scales)
+}
+
 fn choose_weighted<'a, T, F>(items: &'a [T], rng: &mut StdRng, weight_of: F) -> Option<&'a T>
 where
     F: Fn(&T) -> f64,
@@ -1332,16 +1872,16 @@ pub fn run_stress_for_precision<B: Backend>(
         return result;
     }
 
-    // Probe for dtype support (FP path: upload + gemm). INT precisions are
-    // exercised through the dedicated `gemm` (INT8) and `intalu` kernel paths,
-    // not this FP upload/gemm pipeline, so skip the probe for them — they are
-    // always supported on any SM.
+    // Probe for dtype support (FP path: upload + gemm). INT and FP8/FP4
+    // precisions are exercised through the dedicated cublasLt stress paths and
+    // intalu kernel paths, not this FP upload/gemm pipeline, so skip the probe
+    // for them.
     let probe_a = make_random_host_matrix(8, config.base_seed.wrapping_add(1));
     let probe_b = make_random_host_matrix(8, config.base_seed.wrapping_add(2));
     // Not collapsed: the inner `if let Err` requires `let_chains` to merge with
-    // the `!is_int_precision` guard, which is nightly-only.
+    // the `has_fp_upload_path` guard, which is nightly-only.
     #[allow(clippy::collapsible_if)]
-    if !is_int_precision(spec.kind) {
+    if has_fp_upload_path(spec.kind) {
         if let Err(err) = (|| {
             let a_dev = backend.upload_matrix(&probe_a, &spec)?;
             let b_dev = backend.upload_matrix(&probe_b, &spec)?;
@@ -1433,6 +1973,14 @@ pub fn run_stress_for_precision<B: Backend>(
                 if !kernel_precision_compatible(kernel_kind, op_spec.kind) {
                     continue;
                 }
+                // A driver-level capability gap (no cublasLt candidate for
+                // this dtype) downgrades the precision to SKIP.
+                if let BackendError::Unsupported(reason) = err {
+                    result.supported = false;
+                    result.first_error = Some(format!("SKIP: {reason}"));
+                    result.first_error_at_s = Some(start.elapsed().as_secs_f64());
+                    return result;
+                }
                 result.first_error = Some(format!("runtime error: {err}"));
                 result.first_error_at_s = Some(start.elapsed().as_secs_f64());
                 break;
@@ -1481,7 +2029,7 @@ pub fn run_stress_for_precision<B: Backend>(
 
         let _ = backend.empty_cache();
 
-        if validate_enabled && !is_int_precision(spec.kind) && elapsed_total >= next_validate {
+        if validate_enabled && has_fp_upload_path(spec.kind) && elapsed_total >= next_validate {
             match validate_precision(
                 backend,
                 &spec,
@@ -1567,10 +2115,8 @@ pub fn run_stress_mixed<B: Backend>(
         }
         let probe_a = make_random_host_matrix(8, config.base_seed.wrapping_add(1));
         let probe_b = make_random_host_matrix(8, config.base_seed.wrapping_add(2));
-        // Skip the FP upload/gemm probe for INT precisions (see run_stress_once).
-        let probe_res = if is_int_precision(spec.kind) {
-            Ok::<(), BackendError>(())
-        } else {
+        // Skip the FP upload/gemm probe for INT and FP8/FP4 precisions (see run_stress_once).
+        let probe_res = if has_fp_upload_path(spec.kind) {
             (|| {
                 let a_dev = backend.upload_matrix(&probe_a, spec)?;
                 let b_dev = backend.upload_matrix(&probe_b, spec)?;
@@ -1578,6 +2124,8 @@ pub fn run_stress_mixed<B: Backend>(
                 backend.synchronize()?;
                 Ok::<(), BackendError>(())
             })()
+        } else {
+            Ok::<(), BackendError>(())
         };
         if let Err(err) = probe_res {
             if let Some(idx) = index_by_name.get(spec.name) {
@@ -1674,6 +2222,30 @@ pub fn run_stress_mixed<B: Backend>(
                 // Soft-skip an incompatible (kernel, precision) combo (e.g.
                 // INT16 + GEMM) and keep producing load on the valid combos.
                 if !kernel_precision_compatible(kernel_kind, op_spec.kind) {
+                    continue;
+                }
+                // A driver-level capability gap (no cublasLt candidate for
+                // this dtype) downgrades the precision to SKIP instead of
+                // aborting the whole run.
+                if let BackendError::Unsupported(reason) = err {
+                    if let Some(idx) = index_by_name.get(op_spec.name) {
+                        if results[*idx].supported {
+                            // Say it once, loudly: without this line a
+                            // single-precision run looks like a silent hang.
+                            println!("[{}] SKIP: {reason}", op_spec.name);
+                        }
+                        results[*idx].supported = false;
+                        if results[*idx].first_error.is_none() {
+                            results[*idx].first_error = Some(format!("SKIP: {reason}"));
+                            results[*idx].first_error_at_s = Some(start.elapsed().as_secs_f64());
+                        }
+                    }
+                    // Nothing left producing load: stop instead of burning
+                    // the remaining duration in skip cycles.
+                    if results.iter().all(|r| !r.supported) {
+                        println!("all precisions unsupported on this device - stopping early");
+                        break;
+                    }
                     continue;
                 }
                 if let Some(idx) = index_by_name.get(op_spec.name) {
@@ -1785,18 +2357,22 @@ pub fn run_stress_mixed<B: Backend>(
 
         if validate_enabled && elapsed_total >= next_validate {
             if is_int_precision(op_spec.kind) {
-                // INT8 GEMM gets the exact integer sidecar; INT16/32 intalu
-                // chains are covered per-op by the gather-based host reference.
-                if op_spec.kind == PrecisionKind::INT8 && kernel_kind == KernelType::Gemm {
-                    match backend.validate_int8_exact(
+                // INT8/INT4 GEMM get the exact integer sidecar; INT16/32
+                // intalu chains are covered per-op by the gather-based host
+                // reference.
+                if matches!(op_spec.kind, PrecisionKind::INT8 | PrecisionKind::INT4)
+                    && kernel_kind == KernelType::Gemm
+                {
+                    match backend.validate_int_exact(
+                        op_spec.kind,
                         effective_config.verify.int8_validate_size,
                         validation_seed,
                     ) {
                         Ok((true, _)) => {
-                            println!("[INT8] validate | exact | OK");
+                            println!("[{}] validate | exact | OK", op_spec.name);
                         }
                         Ok((false, reason)) => {
-                            println!("[INT8] validate | exact | FAIL");
+                            println!("[{}] validate | exact | FAIL", op_spec.name);
                             if let Some(idx) = index_by_name.get(op_spec.name) {
                                 let result = &mut results[*idx];
                                 result.validation_failures += 1;
@@ -1810,7 +2386,7 @@ pub fn run_stress_mixed<B: Backend>(
                         Err(err) => {
                             if let Some(idx) = index_by_name.get(op_spec.name) {
                                 results[*idx].first_error =
-                                    Some(format!("int8 validation error: {err}"));
+                                    Some(format!("int validation error: {err}"));
                                 results[*idx].first_error_at_s =
                                     Some(start.elapsed().as_secs_f64());
                             }
@@ -1818,7 +2394,7 @@ pub fn run_stress_mixed<B: Backend>(
                         }
                     }
                 }
-            } else {
+            } else if has_fp_upload_path(op_spec.kind) {
                 match validate_precision(
                     backend,
                     &op_spec,

@@ -157,7 +157,7 @@ jobs:
         if: matrix.platform == 'windows'
 
       - name: Build Rust release binaries
-        run: cargo build --release --locked -p nvoc-cli -p nvoc-auto-optimizer -p cli-stressor-rs --features cuda,vulkan
+        run: cargo build --release --locked -p nvoc-cli -p nvoc-auto-optimizer -p cli-stressor-rs --features cuda12,vulkan
 
       - name: Build srv (Windows service)
         if: matrix.platform == 'windows'

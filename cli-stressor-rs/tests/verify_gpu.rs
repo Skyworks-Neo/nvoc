@@ -284,7 +284,8 @@ fn sampled_check_identity_diagnostic() {
     // Case 1: recompute I*B = B against c = B.
     let s1: SampleStats = engine
         .debug_sample_check(
-            &stream, &ident_dev, &b_dev, &b_dev, n, false, false, 0, &samples, 0.01, 0.01,
+            &stream, &ident_dev, &b_dev, &b_dev, n, false, false, 0, 0, 0, None, None, 0, &samples,
+            0.01, 0.01,
         )
         .unwrap();
     println!(
@@ -295,7 +296,8 @@ fn sampled_check_identity_diagnostic() {
     // Case 2: recompute B*I = B against c = B.
     let s2: SampleStats = engine
         .debug_sample_check(
-            &stream, &b_dev, &ident_dev, &b_dev, n, false, false, 0, &samples, 0.01, 0.01,
+            &stream, &b_dev, &ident_dev, &b_dev, n, false, false, 0, 0, 0, None, None, 0, &samples,
+            0.01, 0.01,
         )
         .unwrap();
     println!(
@@ -342,7 +344,8 @@ fn sampled_check_random_full_gemmc_check() {
 
     engine
         .gemm_check(
-            &stream, &a_dev, &b_dev, &c_dev, n, false, false, 0, &samples, 0.01, 0.01,
+            &stream, &a_dev, &b_dev, &c_dev, n, false, false, 0, 0, 0, None, None, 0, &samples,
+            0.01, 0.01,
         )
         .unwrap();
     let full = "ran";
@@ -351,7 +354,8 @@ fn sampled_check_random_full_gemmc_check() {
     println!("drained_detail={}", drained);
     let sample: SampleStats = engine
         .debug_sample_check(
-            &stream, &a_dev, &b_dev, &c_dev, n, false, false, 0, &samples, 0.01, 0.01,
+            &stream, &a_dev, &b_dev, &c_dev, n, false, false, 0, 0, 0, None, None, 0, &samples,
+            0.01, 0.01,
         )
         .unwrap();
     println!(
@@ -360,4 +364,17 @@ fn sampled_check_random_full_gemmc_check() {
         sample.mismatch,
         sample.max_abs_diff()
     );
+}
+
+#[test]
+#[ignore = "requires a CUDA device"]
+fn gpu_fill_fp8_fp4_kernels_smoke() {
+    // Exercises the FP8/FP4 device fill kernels (any SM) and validates the
+    // operands through the host codecs: finite, in-band [-2, 2] for FP8 and
+    // inside ±6·scale for FP4. This is what lets the device quantizer be
+    // bit-aligned against the host one on hardware without FP8/FP4 tensor
+    // cores.
+    let mut backend = cuda_backend::CudaBackend::new_with_device(0).unwrap();
+    let report = backend.gpu_fill_fp8_fp4_smoke_test().unwrap();
+    println!("gpu fill smoke: {report}");
 }

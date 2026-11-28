@@ -115,7 +115,10 @@ fn build_packages(args: &BuildArgs) -> Res<()> {
 /// release.yml, and the crate's own default features.
 pub fn stressor_feature_args(cuda: CudaMode) -> Vec<&'static str> {
     match cuda {
-        CudaMode::Cuda12 => vec!["--features", "vulkan,video"],
+        // cuda12 is no longer in the stressor's default features (the
+        // cuda11/12/13 selectors are mutually exclusive), so the standalone
+        // invocation passes it explicitly.
+        CudaMode::Cuda12 => vec!["--features", "cuda12,vulkan,video"],
         CudaMode::Cuda11 => vec!["--no-default-features", "--features", "cuda11,vulkan,video"],
         CudaMode::Off => vec!["--no-default-features"],
     }

@@ -284,7 +284,7 @@ struct Args {
     #[arg(
         long,
         default_value = "fp16,bf16",
-        help = "Comma-separated precision list: fp64,fp32,tf32,fp16,bf16,fp8,int8,int16,int32 (aliases i8/i16/i32 accepted)"
+        help = "Comma-separated precision list: fp64,fp32,tf32,fp16,bf16,fp8,fp4,int8,int4,int16,int32 (aliases i8/i4/i16/i32 accepted)"
     )]
     precisions: String,
 
@@ -376,6 +376,59 @@ struct Args {
 
     #[arg(long)]
     disable_fp8: bool,
+
+    #[arg(
+        long,
+        default_value_t = 8,
+        help = "cublasLt heuristic candidate count requested per GEMM shape (algo report / --gemm-algo-list)"
+    )]
+    gemm_heuristics: usize,
+
+    #[arg(
+        long,
+        help = "Pin cublasLt GEMM execution to heuristic candidate #N (0 = library default); errors when a shape returns fewer candidates"
+    )]
+    gemm_algo_index: Option<usize>,
+
+    #[arg(
+        long,
+        help = "Time every cublasLt heuristic candidate at the first encounter of each GEMM shape and print a TFLOPS table (the unlocked-ada-gemm probe)"
+    )]
+    gemm_algo_list: bool,
+
+    #[arg(
+        long,
+        help = "Route FP16/BF16/INT8 GEMM stress through the classic cublas path instead of cublasLt (baseline comparability)"
+    )]
+    gemm_legacy_cublas: bool,
+
+    #[arg(
+        long,
+        help = "FP8 GEMM uses CUBLASLT_MATMUL_DESC_FAST_ACCUM (faster but loosely accumulating at large K; default is the segmented-accumulate path)"
+    )]
+    fp8_fast_accum: bool,
+
+    #[arg(
+        long,
+        value_name = "VER",
+        help = "Download + preload NVIDIA's official cublas/nvrtc/cudart binaries for this version (e.g. 12.8, 13.4) from PyPI into a per-version cache; major must match the build's CUDA feature"
+    )]
+    cuda_dll_version: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "MIRROR",
+        help = "PyPI simple-index mirror for --cuda-dll-version: tuna | aliyun | an index base URL (default pypi.org with automatic TUNA/Aliyun file fallback)"
+    )]
+    cuda_dll_mirror: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "Preload CUDA DLLs/SOs from this directory instead of downloading (pairs with the [CUDA] dlls report)"
+    )]
+    cuda_dll_dir: Option<String>,
+
     /// Run Vulkan-only stress (skip CUDA workload)
     #[arg(long, default_value_t = false)]
     vulkan_only: bool,
@@ -520,13 +573,15 @@ struct Args {
     )]
     video_preset: String,
 
-    /// CUDA GPU index in PCI-bus-sorted order (0-based)
+    /// CUDA GPU index in PCI-bus-sorted order (0-based); comma-separated for
+    /// multi-GPU fan-out
     #[arg(
         long,
         value_name = "INDEX",
-        help = "CUDA GPU index in PCI-bus-sorted order (0-based, default: 0)"
+        value_delimiter = ',',
+        help = "CUDA GPU index in PCI-bus-sorted order (0-based, default: 0); comma-separated list fans the stress out to one worker per card with [GPU<i>]-prefixed logs"
     )]
-    gpu_index: Option<u32>,
+    gpu_index: Option<Vec<u32>>,
 
     /// CUDA GPU PCI bus address (e.g., 0001:01:00.0)
     #[arg(
@@ -617,7 +672,7 @@ fn build_vulkan_device_selection(args: &Args) -> Result<VulkanDeviceSelection, S
     Ok(VulkanDeviceSelection {
         uuid,
         pci_bus,
-        index: args.gpu_index,
+        index: first_gpu_index(args),
     })
 }
 
@@ -1036,7 +1091,7 @@ fn apply_file_config_to_args(
         args.vulkan_only = v;
     }
     if let (true, Some(v)) = (!cli_set.contains("gpu_index"), parsed.gpu_index) {
-        args.gpu_index = Some(v);
+        args.gpu_index = Some(vec![v]);
     }
     if let (true, Some(v)) = (!cli_set.contains("pci_bus"), &parsed.pci_bus) {
         args.pci_bus = Some(v.clone());
@@ -1079,6 +1134,157 @@ fn emit_verdict(verdict: serde_json::Value, json_out: &Option<String>) {
     }
 }
 
+/// First selected `--gpu-index` value — the single-selection device hints
+/// (video-only / vulkan-only paths, the CUDA resolver) always use it.
+#[cfg(any(feature = "cuda", feature = "vulkan", feature = "video"))]
+fn first_gpu_index(args: &Args) -> Option<u32> {
+    args.gpu_index.as_ref().and_then(|v| v.first().copied())
+}
+
+/// Strip the `--gpu-index` flag from an argv (both the `--gpu-index V` and
+/// `--gpu-index=V` spellings), keeping every other argument in order. Used by
+/// the multi-GPU fan-out to rebuild each card's child argv (the child gets
+/// one `--gpu-index <i>` appended at the end).
+#[cfg(feature = "cuda")]
+fn strip_gpu_index_args(argv: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut skip_next = false;
+    for arg in argv {
+        let text = arg.to_string_lossy();
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if text == "--gpu-index" {
+            skip_next = true;
+            continue;
+        }
+        if text.starts_with("--gpu-index=") {
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out
+}
+
+/// Multi-GPU fan-out (`--gpu-index a,b,c`): spawn one child process per card
+/// with the same arguments (each receiving a single `--gpu-index`), forward
+/// every child stdout/stderr line prefixed with `[GPU<i>]`, and return the
+/// worst child exit code. Process isolation matches the per-GPU worker
+/// pattern the auto-optimizer already uses: one card's driver fault does not
+/// kill the other cards' stress, and each card runs with its own CUDA
+/// context.
+#[cfg(feature = "cuda")]
+fn run_multi_gpu_fanout(indices: &[u32]) -> i32 {
+    use std::io::{BufRead, IsTerminal};
+    use std::process::{Command, Stdio};
+
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!(
+                "{}",
+                stylize(
+                    &format!("multi-GPU fan-out: cannot resolve current executable: {err}"),
+                    true
+                )
+            );
+            std::process::exit(2);
+        }
+    };
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let base_args = strip_gpu_index_args(&argv);
+    println!(
+        "{}",
+        stylize(
+            &format!(
+                "[GPU] multi-GPU fan-out: launching the same stress on {} card(s) {indices:?}",
+                indices.len()
+            ),
+            false
+        )
+    );
+    // Children write into pipes, which anstream treats as a color-less sink;
+    // restore colors only when the parent's own stdout is a terminal.
+    let force_color = std::io::stdout().is_terminal();
+
+    let mut children: Vec<(u32, Option<std::process::Child>)> = Vec::with_capacity(indices.len());
+    for &index in indices {
+        let mut cmd = Command::new(&exe);
+        cmd.args(&base_args)
+            .arg("--gpu-index")
+            .arg(index.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if force_color {
+            cmd.env("CLICOLOR_FORCE", "1");
+        }
+        match cmd.spawn() {
+            Ok(child) => children.push((index, Some(child))),
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    stylize(&format!("[GPU{index}] spawn failed: {err}"), true)
+                );
+                children.push((index, None));
+            }
+        }
+    }
+
+    // One thread per card: drain stdout/stderr with the [GPU<i>] prefix,
+    // then collect the child exit code (drain-before-wait avoids the
+    // pipe-buffer deadlock).
+    let mut handles = Vec::with_capacity(children.len());
+    for (index, child) in children {
+        handles.push(std::thread::spawn(move || -> (u32, i32) {
+            let Some(mut child) = child else {
+                return (index, 1);
+            };
+            let stdout = child.stdout.take().expect("piped stdout");
+            let stderr = child.stderr.take().expect("piped stderr");
+            let out_thread = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    println!("[GPU{index}] {line}");
+                }
+            });
+            let err_thread = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stderr)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    eprintln!("[GPU{index}] {line}");
+                }
+            });
+            let _ = out_thread.join();
+            let _ = err_thread.join();
+            let code = child
+                .wait()
+                .ok()
+                .and_then(|status| status.code())
+                .unwrap_or(1);
+            (index, code)
+        }));
+    }
+
+    let mut worst = 0i32;
+    for handle in handles {
+        if let Ok((index, code)) = handle.join() {
+            println!(
+                "{}",
+                stylize(
+                    &format!("[GPU{index}] worker finished (exit {code})"),
+                    code != 0
+                )
+            );
+            worst = worst.max(code);
+        }
+    }
+    worst
+}
+
 #[cfg(feature = "cuda")]
 fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
     // Count how many selection methods are provided
@@ -1097,7 +1303,7 @@ fn resolve_gpu_device_index(args: &Args) -> Result<u32, String> {
         );
     }
 
-    if let Some(index) = args.gpu_index {
+    if let Some(index) = first_gpu_index(args) {
         // gpu-index is interpreted as index in PCI-bus-sorted CUDA device list.
         println!(
             "{}",
@@ -1457,7 +1663,10 @@ fn render_grouped_help() -> String {
         &[
             ("--duration <S>", "stress wall time [90]"),
             ("--seed <N>", "base RNG seed for the whole run"),
-            ("--precisions <LIST>", "fp32/tf32/fp16/bf16/int8/16/32/fp64"),
+            (
+                "--precisions <LIST>",
+                "fp32/tf32/fp16/bf16/fp8/fp4/int8/int4/fp64",
+            ),
             ("--matrix-sizes <LIST>", "GEMM edge lengths to mix"),
             ("--fp64-matrix-sizes <L>", "FP64-only edge lengths"),
             ("--warmup-iters <N>", "untimed iterations per op"),
@@ -1469,6 +1678,29 @@ fn render_grouped_help() -> String {
             ("--minor-mixture-rate <P>", "small-size op probability"),
             ("--stream-mode <M>", "single/dual/triple CUDA streams"),
             ("--disable-fp8", "skip FP8 precision"),
+            (
+                "--gemm-heuristics <N>",
+                "cublasLt candidate count per shape [8]",
+            ),
+            (
+                "--gemm-algo-index <N>",
+                "pin cublasLt heuristic candidate #N",
+            ),
+            (
+                "--gemm-algo-list",
+                "time every cublasLt candidate (TFLOPS table)",
+            ),
+            (
+                "--gemm-legacy-cublas",
+                "classic cublas lane for FP16/BF16/INT8",
+            ),
+            ("--fp8-fast-accum", "FP8 CUBLASLT_MATMUL_DESC_FAST_ACCUM"),
+            (
+                "--cuda-dll-version <VER>",
+                "download+preload NVIDIA cublas/nvrtc/cudart wheels",
+            ),
+            ("--cuda-dll-mirror <M>", "PyPI mirror: tuna/aliyun/URL"),
+            ("--cuda-dll-dir <DIR>", "preload CUDA DLLs from a directory"),
             (
                 "--mem-mode <M>",
                 "verify set: auto/resident (L2) / stream (slab)",
@@ -1733,7 +1965,8 @@ pub fn run_from_args() {
     if args.video_only {
         #[cfg(feature = "video")]
         {
-            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+            let config = match build_video_config(&args, first_gpu_index(&args).unwrap_or(0), true)
+            {
                 Ok(config) => config,
                 Err(err) => {
                     eprintln!(
@@ -1784,6 +2017,16 @@ pub fn run_from_args() {
         }
     };
 
+    // Multi-GPU fan-out (--gpu-index a,b,c): one worker per card with the
+    // remaining arguments forwarded verbatim, every output line prefixed
+    // [GPU<i>]. Reached only after the vulkan-only / video-only early exits,
+    // so those single-device paths keep using the first index unchanged.
+    if args.gpu_index.as_ref().is_some_and(|v| v.len() > 1) {
+        let indices = args.gpu_index.clone().expect("checked above");
+        let code = run_multi_gpu_fanout(&indices);
+        std::process::exit(code);
+    }
+
     let gpu_device_index = match resolve_gpu_device_index(&args) {
         Ok(idx) => idx,
         Err(err) => {
@@ -1796,20 +2039,37 @@ pub fn run_from_args() {
     };
 
     let mem_mode: cli_stressor_rs::MemMode = args.mem_mode.into();
-    let mut backend =
-        match cuda_backend::CudaBackend::new_with_device_and_mem_mode(gpu_device_index, mem_mode) {
-            Ok(backend) => backend,
-            Err(err) => {
-                eprintln!(
-                    "{}",
-                    stylize(
-                        &format!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err),
-                        true
-                    )
-                );
-                std::process::exit(1);
-            }
-        };
+    let dll_provision = cuda_backend::dll_provision::CudaDllProvision {
+        version: args.cuda_dll_version.clone(),
+        mirror: args.cuda_dll_mirror.clone(),
+        dir: args.cuda_dll_dir.as_deref().map(std::path::PathBuf::from),
+    };
+    let mut backend = match cuda_backend::CudaBackend::new_with_device_and_mem_mode(
+        gpu_device_index,
+        mem_mode,
+        &dll_provision,
+    ) {
+        Ok(backend) => backend,
+        Err(err) => {
+            eprintln!(
+                "{}",
+                stylize(
+                    &format!("CUDA init failed (gpu_index={}): {}", gpu_device_index, err),
+                    true
+                )
+            );
+            std::process::exit(1);
+        }
+    };
+    // cublasLt GEMM lane behavior (algo report/pinning/listing + legacy
+    // escape hatch); pure-additive flags, safe for the worker protocol.
+    backend.configure_gemm_lt(
+        args.gemm_heuristics,
+        args.gemm_algo_index,
+        args.gemm_algo_list,
+        args.gemm_legacy_cublas,
+        args.fp8_fast_accum,
+    );
     if args.gpu_generate
         && let Err(err) = backend.enable_gpu_generate()
     {
@@ -2338,7 +2598,7 @@ pub fn run_from_args() {
         .as_ref()
         .map(|f| f as &dyn Fn(&cli_stressor_rs::SdcEvent));
 
-    let results = run_stress_mixed(
+    let mut results = run_stress_mixed(
         &mut backend,
         &filtered,
         StressRunConfig {
@@ -2362,6 +2622,17 @@ pub fn run_from_args() {
         vulkan_abort,
     );
     sdc_sampler_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // Attach the first-encounter cublasLt algo reports to their precision's
+    // verdict entry (line prefix = the PrecisionSpec name).
+    let algo_reports = backend.take_gemm_algo_reports();
+    for res in &mut results {
+        res.gemm_algos = algo_reports
+            .iter()
+            .filter(|line| line.starts_with(&format!("{} ", res.precision)))
+            .cloned()
+            .collect();
+    }
 
     for res in &results {
         if res.first_error.is_some() && res.supported {
@@ -2546,7 +2817,8 @@ pub fn run_from_args() {
     if args.video_only {
         #[cfg(feature = "video")]
         {
-            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+            let config = match build_video_config(&args, first_gpu_index(&args).unwrap_or(0), true)
+            {
                 Ok(config) => config,
                 Err(err) => {
                     eprintln!(
@@ -2621,7 +2893,8 @@ pub fn run_from_args() {
     if args.video_only {
         #[cfg(feature = "video")]
         {
-            let config = match build_video_config(&args, args.gpu_index.unwrap_or(0), true) {
+            let config = match build_video_config(&args, first_gpu_index(&args).unwrap_or(0), true)
+            {
                 Ok(config) => config,
                 Err(err) => {
                     eprintln!(
@@ -2661,4 +2934,40 @@ pub fn run_from_args() {
 #[allow(dead_code)]
 fn main() {
     run_from_args();
+}
+
+// The fan-out helpers are CUDA-path only; keep their tests on the same
+// feature gate so stub builds (no CUDA) do not reference gated-out items.
+#[cfg(feature = "cuda")]
+#[cfg(test)]
+mod tests {
+    use super::strip_gpu_index_args;
+    use std::ffi::OsString;
+
+    fn argv(items: &[&str]) -> Vec<OsString> {
+        items.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn strip_gpu_index_removes_both_spellings() {
+        // `--gpu-index V` spelling: flag and its value both drop.
+        let stripped = strip_gpu_index_args(&argv(&[
+            "--duration",
+            "30",
+            "--gpu-index",
+            "0,1",
+            "--precisions",
+            "fp16",
+        ]));
+        assert_eq!(
+            stripped,
+            argv(&["--duration", "30", "--precisions", "fp16"])
+        );
+        // `--gpu-index=V` spelling drops as one token.
+        let stripped = strip_gpu_index_args(&argv(&["--gpu-index=2", "--duration", "10"]));
+        assert_eq!(stripped, argv(&["--duration", "10"]));
+        // No flag: argv passes through untouched.
+        let untouched = argv(&["--duration", "5"]);
+        assert_eq!(strip_gpu_index_args(&untouched), untouched);
+    }
 }
