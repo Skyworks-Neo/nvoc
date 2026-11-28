@@ -191,6 +191,11 @@ impl CudaBackend {
             CudaBlas::new(stream2.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
         let blas3 =
             CudaBlas::new(stream3.clone()).map_err(|err| BackendError::Other(err.to_string()))?;
+        // Which cublasLt64.dll (etc.) actually won the DLL search order is a
+        // matrix-collection record: FP8/FP4 kernel availability is a property
+        // of that file, not of the installed driver.
+        let dll_paths = loaded_cuda_dll_paths();
+        println!("[CUDA] dlls: {dll_paths}");
         let (atomic_module, atomic_fn) = match build_atomic_kernel(&ctx) {
             Ok((module, func)) => (Some(module), Some(func)),
             Err(err) => {
@@ -774,3 +779,68 @@ impl Backend for CudaBackend {
 // `lane_count` methods are defined in the sibling submodules (`gemm`,
 // `mem_ops`, `atomic`, `lanes`) as additional `impl CudaBackend` blocks. They
 // share the struct via the `pub(super)` fields/helpers above.
+
+/// Paths of the loaded CUDA stack DLLs (driver / cublasLt / cublas / nvrtc —
+/// any version suffix cudarc's candidate list happened to match). The DLL
+/// search order decides which toolkit's files win over the driver-shipped
+/// ones, and FP8/FP4 kernel availability is a property of those files.
+#[cfg(windows)]
+fn loaded_cuda_dll_paths() -> String {
+    use std::collections::BTreeMap;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW, TH32CS_SNAPMODULE,
+    };
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+        if snapshot.is_null() || snapshot == usize::MAX as *mut core::ffi::c_void {
+            return "(module snapshot failed)".to_string();
+        }
+        let mut entry: MODULEENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<MODULEENTRY32W>() as u32;
+        if Module32FirstW(snapshot, &mut entry) == 0 {
+            CloseHandle(snapshot);
+            return "(module walk failed)".to_string();
+        }
+        let mut found: BTreeMap<&str, String> = BTreeMap::new();
+        loop {
+            let module = String::from_utf16_lossy(
+                &entry.szModule[0..entry.szModule.iter().position(|c| *c == 0).unwrap_or(256)],
+            )
+            .to_ascii_lowercase();
+            let key = if module.starts_with("nvcuda") {
+                Some("driver")
+            } else if module.starts_with("cublaslt") {
+                Some("cublasLt")
+            } else if module.starts_with("cublas") {
+                Some("cublas")
+            } else if module.starts_with("nvrtc") {
+                Some("nvrtc")
+            } else {
+                None
+            };
+            if let Some(key) = key {
+                let path = String::from_utf16_lossy(
+                    &entry.szExePath
+                        [0..entry.szExePath.iter().position(|c| *c == 0).unwrap_or(256)],
+                );
+                found.entry(key).or_insert(path);
+            }
+            if Module32NextW(snapshot, &mut entry) == 0 {
+                break;
+            }
+        }
+        CloseHandle(snapshot);
+        ["driver", "cublasLt", "cublas", "nvrtc"]
+            .iter()
+            .filter_map(|k| found.get(*k).map(|p| format!("{k}={p}")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+#[cfg(not(windows))]
+fn loaded_cuda_dll_paths() -> String {
+    "(module path enumeration is windows-only)".to_string()
+}

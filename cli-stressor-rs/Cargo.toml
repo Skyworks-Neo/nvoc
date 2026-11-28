@@ -14,7 +14,8 @@ description = "GPU stressor (CUDA + Vulkan + video engines) with validation side
 # src/lib.rs — because cudarc resolves its bindings and NVRTC library name
 # from exactly one cuda-XXXXXX feature.
 default = ["cuda12", "video"]
-cuda = ["dep:cudarc", "dep:half"]
+# windows-sys (shared with vulkan) serves the CUDA-DLL path report.
+cuda = ["dep:cudarc", "dep:half", "dep:windows-sys"]
 cuda11 = ["cuda", "cudarc/cuda-11040", "video"]
 cuda12 = ["cuda", "cudarc/cuda-12090", "video"]
 vulkan = ["ash", "dep:naga", "dep:windows-sys"]
@@ -53,4 +54,5 @@ windows-sys = { version = "0.61", optional = true, features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_ToolHelp",
 ] }
