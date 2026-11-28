@@ -10,11 +10,15 @@ description = "GPU stressor (CUDA + Vulkan + video engines) with validation side
 [features]
 # CUDA driver-generation selector. cuda11 targets R470-era drivers (CUDA
 # 11.4 API surface: no cuDeviceGetUuid_v2, NVRTC capped at sm_86); cuda12 is
-# the default modern build; cuda13 targets CUDA 13.x headers (cudarc caps at
-# 13.4) for matrix work on current driver stacks. The three are mutually
-# exclusive — enforced in src/lib.rs — because cudarc resolves its bindings
-# and NVRTC library name from exactly one cuda-XXXXXX feature.
-default = ["cuda12", "video"]
+# the modern default; cuda13 targets CUDA 13.x headers (cudarc caps at 13.4)
+# for matrix work on current driver stacks. The three are mutually exclusive
+# — enforced in src/lib.rs — because cudarc resolves its bindings and NVRTC
+# library name from exactly one cuda-XXXXXX feature, and enabling two floods
+# the build with duplicate definitions. The selectors are therefore NOT in
+# default (cargo cannot remove a default feature): exactly one of
+# `--features cuda11|cuda12|cuda13` must be passed, e.g.
+# `cargo build -p cli-stressor-rs --features cuda13 --release`.
+default = ["video"]
 # windows-sys (shared with vulkan) serves the CUDA-DLL path report.
 cuda = ["dep:cudarc", "dep:half", "dep:windows-sys"]
 cuda11 = ["cuda", "cudarc/cuda-11040", "video"]

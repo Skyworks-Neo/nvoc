@@ -1,13 +1,23 @@
 extern crate self as cli_stressor_rs;
 
-// See the [features] table in Cargo.toml for the cuda11/cuda12 split.
-#[cfg(all(feature = "cuda11", feature = "cuda12"))]
+// See the [features] table in Cargo.toml for the cuda11/cuda12/cuda13 split.
+// Enabling two at once makes cudarc compile both header generations (each
+// cfg band re-declares the same types), flooding the build with duplicate
+// definitions before this error is even reached — the selector flags are
+// simply not combinable.
+#[cfg(any(
+    all(feature = "cuda11", feature = "cuda12"),
+    all(feature = "cuda11", feature = "cuda13"),
+    all(feature = "cuda12", feature = "cuda13"),
+))]
+compile_error!("features `cuda11`/`cuda12`/`cuda13` are mutually exclusive — pass exactly one");
+#[cfg(all(
+    feature = "cuda",
+    not(any(feature = "cuda11", feature = "cuda12", feature = "cuda13"))
+))]
 compile_error!(
-    "features `cuda11` and `cuda12` are mutually exclusive; \
-     build the legacy variant with `cargo build --no-default-features --features cuda11`"
+    "feature `cuda` requires a CUDA generation selector: enable `cuda11`, `cuda12`, or `cuda13`"
 );
-#[cfg(all(feature = "cuda", not(any(feature = "cuda11", feature = "cuda12"))))]
-compile_error!("feature `cuda` requires a CUDA generation selector: enable `cuda11` or `cuda12`");
 
 // Reuse the CLI implementation as the bundled optimizer worker. The optimizer
 // calls runner::run_from_args only inside its isolated child process.

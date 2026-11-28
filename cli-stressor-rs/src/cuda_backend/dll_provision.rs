@@ -545,7 +545,7 @@ mod tests {
         // compare never drops cublasLt64_12.dll (the preloading bug that made
         // the cache useless while the run still "worked" on a shadowed DLL).
         for p in wanted_binary_prefixes(true) {
-            assert_eq!(p.to_ascii_lowercase(), p, "{p} must be lowercase");
+            assert_eq!(p.to_ascii_lowercase(), *p, "{p} must be lowercase");
         }
         let lt = "cublaslt64_12.dll";
         assert!(

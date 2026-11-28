@@ -99,27 +99,29 @@
 
 ### 构建与运行
 
+> 构建代际选择器：`cuda11` / `cuda12` / `cuda13` 三个 feature 互斥，必须选一个（例如 `cargo build -p cli-stressor-rs --features cuda13 --release`）；默认构建（不带 CUDA 代际）是纯 stub，仅供解析/单测。
+
 CUDA 支持通过 feature flag 控制。
 
 ```bash
-cargo run -p cli-stressor-rs --features cuda -- --duration 30 --precisions fp16,tf32
+cargo run -p cli-stressor-rs --features cuda12 -- --duration 30 --precisions fp16,tf32
 ```
 
 ```bash
 # 混合 FP + 整数压力（推荐）
-cargo run -p cli-stressor-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda12 -- \
   --duration 60 \
   --precisions fp16,bf16,int8,int32 \
   --kernel-types gemm,intalu,memcpy
 
 # INT16 压力（仅 intalu）
-cargo run -p cli-stressor-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda12 -- \
   --duration 60 \
   --precisions int16 \
   --kernel-types intalu
 
 # INT8 cuBLAS GEMM + INT32 intalu 混合
-cargo run -p cli-stressor-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda12 -- \
   --duration 60 \
   --precisions int8,int32 \
   --kernel-types gemm,intalu
@@ -128,13 +130,13 @@ cargo run -p cli-stressor-rs --features cuda -- \
 若启用 Vulkan 图形压力，请同时启用 `vulkan` feature：
 
 ```bash
-cargo build --release -p cli-stressor-rs --features cuda,vulkan
+cargo build --release -p cli-stressor-rs --features cuda12,vulkan
 ```
 
 可选：通过配置文件运行（所有选项都可放入 config）。
 
 ```bash
-cargo run -p cli-stressor-rs --features cuda -- --config ./stressor.toml
+cargo run -p cli-stressor-rs --features cuda12 -- --config ./stressor.toml
 ```
 
 ### 配置文件
@@ -326,27 +328,29 @@ Enforced at startup; incompatible combos exit with an error:
 
 ### Build & Run
 
+> Build-generation selector: the `cuda11` / `cuda12` / `cuda13` features are mutually exclusive and one must be passed (e.g. `cargo build -p cli-stressor-rs --features cuda13 --release`); the default build (no CUDA generation) is a pure stub for parsing/unit tests.
+
 CUDA support is behind a feature flag.
 
 ```bash
-cargo run -p cli-stressor-rs --features cuda -- --duration 30 --precisions fp16,tf32
+cargo run -p cli-stressor-rs --features cuda12 -- --duration 30 --precisions fp16,tf32
 ```
 
 ```bash
 # Mixed FP + integer stress (recommended)
-cargo run -p cli-stressor-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda12 -- \
   --duration 60 \
   --precisions fp16,bf16,int8,int32 \
   --kernel-types gemm,intalu,memcpy
 
 # INT16 stress (intalu only)
-cargo run -p cli-stressor-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda12 -- \
   --duration 60 \
   --precisions int16 \
   --kernel-types intalu
 
 # INT8 cuBLAS GEMM + INT32 intalu mixed
-cargo run -p cli-stressor-rs --features cuda -- \
+cargo run -p cli-stressor-rs --features cuda12 -- \
   --duration 60 \
   --precisions int8,int32 \
   --kernel-types gemm,intalu
@@ -355,13 +359,13 @@ cargo run -p cli-stressor-rs --features cuda -- \
 When enabling Vulkan graphics stress, build with both features:
 
 ```bash
-cargo build --release -p cli-stressor-rs --features cuda,vulkan
+cargo build --release -p cli-stressor-rs --features cuda12,vulkan
 ```
 
 Optional: run with a config file (all options can be provided in config).
 
 ```bash
-cargo run -p cli-stressor-rs --features cuda -- --config ./stressor.toml
+cargo run -p cli-stressor-rs --features cuda12 -- --config ./stressor.toml
 ```
 
 ### Config File
