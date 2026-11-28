@@ -459,11 +459,12 @@ fn fp4_int4_device_gates() {
         compute_capability: Some(sm),
         l2_cache_bytes: None,
     };
-    // FP8 E5M2: SM90+ (cuBLASLt has no E5M2 kernels on Ada).
+    // FP8 E5M2: same SM89+ hardware gate as E4M3 (the Ada kernel gap is
+    // arbitrated at runtime by the heuristic, not by a static gate).
     let mut e5m2 = parse_precision_list("fp8e5m2").unwrap();
     let e5m2 = e5m2.remove(0);
-    assert!(info((8, 9)).supports_precision(&e5m2).is_err());
-    assert!(info((9, 0)).supports_precision(&e5m2).is_ok());
+    assert!(info((8, 9)).supports_precision(&e5m2).is_ok());
+    assert!(info((7, 5)).supports_precision(&e5m2).is_err());
     // FP4: Blackwell only (SM100/SM103/SM120).
     for sm in [(8i32, 9i32), (9, 0), (10, 1)] {
         assert!(info(sm).supports_precision(&fp4).is_err(), "sm{sm:?}");

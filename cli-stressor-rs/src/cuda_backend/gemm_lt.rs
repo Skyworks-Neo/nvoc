@@ -388,6 +388,9 @@ impl LtLane {
             // release (empirically absent on some current drivers).
             let hint = match key.dtype {
                 LtDtype::Fp4Nvfp4 | LtDtype::Fp4Mxfp4 => " (FP4 needs CUDA 12.8+/R570+)",
+                LtDtype::Fp8E5m2 => {
+                    " (this cublasLt build ships no E5M2 GEMM kernels for this arch; E4M3 is Ada's native FP8 format)"
+                }
                 LtDtype::Int4 => {
                     " (this driver's cublasLt exposes no CUDA_R_4I/COMPUTE_32I candidate)"
                 }

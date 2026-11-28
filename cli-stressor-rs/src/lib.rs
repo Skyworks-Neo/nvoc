@@ -325,18 +325,19 @@ impl DeviceInfo {
                     ))
                 }
             }
-            // E5M2: Ada (SM8.9) has NO E5M2 GEMM kernels in cuBLASLt — the
-            // heuristic returns zero candidates there (observed on RTX 4060 +
-            // corroborated by the flaky E5M2 rows across CUDA releases in the
-            // docs); E4M3 is Ada's native FP8 format. Gate E5M2 to SM90+,
-            // where both FP8 encodings have native tensor-core kernels.
+            // E5M2: same SM89+ hardware gate as E4M3 (the sm_89 PTX supports
+            // E5M2 mma), but the cuBLASLt kernel inventory for Ada varies by
+            // build — some return zero E5M2 candidates (observed on RTX 4060;
+            // E4M3 is Ada's inference-native format). Runtime arbitration
+            // decides: zero candidates downgrade the precision to SKIP with
+            // the [CUDA] versions line as the correlating record.
             PrecisionKind::FP8E5M2 => {
                 let sm = self.compute_capability.unwrap_or((0, 0));
-                if sm.0 >= 9 {
+                if sm.0 >= 8 && (sm.0 > 8 || sm.1 >= 9) {
                     Ok(())
                 } else {
                     Err(format!(
-                        "FP8 E5M2 requires SM90 or higher (cuBLASLt ships no E5M2 GEMM kernels on Ada; E4M3 is Ada's native FP8 format - current: SM{}.{})",
+                        "FP8 requires SM89 or higher (current: SM{}.{})",
                         sm.0, sm.1
                     ))
                 }

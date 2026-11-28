@@ -129,6 +129,26 @@ impl CudaBackend {
                 )));
             }
         }
+        // Record the loaded CUDA library versions up front: FP8/FP4 kernel
+        // availability varies by cublasLt build (e.g. zero E5M2 candidates on
+        // Ada in some builds), so the matrix-collection record needs the exact
+        // driver/cublasLt/nvrtc versions alongside every reading.
+        let mut driver_api_ver: i32 = 0;
+        let (lt_ver, cudart_ver) = unsafe {
+            cuda_sys::cuDriverGetVersion(&mut driver_api_ver);
+            (
+                cudarc::cublaslt::sys::cublasLtGetVersion(),
+                cudarc::cublas::sys::cublasGetCudartVersion(),
+            )
+        };
+        let (nvrtc_major, nvrtc_minor) = unsafe {
+            let (mut mj, mut mn): (i32, i32) = (0, 0);
+            cudarc::nvrtc::sys::nvrtcVersion(&mut mj, &mut mn);
+            (mj, mn)
+        };
+        println!(
+            "[CUDA] versions: driver-api={driver_api_ver} cublasLt={lt_ver} cublas-cudart={cudart_ver} nvrtc={nvrtc_major}.{nvrtc_minor}"
+        );
         let ctx = CudaContext::new(gpu_index as usize)
             .map_err(|err| BackendError::Other(err.to_string()))?;
         let stream = ctx.default_stream();
