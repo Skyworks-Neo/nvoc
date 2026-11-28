@@ -1115,6 +1115,7 @@ fn emit_verdict(verdict: serde_json::Value, json_out: &Option<String>) {
 
 /// First selected `--gpu-index` value — the single-selection device hints
 /// (video-only / vulkan-only paths, the CUDA resolver) always use it.
+#[cfg(any(feature = "cuda", feature = "vulkan", feature = "video"))]
 fn first_gpu_index(args: &Args) -> Option<u32> {
     args.gpu_index.as_ref().and_then(|v| v.first().copied())
 }
@@ -1123,6 +1124,7 @@ fn first_gpu_index(args: &Args) -> Option<u32> {
 /// `--gpu-index=V` spellings), keeping every other argument in order. Used by
 /// the multi-GPU fan-out to rebuild each card's child argv (the child gets
 /// one `--gpu-index <i>` appended at the end).
+#[cfg(feature = "cuda")]
 fn strip_gpu_index_args(argv: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
     let mut out = Vec::with_capacity(argv.len());
     let mut skip_next = false;
@@ -1151,6 +1153,7 @@ fn strip_gpu_index_args(argv: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> 
 /// pattern the auto-optimizer already uses: one card's driver fault does not
 /// kill the other cards' stress, and each card runs with its own CUDA
 /// context.
+#[cfg(feature = "cuda")]
 fn run_multi_gpu_fanout(indices: &[u32]) -> i32 {
     use std::io::{BufRead, IsTerminal};
     use std::process::{Command, Stdio};
@@ -2898,6 +2901,9 @@ fn main() {
     run_from_args();
 }
 
+// The fan-out helpers are CUDA-path only; keep their tests on the same
+// feature gate so stub builds (no CUDA) do not reference gated-out items.
+#[cfg(feature = "cuda")]
 #[cfg(test)]
 mod tests {
     use super::strip_gpu_index_args;
