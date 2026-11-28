@@ -1214,6 +1214,7 @@ impl CudaBackend {
             PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 => {
                 let size = (size + 15) & !15;
                 let e5m2 = spec.kind == PrecisionKind::FP8E5M2;
+
                 let (dtype, ab_code) = if e5m2 {
                     (LtDtype::Fp8E5m2, 9u32)
                 } else {

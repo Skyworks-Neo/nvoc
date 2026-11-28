@@ -314,13 +314,29 @@ impl DeviceInfo {
                     ))
                 }
             }
-            PrecisionKind::FP8E4M3FN | PrecisionKind::FP8E5M2 => {
+            PrecisionKind::FP8E4M3FN => {
                 let sm = self.compute_capability.unwrap_or((0, 0));
                 if sm.0 >= 8 && (sm.0 > 8 || sm.1 >= 9) {
                     Ok(())
                 } else {
                     Err(format!(
                         "FP8 requires SM89 or higher (current: SM{}.{})",
+                        sm.0, sm.1
+                    ))
+                }
+            }
+            // E5M2: Ada (SM8.9) has NO E5M2 GEMM kernels in cuBLASLt — the
+            // heuristic returns zero candidates there (observed on RTX 4060 +
+            // corroborated by the flaky E5M2 rows across CUDA releases in the
+            // docs); E4M3 is Ada's native FP8 format. Gate E5M2 to SM90+,
+            // where both FP8 encodings have native tensor-core kernels.
+            PrecisionKind::FP8E5M2 => {
+                let sm = self.compute_capability.unwrap_or((0, 0));
+                if sm.0 >= 9 {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "FP8 E5M2 requires SM90 or higher (cuBLASLt ships no E5M2 GEMM kernels on Ada; E4M3 is Ada's native FP8 format - current: SM{}.{})",
                         sm.0, sm.1
                     ))
                 }
@@ -2196,11 +2212,22 @@ pub fn run_stress_mixed<B: Backend>(
                 // aborting the whole run.
                 if let BackendError::Unsupported(reason) = err {
                     if let Some(idx) = index_by_name.get(op_spec.name) {
+                        if results[*idx].supported {
+                            // Say it once, loudly: without this line a
+                            // single-precision run looks like a silent hang.
+                            println!("[{}] SKIP: {reason}", op_spec.name);
+                        }
                         results[*idx].supported = false;
                         if results[*idx].first_error.is_none() {
                             results[*idx].first_error = Some(format!("SKIP: {reason}"));
                             results[*idx].first_error_at_s = Some(start.elapsed().as_secs_f64());
                         }
+                    }
+                    // Nothing left producing load: stop instead of burning
+                    // the remaining duration in skip cycles.
+                    if results.iter().all(|r| !r.supported) {
+                        println!("all precisions unsupported on this device - stopping early");
+                        break;
                     }
                     continue;
                 }

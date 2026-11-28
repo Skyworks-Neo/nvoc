@@ -63,7 +63,7 @@
 | FP16 | `fp16` | `gemm` | cublasLt `CUDA_R_16F`（默认）**或**经典 cuBLAS（`--gemm-legacy-cublas`） | 全部 SM |
 | BF16 | `bf16` | `gemm` | cublasLt `CUDA_R_16BF`（默认）**或**经典 cuBLAS | SM ≥ 8.0（A100 / 30 系+） |
 | **FP8** | `fp8` / `fp8e4m3` | `gemm` | cublasLt `CUDA_R_8F_E4M3FN`（E4M3FN，`COMPUTE_32F`，TN；ride-on-load 采样校验） | SM ≥ 8.9（40 系+）；驱动 cublasLt 需 CUDA 11.8+（R520+） |
-| **FP8 E5M2** | `fp8e5m2` / `e5m2` | `gemm` | cublasLt `CUDA_R_8F_E5M2`（同 E4M3 约束；饱和语义对齐硬件 `cvt.rn.satfinite`） | 同上 |
+| **FP8 E5M2** | `fp8e5m2` / `e5m2` | `gemm` | cublasLt `CUDA_R_8F_E5M2`（同 E4M3 约束；饱和语义对齐硬件 `cvt.rn.satfinite`） | **SM ≥ 9.0**（cuBLASLt 在 Ada 上无 E5M2 GEMM kernel——启发式返回零候选，实测 RTX 4060；E4M3 才是 Ada 原生 FP8 格式） |
 | **FP4** | `fp4` | `gemm` | cublasLt `CUDA_R_4F_E2M1` + 块缩放（NVFP4 优先，回退 MXFP4；TN；采样校验） | SM 100/103/120（50 系+）；驱动 cublasLt 需 CUDA 12.8+（R570+） |
 | **INT8** | `int8` / `i8` | `gemm` **_或_** `intalu` | cublasLt `CUDA_R_8I`→`CUDA_R_32I`（IMMA TC，TN 默认）或 `intalu` 自定义 DP4A/MAD 内核；经典 `gemm_ex` 经 `--gemm-legacy-cublas` 保留 | SM ≥ 5.0；IMMA TC 需 SM ≥ 7.5（Turing+） |
 | **INT4** | `int4` / `i4` | `gemm` | cublasLt `CUDA_R_4I`→`CUDA_R_32I`（IMMA TC，TN；采样 + 精确 sidecar 双重校验） | SM ≥ 7.5；**运行时可用性取决于驱动 cublasLt 是否返回 `CUDA_R_4I` 候选**（无候选时干净报错） |
@@ -288,7 +288,7 @@ burst_iters = 64
 | FP16 | `fp16` | `gemm` | cublasLt `CUDA_R_16F` (default) **or** classic cuBLAS (`--gemm-legacy-cublas`) | All SM |
 | BF16 | `bf16` | `gemm` | cublasLt `CUDA_R_16BF` (default) **or** classic cuBLAS | SM ≥ 8.0 (A100 / 30-series+) |
 | **FP8** | `fp8` / `fp8e4m3` | `gemm` | cublasLt `CUDA_R_8F_E4M3FN` (E4M3FN, `COMPUTE_32F`, TN; ride-on-load sampled check) | SM ≥ 8.9 (40-series+); driver cublasLt needs CUDA 11.8+ (R520+) |
-| **FP8 E5M2** | `fp8e5m2` / `e5m2` | `gemm` | cublasLt `CUDA_R_8F_E5M2` (same constraints as E4M3; saturating like hardware `cvt.rn.satfinite`) | same as above |
+| **FP8 E5M2** | `fp8e5m2` / `e5m2` | `gemm` | cublasLt `CUDA_R_8F_E5M2` (same constraints as E4M3; saturating like hardware `cvt.rn.satfinite`) | **SM ≥ 9.0** (cuBLASLt ships no E5M2 GEMM kernels on Ada — the heuristic returns zero candidates, observed on RTX 4060; E4M3 is Ada's native FP8 format) |
 | **FP4** | `fp4` | `gemm` | cublasLt `CUDA_R_4F_E2M1` + block scales (NVFP4 preferred, MXFP4 fallback; TN; sampled check) | SM 100/103/120 (50-series+); driver cublasLt needs CUDA 12.8+ (R570+) |
 | **INT8** | `int8` / `i8` | `gemm` **_or_** `intalu` | cublasLt `CUDA_R_8I`→`CUDA_R_32I` (IMMA TC, TN default) or the custom DP4A/MAD `intalu` kernel; classic `gemm_ex` kept via `--gemm-legacy-cublas` | SM ≥ 5.0; IMMA TC requires SM ≥ 7.5 (Turing+) |
 | **INT4** | `int4` / `i4` | `gemm` | cublasLt `CUDA_R_4I`→`CUDA_R_32I` (IMMA TC, TN; sampled + exact sidecar checks) | SM ≥ 7.5; **runtime availability depends on the driver's cublasLt returning `CUDA_R_4I` candidates** (clean error when none) |
