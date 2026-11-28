@@ -182,28 +182,6 @@ pub(crate) fn wanted_binary_prefixes(windows: bool) -> &'static [&'static str] {
     }
 }
 
-fn curl_to_file(url: &str, out: &Path) -> Result<(), BackendError> {
-    let status = std::process::Command::new("curl")
-        .args([
-            "-fsSL",
-            "--connect-timeout",
-            "15",
-            "--retry",
-            "2",
-            "-o",
-            out.to_string_lossy().as_ref(),
-            url,
-        ])
-        .status()
-        .map_err(|err| BackendError::Other(format!("curl launch failed: {err}")))?;
-    if !status.success() {
-        return Err(BackendError::Other(format!(
-            "curl download failed (exit {status:?}) for {url}"
-        )));
-    }
-    Ok(())
-}
-
 fn curl_to_string(url: &str) -> Result<String, BackendError> {
     let output = std::process::Command::new("curl")
         .args(["-fsSL", "--connect-timeout", "15", "--retry", "2", url])
@@ -238,9 +216,117 @@ fn mirror_file_url(url: &str, mirror_packages_base: &str) -> String {
     }
 }
 
+/// Content-Length of a URL via HEAD (last header wins across redirects);
+/// None when the server does not answer with one.
+fn curl_head_size(url: &str) -> Option<u64> {
+    let output = std::process::Command::new("curl")
+        .args(["-fsSLI", "--connect-timeout", "15", url])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut size = None;
+    for line in text.lines() {
+        if let Some(n) = line
+            .to_ascii_lowercase()
+            .strip_prefix("content-length:")
+            .and_then(|v| v.trim().parse::<u64>().ok())
+        {
+            size = Some(n);
+        }
+    }
+    size
+}
+
+fn fmt_mib(bytes: u64) -> String {
+    format!("{:.1} MiB", bytes as f64 / 1048576.0)
+}
+
+/// Download with a live progress report: spawns curl and polls the partial
+/// file size every 1.5 s, printing discrete lines at 5% steps. Discrete
+/// lines (instead of curl's carriage-return meter) stay legible under the multi-GPU
+/// fan-out's line-prefixing and inside captured logs.
+fn curl_download_progress(url: &str, out: &Path, label: &str) -> Result<(), BackendError> {
+    use std::process::Stdio;
+    let total = curl_head_size(url);
+    match total {
+        Some(n) => println!(
+            "[CUDA] dll provision: downloading {label} ({})...",
+            fmt_mib(n)
+        ),
+        None => println!("[CUDA] dll provision: downloading {label}..."),
+    }
+    let mut child = std::process::Command::new("curl")
+        .args([
+            "-fL",
+            "--connect-timeout",
+            "15",
+            "--retry",
+            "2",
+            "-o",
+            out.to_string_lossy().as_ref(),
+            url,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| BackendError::Other(format!("curl launch failed: {err}")))?;
+    let mut last_step = 0u64;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+        match total {
+            Some(total) if total > 0 => {
+                let pct = size.min(total) * 100 / total;
+                if pct / 5 > last_step {
+                    last_step = pct / 5;
+                    println!(
+                        "[CUDA] dll provision:   {label}: {} / {} ({}%)",
+                        fmt_mib(size),
+                        fmt_mib(total),
+                        pct
+                    );
+                }
+            }
+            _ => {
+                // No Content-Length: report every ~50 MiB of raw progress.
+                if size / (50 * 1048576) > last_step {
+                    last_step = size / (50 * 1048576);
+                    println!(
+                        "[CUDA] dll provision:   {label}: {} downloaded",
+                        fmt_mib(size)
+                    );
+                }
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return Err(BackendError::Other(format!(
+                        "curl download failed (exit {status:?}) for {url}"
+                    )));
+                }
+                break;
+            }
+            Ok(None) => continue,
+            Err(err) => return Err(BackendError::Other(format!("curl wait failed: {err}"))),
+        }
+    }
+    if let Some(total) = total {
+        println!(
+            "[CUDA] dll provision:   {label}: {} downloaded (complete)",
+            fmt_mib(total)
+        );
+    }
+    Ok(())
+}
+
 fn download_with_fallback(
     url: &str,
     out: &Path,
+    label: &str,
     mirror: Option<&str>,
 ) -> Result<String, BackendError> {
     // Attempt order: the resolved URL first, then the builtin CN mirrors for
@@ -254,8 +340,8 @@ fn download_with_fallback(
     let mut last_err = None;
     for src in &sources {
         let host = src.split('/').nth(2).unwrap_or(src).to_string();
-        println!("[CUDA] dll provision: downloading from {host} ...");
-        match curl_to_file(src, out) {
+        println!("[CUDA] dll provision: source {host}");
+        match curl_download_progress(src, out, label) {
             Ok(()) => return Ok(host),
             Err(err) => last_err = Some(err),
         }
@@ -431,7 +517,7 @@ fn ensure_downloaded(requested: &str, mirror: Option<&str>) -> Result<PathBuf, B
     let build_major = build_cuda_major();
     if major != build_major {
         return Err(BackendError::Other(format!(
-            "--cuda-dll-version {requested} does not match this build's CUDA generation (CUDA {build_major} headers): rebuild with --features cuda{major} (e.g. cargo build --no-default-features --features cuda{major})"
+            "--cuda-dll-version {requested} does not match this build's CUDA generation (CUDA {build_major} headers): rebuild with --features cuda{major}, e.g. cargo build -p cli-stressor-rs --features cuda{major} --release"
         )));
     }
     let dir = cache_root(requested)?;
@@ -470,7 +556,7 @@ fn ensure_downloaded(requested: &str, mirror: Option<&str>) -> Result<PathBuf, B
             })?;
         println!("[CUDA] dll provision: {pkg} -> {filename}");
         let wheel_path = tmp.join(&filename);
-        let source = download_with_fallback(&url, &wheel_path, mirror)?;
+        let source = download_with_fallback(&url, &wheel_path, &filename, mirror)?;
         let got = sha256_hex_file(&wheel_path)?;
         if !got.eq_ignore_ascii_case(&sha) {
             return Err(BackendError::Other(format!(
